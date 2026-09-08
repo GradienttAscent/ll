@@ -4,7 +4,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
-import { db, DEFAULT_COURSE_ID } from './db';
+import { initDatabase, getDatabase, DEFAULT_COURSE_ID, DatabaseWrapper } from './db';
 
 dotenv.config({ path: fs.existsSync('.env.local') ? '.env.local' : '.env' });
 
@@ -12,6 +12,9 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 const PORT = 3000;
+
+// Global db instance - will be initialized before server starts
+let db: DatabaseWrapper;
 
 type TopicInput = {
   name: string;
@@ -444,6 +447,10 @@ Topics to cover: ${JSON.stringify(topics || ['Graph Algorithms', 'Dynamic Progra
 
 // Start Express server and Vite middleware
 async function startServer() {
+  // Initialize database
+  await initDatabase();
+  db = await getDatabase();
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -463,4 +470,7 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
