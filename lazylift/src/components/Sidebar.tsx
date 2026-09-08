@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActiveTab } from '../types';
+import { ActiveTab, ScheduleBlock } from '../types';
 import { 
   FileText, 
   Calendar, 
@@ -15,23 +15,27 @@ interface SidebarProps {
   activeTab: ActiveTab;
   setActiveTab: (tab: ActiveTab) => void;
   onOpenUpload: () => void;
-  focusTimerMinutes: number;
+  focusTimerSeconds: number;
   isTimerRunning: boolean;
   toggleTimer: () => void;
+  activeStudyBlock: ScheduleBlock | null;
+  onCompleteStudy: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   activeTab,
   setActiveTab,
   onOpenUpload,
-  focusTimerMinutes,
+  focusTimerSeconds,
   isTimerRunning,
-  toggleTimer
+  toggleTimer,
+  activeStudyBlock,
+  onCompleteStudy,
 }) => {
-  const formatTime = (totalMinutes: number) => {
-    const mins = totalMinutes % 60;
-    const hrs = Math.floor(totalMinutes / 60);
-    return hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+  const formatTime = (totalSeconds: number) => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
   return (
@@ -64,15 +68,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="flex items-baseline justify-between">
                 <div>
                   <div className="font-serif italic text-lg leading-none text-black">Sanctuary Timer</div>
-                  <div className="text-xs font-mono text-black/60 mt-1">{formatTime(focusTimerMinutes)} left</div>
+                  <div className="text-xs font-mono text-black/60 mt-1">{formatTime(focusTimerSeconds)} remaining</div>
                 </div>
                 <button
                   onClick={toggleTimer}
                   className="px-3 py-1 border border-black text-[10px] font-bold uppercase tracking-wider bg-white hover:bg-black hover:text-white transition-colors"
                 >
-                  {isTimerRunning ? 'Pause' : 'Start'}
+                  {isTimerRunning ? 'Pause' : 'Resume'}
                 </button>
               </div>
+              {activeStudyBlock ? <div className="border-t border-black/20 pt-3 space-y-2"><div className="text-[9px] uppercase tracking-widest text-black/50">Studying now</div><div className="text-xs font-bold">{activeStudyBlock.title}</div><button onClick={onCompleteStudy} className="text-[9px] uppercase font-bold border-b border-black">Complete Study Block</button></div> : <div className="text-[10px] text-black/50">Select “Start Study” on a saved calendar block.</div>}
             </div>
           </div>
         </div>

@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { ActiveTab, PastPaper, ExtractedTopic, QuestionItem, StudySessionItem, PeerUser, StudyRoomMessage, LMSCourse } from './types';
+import { ActiveTab, PastPaper, ExtractedTopic, QuestionItem, PeerUser, StudyRoomMessage, LMSCourse, PersistedTopic, ScheduleBlock } from './types';
 import { 
   INITIAL_TOPICS, 
   INITIAL_QUESTIONS, 
   INITIAL_PAPERS, 
-  INITIAL_SCHEDULE, 
   INITIAL_PEERS, 
   INITIAL_MESSAGES, 
   INITIAL_LMS_COURSES 
@@ -22,29 +21,37 @@ import { UploadModal } from './components/UploadModal';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
-  const [focusTimerMinutes, setFocusTimerMinutes] = useState<number>(45);
+  const [focusTimerSeconds, setFocusTimerSeconds] = useState<number>(45 * 60);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
+  const [activeStudyBlock, setActiveStudyBlock] = useState<ScheduleBlock | null>(null);
+  const [activeStudySessionId, setActiveStudySessionId] = useState<string | null>(null);
+  const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
 
   // App data state
   const [papers, setPapers] = useState<PastPaper[]>(INITIAL_PAPERS);
   const [topics, setTopics] = useState<ExtractedTopic[]>(INITIAL_TOPICS);
   const [questions, setQuestions] = useState<QuestionItem[]>(INITIAL_QUESTIONS);
-  const [schedule, setSchedule] = useState<StudySessionItem[]>(INITIAL_SCHEDULE);
   const [peers, setPeers] = useState<PeerUser[]>(INITIAL_PEERS);
   const [messages, setMessages] = useState<StudyRoomMessage[]>(INITIAL_MESSAGES);
   const [lmsCourses, setLmsCourses] = useState<LMSCourse[]>(INITIAL_LMS_COURSES);
 
-  // Deep Focus Timer countdown
+  // The timer represents the currently selected persisted schedule block.
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isTimerRunning && focusTimerMinutes > 0) {
+    if (isTimerRunning && focusTimerSeconds > 0) {
       interval = setInterval(() => {
-        setFocusTimerMinutes((prev) => Math.max(0, prev - 1));
-      }, 60000); // decrement minute
+        setFocusTimerSeconds((prev) => Math.max(0, prev - 1));
+      }, 1000);
     }
     return () => clearInterval(interval);
-  }, [isTimerRunning, focusTimerMinutes]);
+  }, [isTimerRunning, focusTimerSeconds]);
+
+  useEffect(() => {
+    if (activeStudySessionId && focusTimerSeconds === 0) {
+      void completeStudy();
+    }
+  }, [focusTimerSeconds, activeStudySessionId]);
 
   const toggleTimer = () => {
     setIsTimerRunning(!isTimerRunning);
@@ -63,10 +70,50 @@ export default function App() {
     }
   };
 
-  const handleToggleScheduleComplete = (id: string) => {
-    setSchedule((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, completed: !item.completed } : item))
-    );
+  const handleTopicsSaved = (storedTopics: PersistedTopic[]) => {
+    setTopics(storedTopics.map((topic) => ({
+      id: topic.id,
+      name: topic.name,
+      weightage: topic.weightage,
+      frequencyCount: topic.priority,
+      difficulty: topic.priority >= 8 ? 'Hard' : topic.priority >= 5 ? 'Medium' : 'Easy',
+      highYield: topic.priority >= 8,
+    })));
+  };
+
+  const startStudy = async (block: ScheduleBlock) => {
+    if (activeStudySessionId) {
+      await fetch(`/api/study-sessions/${activeStudySessionId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'stopped' }),
+      });
+    }
+    const response = await fetch('/api/study-sessions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduleBlockId: block.id, durationMinutes: block.durationMinutes }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to start study session.');
+    setActiveStudyBlock(block);
+    setActiveStudySessionId(data.studySession.id);
+    setFocusTimerSeconds(block.durationMinutes * 60);
+    setIsTimerRunning(true);
+  };
+
+  const completeStudy = async () => {
+    if (activeStudySessionId) {
+      await fetch(`/api/study-sessions/${activeStudySessionId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'completed' }),
+      });
+    }
+    if (activeStudyBlock) {
+      await fetch(`/api/schedule-blocks/${activeStudyBlock.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ completed: true }),
+      });
+    }
+    setIsTimerRunning(false);
+    setActiveStudySessionId(null);
+    setActiveStudyBlock(null);
+    setScheduleRefreshKey((key) => key + 1);
   };
 
   const handleSendMessage = (msg: StudyRoomMessage) => {
@@ -100,9 +147,11 @@ export default function App() {
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           onOpenUpload={() => setIsUploadModalOpen(true)}
-          focusTimerMinutes={focusTimerMinutes}
+          focusTimerSeconds={focusTimerSeconds}
           isTimerRunning={isTimerRunning}
           toggleTimer={toggleTimer}
+          activeStudyBlock={activeStudyBlock}
+          onCompleteStudy={() => void completeStudy()}
         />
 
         {/* Main Sanctuary Body View */}
@@ -121,6 +170,7 @@ export default function App() {
               questions={questions}
               onAddPaper={handleAddPaper}
               onQuestionsExtracted={handleQuestionsExtracted}
+              onTopicsSaved={handleTopicsSaved}
               setActiveTab={setActiveTab}
             />
           )}
@@ -135,8 +185,8 @@ export default function App() {
 
           {activeTab === 'planner' && (
             <PlannerView
-              schedule={schedule}
-              onToggleComplete={handleToggleScheduleComplete}
+              onStartStudy={startStudy}
+              refreshKey={scheduleRefreshKey}
             />
           )}
 
@@ -162,6 +212,7 @@ export default function App() {
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}
         onPaperUploaded={handleAddPaper}
+        onTopicsSaved={handleTopicsSaved}
       />
 
     </div>

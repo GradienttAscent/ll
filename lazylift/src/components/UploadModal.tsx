@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { X, FileUp, Sparkles, Loader2 } from 'lucide-react';
-import { PastPaper } from '../types';
+import { PastPaper, PersistedTopic } from '../types';
 
 interface UploadModalProps {
   isOpen: boolean;
   onClose: () => void;
   onPaperUploaded: (paper: PastPaper) => void;
+  onTopicsSaved: (topics: PersistedTopic[]) => void;
 }
 
-export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPaperUploaded }) => {
+export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPaperUploaded, onTopicsSaved }) => {
   const [docName, setDocName] = useState('');
   const [docType, setDocType] = useState<'Past Paper' | 'Syllabus'>('Past Paper');
   const [content, setContent] = useState('');
@@ -38,11 +39,20 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPap
       });
 
       const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Failed to analyze document.');
+      const topicsResponse = await fetch('/api/topics/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topics: json.data?.topics || [] }),
+      });
+      const savedTopics = await topicsResponse.json();
+      if (!topicsResponse.ok) throw new Error(savedTopics.error || 'Unable to save extracted topics.');
+      onTopicsSaved(savedTopics.topics);
       const extractedCount = json.data?.extractedQuestions?.length || 5;
 
       const newPaper: PastPaper = {
         id: `paper-${Date.now()}`,
-        title: docName.endsWith('.pdf') ? docName : `${docName}.pdf`,
+        title: docName.endsWith('.txt') ? docName : `${docName}.txt`,
         courseCode: 'CS301',
         semester: 'Spring 2026',
         year: '2026',
@@ -55,7 +65,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPap
 
       onPaperUploaded(newPaper);
       onClose();
-      alert(`Successfully uploaded "${docName}"! Gemini extracted ${extractedCount} practice questions.`);
+      alert(`Topics extracted and saved. ${extractedCount} practice questions were identified.`);
     } catch (err) {
       console.error('Error uploading paper:', err);
       alert('Failed to process document.');
@@ -90,7 +100,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPap
               type="text"
               value={docName}
               onChange={(e) => setDocName(e.target.value)}
-              placeholder="e.g. CS301_Final_Exam_2025.pdf"
+              placeholder="e.g. CS301_Final_Exam_2025.txt"
               className="w-full bg-[#F8F7F2] border border-black/30 px-3.5 py-2.5 text-xs text-black focus:outline-none focus:border-black font-sans"
             />
           </div>

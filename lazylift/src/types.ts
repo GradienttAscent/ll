@@ -56,6 +56,28 @@ export interface StudySessionItem {
   isPriority?: boolean;
 }
 
+export interface PersistedTopic {
+  id: string;
+  courseId: string;
+  name: string;
+  priority: number;
+  weightage: number;
+  source: string;
+  createdAt: string;
+}
+
+export interface ScheduleBlock {
+  id: string;
+  topicId: string;
+  topicName: string;
+  title: string;
+  date: string;
+  startTime: string;
+  durationMinutes: number;
+  completed: boolean;
+  createdAt: string;
+}
+
 export interface PeerUser {
   id: string;
   name: string;

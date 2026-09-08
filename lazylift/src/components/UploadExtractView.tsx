@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { PastPaper, ExtractedTopic, QuestionItem } from '../types';
+import { PastPaper, ExtractedTopic, QuestionItem, PersistedTopic } from '../types';
 import { FileUp, Sparkles, FileText, CheckCircle2, BarChart3, ArrowRight, BookOpen, Loader2 } from 'lucide-react';
 
 interface UploadExtractViewProps {
@@ -8,6 +8,7 @@ interface UploadExtractViewProps {
   questions: QuestionItem[];
   onAddPaper: (paper: PastPaper) => void;
   onQuestionsExtracted: (newQuestions: QuestionItem[], newTopics: ExtractedTopic[]) => void;
+  onTopicsSaved: (topics: PersistedTopic[]) => void;
   setActiveTab: (tab: string) => void;
 }
 
@@ -16,6 +17,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   topics,
   questions,
   onQuestionsExtracted,
+  onTopicsSaved,
   setActiveTab
 }) => {
   const [selectedPaper, setSelectedPaper] = useState<PastPaper | null>(papers[0] || null);
@@ -66,8 +68,25 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
             modelAnswer: 'See practice view for AI step-by-step guidance.',
           }));
 
-          const newTopics: ExtractedTopic[] = json.data.topics || [];
+          const extractedTopics = json.data.topics || [];
+          const saveResponse = await fetch('/api/topics/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ topics: extractedTopics }),
+          });
+          const savedJson = await saveResponse.json();
+          if (!saveResponse.ok) throw new Error(savedJson.error || 'Unable to save extracted topics.');
+          onTopicsSaved(savedJson.topics);
+          const newTopics: ExtractedTopic[] = extractedTopics.map((topic: any, index: number) => ({
+            id: `analysis-${Date.now()}-${index}`,
+            name: topic.name,
+            weightage: topic.weightage || 10,
+            frequencyCount: topic.priority || 5,
+            difficulty: topic.priority >= 8 ? 'Hard' : topic.priority >= 5 ? 'Medium' : 'Easy',
+            highYield: topic.priority >= 8,
+          }));
           onQuestionsExtracted(newQuestions, newTopics);
+          alert(`Topics extracted and saved (${savedJson.topics.length} stored topics).`);
         }
       }
     } catch (err) {
@@ -111,7 +130,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
 
         <button
           onClick={() => {
-            setDocName('CS301_Spring_2026_Sample.pdf');
+            setDocName('CS301_Spring_2026_Sample.txt');
             setInputText(`QUESTION 1 (10 Marks): Explain Dijkstra's shortest path algorithm. Compare time complexity of Binary Heap vs Fibonacci Heap.
 QUESTION 2 (12 Marks): Solve 0/1 Knapsack problem using Dynamic Programming memoization. Weights: [2,3,4], Values: [3,4,5], W=5.
 QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 and T(n) = 2T(n/4) + sqrt(n).`);
@@ -168,7 +187,7 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
                 type="text"
                 value={docName}
                 onChange={(e) => setDocName(e.target.value)}
-                placeholder="e.g. CS301_Final_2025.pdf"
+                placeholder="e.g. CS301_Final_2025.txt"
                 className="w-full bg-white border border-black/30 px-3 py-2 text-xs text-black focus:outline-none focus:border-black font-sans"
               />
             </div>
@@ -177,13 +196,13 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
             <div className="border border-dashed border-black hover:bg-black/5 p-6 text-center bg-white transition-colors cursor-pointer relative group">
               <input
                 type="file"
-                accept=".pdf,.txt,.doc,.docx"
+                accept=".txt,text/plain"
                 onChange={handleSimulatedFileUpload}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               />
               <FileUp className="w-6 h-6 text-black mx-auto mb-2" />
-              <div className="text-[11px] font-bold uppercase tracking-wider text-black">Drop PDF, DOC, or TXT</div>
-              <div className="text-[9px] uppercase tracking-widest text-black/50 mt-1">Supports files up to 25MB</div>
+              <div className="text-[11px] font-bold uppercase tracking-wider text-black">Drop a TXT file</div>
+              <div className="text-[9px] uppercase tracking-widest text-black/50 mt-1">TXT or pasted academic text for this prototype</div>
             </div>
 
             {/* Raw Text Input */}
