@@ -112,3 +112,70 @@ export interface LMSCourse {
     weight: string;
   }[];
 }
+
+export interface UserAccount {
+  id: string;
+  email: string;
+  displayName: string;
+  createdAt: string;
+}
+
+export interface AuthSession {
+  token: string;
+  user: UserAccount;
+}
+
+export interface DocumentRecord {
+  id: string;
+  title: string;
+  docType: string;
+  content?: string | null;
+  fileSize?: string;
+  createdAt: string;
+}
+
+export interface PersistedDocument {
+  documents: DocumentRecord[];
+}
+
+export interface PersistedQuestion extends QuestionItem {
+  id: string;
+  topicId?: string | null;
+  topicName?: string | null;
+  source?: string;
+  createdAt?: string;
+}
+
+export interface FeedbackEntry {
+  id: string;
+  questionId: string | null;
+  questionText: string | null;
+  score: number;
+  maxMarks: number;
+  source: string;
+  strengths: string[];
+  improvements: string[];
+  feedbackText: string | null;
+  modelAnswerSnippet: string | null;
+  createdAt: string;
+}
+
+export interface ScheduleChange {
+  id: string;
+  blockId: string;
+  field: 'created' | 'rescheduled' | 'completed' | string;
+  oldValue: string | null;
+  newValue: string | null;
+  createdAt: string;
+}
+
+export interface StudySession {
+  id: string;
+  scheduleBlockId: string;
+  startedAt: string;
+  createdAt: string;
+  durationMinutes: number;
+  actualDurationSeconds: number;
+  status: 'active' | 'paused' | 'completed' | 'stopped';
+  endedAt: string | null;
+}
