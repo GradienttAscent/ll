@@ -2,19 +2,29 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import { pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
-import { initDatabase, getDatabase, DEFAULT_COURSE_ID, DatabaseWrapper } from './db';
+import { initDatabase, getDatabase } from './db';
+import * as auth from './auth';
+import * as services from './services';
+import {
+  HttpError,
+  sendError,
+  validateBlockInput,
+  validateDocumentInput,
+  validateEmail,
+  validateFeedbackInput,
+  validatePassword,
+  VALID_SESSION_STATUSES,
+} from './validation';
 
 dotenv.config({ path: fs.existsSync('.env.local') ? '.env.local' : '.env' });
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-const PORT = 3000;
-
-// Global db instance - will be initialized before server starts
-let db: DatabaseWrapper;
+const PORT = Number(process.env.APP_PORT || process.env.PORT || 3000);
 
 type TopicInput = {
   name: string;
@@ -24,53 +34,488 @@ type TopicInput = {
   courseId?: string;
 };
 
-const createId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-const now = () => new Date().toISOString();
-
-function topicRows() {
-  return db.prepare(`
-    SELECT id, course_id AS courseId, name, priority, weightage, source, created_at AS createdAt
-    FROM topics ORDER BY created_at DESC
-  `).all();
+interface AuthenticatedRequest extends express.Request {
+  user: auth.AuthUser;
 }
 
-function saveTopics(topics: TopicInput[]) {
-  const insert = db.prepare(`
-    INSERT INTO topics (id, course_id, name, priority, weightage, source, created_at)
-    VALUES (@id, @courseId, @name, @priority, @weightage, @source, @createdAt)
-    ON CONFLICT(course_id, name) DO UPDATE SET
-      priority = excluded.priority,
-      weightage = excluded.weightage,
-      source = excluded.source
-  `);
-  const saveAll = db.transaction((items: TopicInput[]) => {
-    for (const topic of items) {
-      if (!topic.name?.trim()) continue;
-      insert.run({
-        id: createId('topic'),
-        courseId: topic.courseId || DEFAULT_COURSE_ID,
-        name: topic.name.trim(),
-        priority: Math.max(1, Math.min(10, Number(topic.priority) || 5)),
-        weightage: Math.max(1, Number(topic.weightage) || 10),
-        source: topic.source || 'extracted',
-        createdAt: now(),
+const userIdOf = (req: express.Request): string => (req as AuthenticatedRequest).user.id;
+
+// Health check endpoint (public)
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+// ---- Auth (public) ----
+app.post('/api/auth/register', (req, res) => {
+  const { email, password, displayName } = (req.body || {}) as { email?: unknown; password?: unknown; displayName?: unknown };
+  const emailError = validateEmail(email);
+  if (emailError) return sendError(res, 400, emailError);
+  const passwordError = validatePassword(password);
+  if (passwordError) return sendError(res, 400, passwordError);
+  try {
+    const result = auth.registerUser({ email: String(email), password: String(password), displayName: String(displayName || '') });
+    return res.status(201).json(result);
+  } catch (error: any) {
+    if (/UNIQUE constraint failed/i.test(String(error?.message || ''))) {
+      return sendError(res, 409, 'An account with this email already exists.');
+    }
+    throw error;
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { email, password } = (req.body || {}) as { email?: unknown; password?: unknown };
+  if (validateEmail(email) || typeof password !== 'string' || !password) {
+    return sendError(res, 400, 'Email and password are required.');
+  }
+  const result = auth.loginUser({ email: String(email), password });
+  if (!result) return sendError(res, 401, 'Invalid email or password.');
+  return res.json(result);
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({ user: (req as AuthenticatedRequest).user });
+});
+
+app.post('/api/auth/logout', requireAuth, (req, res) => {
+  const header = req.headers.authorization || '';
+  const token = header.slice('Bearer '.length).trim();
+  auth.logoutUser(token);
+  return res.json({ ok: true });
+});
+
+// Everything exposed below here requires an authenticated session.
+app.use('/api', requireAuth);
+
+function requireAuth(req: express.Request, _res: express.Response, next: express.NextFunction) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : null;
+  if (!token) return sendError(_res, 401, 'Authentication required.');
+  const user = auth.getSessionUser(token);
+  if (!user) return sendError(_res, 401, 'Invalid or expired session.');
+  (req as AuthenticatedRequest).user = user;
+  next();
+}
+
+// ---- Topics ----
+app.get('/api/topics', (req, res) => {
+  res.json({ topics: services.topicRows(userIdOf(req)) });
+});
+
+app.post('/api/topics', (req, res) => {
+  const topic = req.body as TopicInput;
+  if (!topic.name?.trim()) return sendError(res, 400, 'Topic name is required.');
+  return res.status(201).json({ topics: services.saveTopics(userIdOf(req), [topic]) });
+});
+
+app.post('/api/topics/bulk', (req, res) => {
+  const topics = req.body?.topics;
+  if (!Array.isArray(topics) || topics.length === 0) {
+    return sendError(res, 400, 'A non-empty topics array is required.');
+  }
+  return res.status(201).json({ topics: services.saveTopics(userIdOf(req), topics) });
+});
+
+// ---- Schedule blocks ----
+app.get('/api/schedule-blocks', (req, res) => {
+  res.json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
+});
+
+app.post('/api/schedule-blocks', (req, res) => {
+  const block = req.body || {};
+  const validationError = validateBlockInput(block);
+  if (validationError) return sendError(res, 400, validationError);
+  if (!services.findOwnedTopic(userIdOf(req), block.topicId)) {
+    return sendError(res, 404, 'The selected topic does not exist.');
+  }
+  const created = services.createScheduleBlock(userIdOf(req), block);
+  services.recordScheduleChange(userIdOf(req), created.id, 'created', null, JSON.stringify({
+    title: created.title, date: created.date, startTime: created.startTime, durationMinutes: created.durationMinutes,
+  }));
+  return res.status(201).json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
+});
+
+app.post('/api/schedule-blocks/bulk', (req, res) => {
+  const blocks = req.body?.scheduleBlocks;
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    return sendError(res, 400, 'A non-empty scheduleBlocks array is required.');
+  }
+  try {
+    services.saveScheduleBlocks(userIdOf(req), blocks).forEach((created) => {
+      services.recordScheduleChange(userIdOf(req), created.id, 'created', null, JSON.stringify({
+        title: created.title, date: created.date, startTime: created.startTime, durationMinutes: created.durationMinutes,
+      }));
+    });
+    return res.status(201).json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to save schedule blocks.');
+  }
+});
+
+app.patch('/api/schedule-blocks/:id', (req, res) => {
+  const existing = services.findOwnedScheduleBlock(userIdOf(req), req.params.id);
+  if (!existing) return sendError(res, 404, 'Schedule block not found.');
+
+  const body = req.body || {};
+  const updates: {
+    title?: string;
+    date?: string;
+    startTime?: string;
+    durationMinutes?: number;
+    completed?: number;
+    topicId?: string;
+  } = {};
+  const summaryChanges: Record<string, { field: string; oldValue: string; newValue: string }> = {};
+
+  if (body.title !== undefined) {
+    if (typeof body.title !== 'string' || !body.title.trim()) return sendError(res, 400, 'title must be a non-empty string.');
+    updates.title = body.title.trim();
+    summaryChanges.title = { field: 'title', oldValue: existing.title, newValue: updates.title };
+  }
+  if (body.date !== undefined) {
+    if (typeof body.date !== 'string' || !body.date.trim()) return sendError(res, 400, 'date must be a non-empty string.');
+    updates.date = body.date;
+    summaryChanges.date = { field: 'date', oldValue: existing.date, newValue: updates.date };
+  }
+  if (body.startTime !== undefined) {
+    if (typeof body.startTime !== 'string' || !body.startTime.trim()) return sendError(res, 400, 'startTime must be a non-empty string.');
+    updates.startTime = body.startTime;
+    summaryChanges.startTime = { field: 'startTime', oldValue: existing.startTime, newValue: updates.startTime };
+  }
+  if (body.durationMinutes !== undefined) {
+    const minutes = Number(body.durationMinutes);
+    if (!Number.isFinite(minutes) || minutes < 1) return sendError(res, 400, 'durationMinutes must be a positive number.');
+    updates.durationMinutes = minutes;
+    summaryChanges.durationMinutes = { field: 'durationMinutes', oldValue: String(existing.durationMinutes), newValue: String(minutes) };
+  }
+  if (body.completed !== undefined) {
+    if (typeof body.completed !== 'boolean') return sendError(res, 400, 'completed must be a boolean.');
+    updates.completed = body.completed ? 1 : 0;
+    summaryChanges.completed = { field: 'completed', oldValue: String(existing.completed), newValue: body.completed ? '1' : '0' };
+  }
+  if (body.topicId !== undefined) {
+    if (typeof body.topicId !== 'string' || !body.topicId) return sendError(res, 400, 'topicId is required.');
+    if (!services.findOwnedTopic(userIdOf(req), body.topicId)) {
+      return sendError(res, 404, 'The selected topic does not exist.');
+    }
+    updates.topicId = body.topicId;
+    summaryChanges.topicId = { field: 'topicId', oldValue: existing.topicId, newValue: updates.topicId };
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return sendError(res, 400, 'At least one updatable field is required.');
+  }
+
+  services.updateScheduleBlock(userIdOf(req), req.params.id, updates);
+
+  if (summaryChanges.completed && summaryChanges.completed.oldValue !== summaryChanges.completed.newValue) {
+    services.recordScheduleChange(userIdOf(req), req.params.id, 'completed', summaryChanges.completed.oldValue, summaryChanges.completed.newValue);
+  }
+
+  const rescheduling = ['title', 'date', 'startTime', 'durationMinutes', 'topicId']
+    .filter((field) => summaryChanges[field] && summaryChanges[field].oldValue !== summaryChanges[field].newValue);
+  if (rescheduling.length > 0) {
+    const oldSummary: Record<string, string> = { title: existing.title, date: existing.date, startTime: existing.startTime, durationMinutes: String(existing.durationMinutes), topicId: existing.topicId };
+    const newSummary: Record<string, string> = { ...oldSummary };
+    if (updates.title !== undefined) newSummary.title = updates.title;
+    if (updates.date !== undefined) newSummary.date = updates.date;
+    if (updates.startTime !== undefined) newSummary.startTime = updates.startTime;
+    if (updates.durationMinutes !== undefined) newSummary.durationMinutes = String(updates.durationMinutes);
+    if (updates.topicId !== undefined) newSummary.topicId = updates.topicId;
+    services.recordScheduleChange(userIdOf(req), req.params.id, 'rescheduled', JSON.stringify(oldSummary), JSON.stringify(newSummary));
+  }
+
+  return res.json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
+});
+
+app.get('/api/schedule-changes', (req, res) => {
+  const blockId = typeof req.query.blockId === 'string' ? req.query.blockId : undefined;
+  if (blockId && !services.findOwnedScheduleBlock(userIdOf(req), blockId)) {
+    return sendError(res, 404, 'Schedule block not found.');
+  }
+  return res.json({ scheduleChanges: services.getScheduleChanges(userIdOf(req), blockId) });
+});
+
+// ---- Study sessions ----
+app.post('/api/study-sessions', (req, res) => {
+  const { scheduleBlockId, durationMinutes } = (req.body || {}) as { scheduleBlockId?: unknown; durationMinutes?: unknown };
+  if (typeof scheduleBlockId !== 'string' || !scheduleBlockId) {
+    return sendError(res, 400, 'scheduleBlockId is required.');
+  }
+  const block = services.findOwnedScheduleBlock(userIdOf(req), scheduleBlockId);
+  if (!block) return sendError(res, 404, 'Schedule block not found.');
+  const session = services.createStudySession(userIdOf(req), {
+    scheduleBlockId,
+    durationMinutes: Math.max(1, Number(durationMinutes) || block.durationMinutes),
+  });
+  return res.status(201).json({ studySession: session });
+});
+
+app.patch('/api/study-sessions/:id', (req, res) => {
+  const { status, actualDurationSeconds } = (req.body || {}) as { status?: unknown; actualDurationSeconds?: unknown };
+  if (typeof status !== 'string' || !VALID_SESSION_STATUSES.includes(status)) {
+    return sendError(res, 400, 'A valid session status is required.');
+  }
+  if (!services.findOwnedStudySession(userIdOf(req), req.params.id)) {
+    return sendError(res, 404, 'Study session not found.');
+  }
+  const delta = Math.max(0, Number(actualDurationSeconds) || 0);
+  services.updateStudySession(userIdOf(req), req.params.id, { status, deltaSeconds: delta });
+  return res.json({ studySession: { id: req.params.id, status } });
+});
+
+app.get('/api/study-sessions', (req, res) => {
+  res.json({ studySessions: services.studySessionRows(userIdOf(req)) });
+});
+
+// ---- Documents ----
+app.get('/api/documents', (req, res) => {
+  res.json({ documents: services.documentRows(userIdOf(req)) });
+});
+
+app.post('/api/documents', (req, res) => {
+  const validationError = validateDocumentInput(req.body || {});
+  if (validationError) return sendError(res, 400, validationError);
+  const document = services.createDocument(userIdOf(req), req.body);
+  return res.status(201).json({ document });
+});
+
+app.get('/api/documents/:id', (req, res) => {
+  const document = services.findOwnedDocument(userIdOf(req), req.params.id);
+  if (!document) return sendError(res, 404, 'Document not found.');
+  return res.json({ document });
+});
+
+// ---- Questions ----
+app.get('/api/questions', (req, res) => {
+  res.json({ questions: services.questionRows(userIdOf(req)) });
+});
+
+app.get('/api/questions/:id', (req, res) => {
+  const question = services.findOwnedQuestion(userIdOf(req), req.params.id);
+  if (!question) return sendError(res, 404, 'Question not found.');
+  return res.json({ question });
+});
+
+app.post('/api/questions/bulk', (req, res) => {
+  const items = req.body?.questions;
+  if (!Array.isArray(items) || items.length === 0) {
+    return sendError(res, 400, 'A non-empty questions array is required.');
+  }
+  try {
+    return res.status(201).json({ questions: services.createQuestionsBulk(userIdOf(req), items) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to save questions.');
+  }
+});
+
+// ---- Feedback ----
+app.post('/api/feedback', (req, res) => {
+  const body = req.body || {};
+  const validationError = validateFeedbackInput(body);
+  if (validationError) return sendError(res, 400, validationError);
+  if (body.questionId) {
+    if (!services.findOwnedQuestion(userIdOf(req), body.questionId)) {
+      return sendError(res, 404, 'Question not found.');
+    }
+  }
+  const feedback = services.createFeedback(userIdOf(req), body);
+  return res.status(201).json({ feedback });
+});
+
+app.get('/api/feedback', (req, res) => {
+  res.json({ feedback: services.feedbackRows(userIdOf(req)) });
+});
+
+// ---- AI Document Analysis: Syllabus / Past Paper Extraction ----
+app.post('/api/gemini/analyze-document', async (req, res) => {
+  try {
+    const { documentName, documentType, content } = req.body as any;
+    const ai = getAIClient();
+    const suppliedText = String(content || '');
+
+    if (!ai) {
+      return res.json({
+        success: true,
+        source: 'local-fallback',
+        data: localAcademicAnalysis(suppliedText, documentName),
       });
     }
-  });
-  saveAll(topics);
-  return topicRows();
-}
 
-function scheduleBlockRows() {
-  return db.prepare(`
-    SELECT b.id, b.topic_id AS topicId, t.name AS topicName, b.title, b.date,
-      b.start_time AS startTime, b.duration_minutes AS durationMinutes,
-      CAST(b.completed AS INTEGER) AS completed, b.created_at AS createdAt
-    FROM schedule_blocks b
-    JOIN topics t ON t.id = b.topic_id
-    ORDER BY b.date ASC, b.start_time ASC
-  `).all();
-}
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.6-flash',
+      contents: `Analyze the following academic document (${documentType}: ${documentName}) content and extract topic weightages, frequency counts, difficulty levels, and representative exam questions.
+Content:
+${content ? content.substring(0, 4000) : 'Sample university past question paper for Data Structures & Algorithms'}`,
+      config: {
+        systemInstruction: 'You are an expert university professor analyzing past papers and syllabi for exam preparation.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            summary: { type: Type.STRING },
+            topics: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  priority: { type: Type.NUMBER },
+                  weightage: { type: Type.NUMBER },
+                  frequencyCount: { type: Type.NUMBER },
+                  difficulty: { type: Type.STRING },
+                  highYield: { type: Type.BOOLEAN },
+                },
+              },
+            },
+            extractedQuestions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  topic: { type: Type.STRING },
+                  question: { type: Type.STRING },
+                  marks: { type: Type.NUMBER },
+                  type: { type: Type.STRING },
+                  suggestedTimeMinutes: { type: Type.NUMBER },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    return res.json({ success: true, source: 'gemini', data: normalizeAnalysis(parsed, suppliedText, documentName) });
+  } catch (err: any) {
+    console.error('Gemini error analyzing document:', err);
+    return res.json({
+      success: true,
+      source: 'local-fallback',
+      data: localAcademicAnalysis(String((req as any).body?.content || ''), (req as any).body?.documentName),
+    });
+  }
+});
+
+// ---- AI Evaluation of Practice Answers ----
+app.post('/api/gemini/evaluate-answer', async (req, res) => {
+  try {
+    const { question, studentAnswer, maxMarks } = req.body as any;
+    const ai = getAIClient();
+
+    if (!ai) {
+      return res.json({
+        success: true,
+        source: 'simulated',
+        data: {
+          score: Math.min(maxMarks || 10, 8.5),
+          maxMarks: maxMarks || 10,
+          strengths: ['Accurately identified core base cases', 'Correct algorithm initialization parameters'],
+          improvements: ['Could elaborate on edge cases with negative cycle detection', 'Time complexity analysis was slightly vague'],
+          feedbackText: 'Great attempt! Your structure demonstrates solid understanding of graph relaxation. To score full marks on a final exam, explicitly state array initialization boundary constraints.',
+          modelAnswerSnippet: 'Initialize dist[] with infinity, set dist[src] = 0. Extract minimum vertex u from Priority Queue, iterate over neighbors v, and if dist[u] + weight(u,v) < dist[v], update dist[v] and decrease key in O((V + E) log V).',
+        },
+      });
+    }
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.6-flash',
+      contents: `Question (Max marks: ${maxMarks || 10}): "${question}"
+Student's Submitted Answer: "${studentAnswer}"
+
+Provide detailed evaluation, numerical score out of ${maxMarks || 10}, strengths, areas for improvement, constructive feedback, and a concise model answer snippet.`,
+      config: {
+        systemInstruction: 'You are an empathetic, rigorous academic exam grader.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            score: { type: Type.NUMBER },
+            maxMarks: { type: Type.NUMBER },
+            strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+            improvements: { type: Type.ARRAY, items: { type: Type.STRING } },
+            feedbackText: { type: Type.STRING },
+            modelAnswerSnippet: { type: Type.STRING },
+          },
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    return res.json({ success: true, source: 'gemini', data: parsed });
+  } catch (err: any) {
+    console.error('Gemini evaluation error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to evaluate answer' });
+  }
+});
+
+// ---- AI Study Plan Generator ----
+app.post('/api/gemini/generate-plan', async (req, res) => {
+  try {
+    const { examName, examDate, dailyStudyHours, topics } = req.body as any;
+    const ai = getAIClient();
+
+    if (!ai) {
+      return res.json({
+        success: true,
+        source: 'simulated',
+        data: {
+          title: `Personalized Revision Blueprint for ${examName || 'Algorithms'}`,
+          totalDays: 21,
+          dailySchedule: [
+            { day: 1, date: 'Today', topic: 'Graph Algorithms & Priority Queues', hours: dailyStudyHours || 4, focus: 'Dijkstra Implementation & Proofs', status: 'In Progress' },
+            { day: 2, date: 'Tomorrow', topic: 'Bellman-Ford & All-Pairs Shortest Path', hours: dailyStudyHours || 4, focus: 'Floyd-Warshall DP Transition Matrix', status: 'Upcoming' },
+            { day: 3, date: 'Day 3', topic: 'Dynamic Programming Core', hours: dailyStudyHours || 4, focus: 'Knapsack 0/1 & Memoization Trees', status: 'Upcoming' },
+            { day: 4, date: 'Day 4', topic: 'Big O Notation & Master Theorem', hours: dailyStudyHours || 3, focus: 'Asymptotic Bounds & Recurrence Solving', status: 'Upcoming' },
+            { day: 5, date: 'Day 5', topic: 'Timed Mock Exam #1 & AI Review', hours: 3.5, focus: 'Simulated 3-hour Paper + Feedback Analysis', status: 'Upcoming' },
+          ],
+        },
+      });
+    }
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.6-flash',
+      contents: `Create a day-by-day revision study schedule for target exam "${examName}" on ${examDate}.
+Daily available hours: ${dailyStudyHours || 4}.
+Topics to cover: ${JSON.stringify(topics || ['Graph Algorithms', 'Dynamic Programming', 'Complexity'])}.`,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            totalDays: { type: Type.NUMBER },
+            dailySchedule: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  day: { type: Type.NUMBER },
+                  date: { type: Type.STRING },
+                  topic: { type: Type.STRING },
+                  hours: { type: Type.NUMBER },
+                  focus: { type: Type.STRING },
+                  status: { type: Type.STRING },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    return res.json({ success: true, source: 'gemini', data: parsed });
+  } catch (err: any) {
+    console.error('Gemini plan error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to generate study plan' });
+  }
+});
 
 function getAIClient() {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -149,307 +594,16 @@ function normalizeAnalysis(raw: any, content: string, documentName: string) {
   };
 }
 
-// Health check endpoint
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', hasGeminiKey: Boolean(process.env.GEMINI_API_KEY) });
-});
-
-app.get('/api/topics', (_req, res) => {
-  res.json({ topics: topicRows() });
-});
-
-app.post('/api/topics', (req, res) => {
-  const topic = req.body as TopicInput;
-  if (!topic.name?.trim()) return res.status(400).json({ error: 'Topic name is required.' });
-  const topics = saveTopics([topic]);
-  return res.status(201).json({ topics });
-});
-
-app.post('/api/topics/bulk', (req, res) => {
-  const topics = req.body?.topics;
-  if (!Array.isArray(topics) || topics.length === 0) {
-    return res.status(400).json({ error: 'A non-empty topics array is required.' });
-  }
-  return res.status(201).json({ topics: saveTopics(topics) });
-});
-
-app.get('/api/schedule-blocks', (_req, res) => {
-  res.json({ scheduleBlocks: scheduleBlockRows() });
-});
-
-app.post('/api/schedule-blocks', (req, res) => {
-  const block = req.body;
-  if (!block.topicId || !block.title || !block.date || !block.startTime || !block.durationMinutes) {
-    return res.status(400).json({ error: 'topicId, title, date, startTime, and durationMinutes are required.' });
-  }
-  const topic = db.prepare('SELECT id FROM topics WHERE id = ?').get(block.topicId);
-  if (!topic) return res.status(400).json({ error: 'The selected topic does not exist.' });
-  db.prepare(`INSERT INTO schedule_blocks
-    (id, topic_id, title, date, start_time, duration_minutes, completed, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(createId('block'), block.topicId, block.title, block.date, block.startTime,
-      Math.max(1, Number(block.durationMinutes)), block.completed ? 1 : 0, now());
-  return res.status(201).json({ scheduleBlocks: scheduleBlockRows() });
-});
-
-app.post('/api/schedule-blocks/bulk', (req, res) => {
-  const blocks = req.body?.scheduleBlocks;
-  if (!Array.isArray(blocks) || blocks.length === 0) {
-    return res.status(400).json({ error: 'A non-empty scheduleBlocks array is required.' });
-  }
-  const insert = db.prepare(`INSERT INTO schedule_blocks
-    (id, topic_id, title, date, start_time, duration_minutes, completed, created_at)
-    VALUES (@id, @topicId, @title, @date, @startTime, @durationMinutes, @completed, @createdAt)`);
-  const saveAll = db.transaction((items: any[]) => {
-    for (const block of items) {
-      if (!block.topicId || !block.title || !block.date || !block.startTime || !block.durationMinutes) {
-        throw new Error('Each schedule block requires topicId, title, date, startTime, and durationMinutes.');
-      }
-      if (!db.prepare('SELECT id FROM topics WHERE id = ?').get(block.topicId)) {
-        throw new Error(`Topic ${block.topicId} does not exist.`);
-      }
-      insert.run({
-        id: createId('block'), topicId: block.topicId, title: block.title, date: block.date,
-        startTime: block.startTime, durationMinutes: Math.max(1, Number(block.durationMinutes)),
-        completed: block.completed ? 1 : 0, createdAt: now(),
-      });
-    }
-  });
-  try {
-    saveAll(blocks);
-    return res.status(201).json({ scheduleBlocks: scheduleBlockRows() });
-  } catch (error: any) {
-    return res.status(400).json({ error: error.message || 'Unable to save schedule blocks.' });
-  }
-});
-
-app.patch('/api/schedule-blocks/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM schedule_blocks WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Schedule block not found.' });
-  if (typeof req.body.completed === 'boolean') {
-    db.prepare('UPDATE schedule_blocks SET completed = ? WHERE id = ?').run(req.body.completed ? 1 : 0, req.params.id);
-  }
-  return res.json({ scheduleBlocks: scheduleBlockRows() });
-});
-
-app.post('/api/study-sessions', (req, res) => {
-  const { scheduleBlockId, durationMinutes } = req.body || {};
-  if (!scheduleBlockId) return res.status(400).json({ error: 'scheduleBlockId is required.' });
-  const block = db.prepare('SELECT id, duration_minutes FROM schedule_blocks WHERE id = ?').get(scheduleBlockId) as any;
-  if (!block) return res.status(400).json({ error: 'Schedule block not found.' });
-  const session = {
-    id: createId('session'), scheduleBlockId, startedAt: now(),
-    durationMinutes: Math.max(1, Number(durationMinutes) || block.duration_minutes), status: 'active',
-  };
-  db.prepare(`INSERT INTO study_sessions (id, schedule_block_id, started_at, duration_minutes, status)
-    VALUES (@id, @scheduleBlockId, @startedAt, @durationMinutes, @status)`).run(session);
-  return res.status(201).json({ studySession: session });
-});
-
-app.patch('/api/study-sessions/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM study_sessions WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Study session not found.' });
-  const status = req.body?.status;
-  if (!['active', 'paused', 'completed', 'stopped'].includes(status)) {
-    return res.status(400).json({ error: 'A valid session status is required.' });
-  }
-  db.prepare('UPDATE study_sessions SET status = ? WHERE id = ?').run(status, req.params.id);
-  return res.json({ studySession: { id: req.params.id, status } });
-});
-
-// AI Document Analysis: Syllabus / Past Paper Extraction
-app.post('/api/gemini/analyze-document', async (req, res) => {
-  try {
-    const { documentName, documentType, content } = req.body;
-    const ai = getAIClient();
-    const suppliedText = String(content || '');
-
-    if (!ai) {
-      return res.json({
-        success: true,
-        source: 'local-fallback',
-        data: localAcademicAnalysis(suppliedText, documentName),
-      });
-    }
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
-      contents: `Analyze the following academic document (${documentType}: ${documentName}) content and extract topic weightages, frequency counts, difficulty levels, and representative exam questions.
-Content:
-${content ? content.substring(0, 4000) : 'Sample university past question paper for Data Structures & Algorithms'}`,
-      config: {
-        systemInstruction: 'You are an expert university professor analyzing past papers and syllabi for exam preparation.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            summary: { type: Type.STRING },
-          topics: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  priority: { type: Type.NUMBER },
-                  weightage: { type: Type.NUMBER },
-                  frequencyCount: { type: Type.NUMBER },
-                  difficulty: { type: Type.STRING },
-                  highYield: { type: Type.BOOLEAN },
-                },
-              },
-            },
-            extractedQuestions: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  id: { type: Type.STRING },
-                  topic: { type: Type.STRING },
-                  question: { type: Type.STRING },
-                  marks: { type: Type.NUMBER },
-                  type: { type: Type.STRING },
-                  suggestedTimeMinutes: { type: Type.NUMBER },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-
-    const parsed = JSON.parse(response.text || '{}');
-    return res.json({ success: true, source: 'gemini', data: normalizeAnalysis(parsed, suppliedText, documentName) });
-  } catch (err: any) {
-    console.error('Gemini error analyzing document:', err);
-    return res.json({
-      success: true,
-      source: 'local-fallback',
-      data: localAcademicAnalysis(String(req.body?.content || ''), req.body?.documentName),
-    });
-  }
-});
-
-// AI Evaluation of Practice Answers
-app.post('/api/gemini/evaluate-answer', async (req, res) => {
-  try {
-    const { question, studentAnswer, maxMarks } = req.body;
-    const ai = getAIClient();
-
-    if (!ai) {
-      return res.json({
-        success: true,
-        source: 'simulated',
-        data: {
-          score: Math.min(maxMarks || 10, 8.5),
-          maxMarks: maxMarks || 10,
-          strengths: ['Accurately identified core base cases', 'Correct algorithm initialization parameters'],
-          improvements: ['Could elaborate on edge cases with negative cycle detection', 'Time complexity analysis was slightly vague'],
-          feedbackText: 'Great attempt! Your structure demonstrates solid understanding of graph relaxation. To score full marks on a final exam, explicitly state array initialization boundary constraints.',
-          modelAnswerSnippet: 'Initialize dist[] with infinity, set dist[src] = 0. Extract minimum vertex u from Priority Queue, iterate over neighbors v, and if dist[u] + weight(u,v) < dist[v], update dist[v] and decrease key in O((V + E) log V).'
-        }
-      });
-    }
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
-      contents: `Question (Max marks: ${maxMarks || 10}): "${question}"
-Student's Submitted Answer: "${studentAnswer}"
-
-Provide detailed evaluation, numerical score out of ${maxMarks || 10}, strengths, areas for improvement, constructive feedback, and a concise model answer snippet.`,
-      config: {
-        systemInstruction: 'You are an empathetic, rigorous academic exam grader.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            score: { type: Type.NUMBER },
-            maxMarks: { type: Type.NUMBER },
-            strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-            improvements: { type: Type.ARRAY, items: { type: Type.STRING } },
-            feedbackText: { type: Type.STRING },
-            modelAnswerSnippet: { type: Type.STRING },
-          },
-        },
-      },
-    });
-
-    const parsed = JSON.parse(response.text || '{}');
-    return res.json({ success: true, source: 'gemini', data: parsed });
-  } catch (err: any) {
-    console.error('Gemini evaluation error:', err);
-    return res.status(500).json({ error: err.message || 'Failed to evaluate answer' });
-  }
-});
-
-// AI Study Plan Generator
-app.post('/api/gemini/generate-plan', async (req, res) => {
-  try {
-    const { examName, examDate, dailyStudyHours, topics } = req.body;
-    const ai = getAIClient();
-
-    if (!ai) {
-      return res.json({
-        success: true,
-        source: 'simulated',
-        data: {
-          title: `Personalized Revision Blueprint for ${examName || 'Algorithms'}`,
-          totalDays: 21,
-          dailySchedule: [
-            { day: 1, date: 'Today', topic: 'Graph Algorithms & Priority Queues', hours: dailyStudyHours || 4, focus: 'Dijkstra Implementation & Proofs', status: 'In Progress' },
-            { day: 2, date: 'Tomorrow', topic: 'Bellman-Ford & All-Pairs Shortest Path', hours: dailyStudyHours || 4, focus: 'Floyd-Warshall DP Transition Matrix', status: 'Upcoming' },
-            { day: 3, date: 'Day 3', topic: 'Dynamic Programming Core', hours: dailyStudyHours || 4, focus: 'Knapsack 0/1 & Memoization Trees', status: 'Upcoming' },
-            { day: 4, date: 'Day 4', topic: 'Big O Notation & Master Theorem', hours: dailyStudyHours || 3, focus: 'Asymptotic Bounds & Recurrence Solving', status: 'Upcoming' },
-            { day: 5, date: 'Day 5', topic: 'Timed Mock Exam #1 & AI Review', hours: 3.5, focus: 'Simulated 3-hour Paper + Feedback Analysis', status: 'Upcoming' },
-          ]
-        }
-      });
-    }
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
-      contents: `Create a day-by-day revision study schedule for target exam "${examName}" on ${examDate}.
-Daily available hours: ${dailyStudyHours || 4}.
-Topics to cover: ${JSON.stringify(topics || ['Graph Algorithms', 'Dynamic Programming', 'Complexity'])}.`,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            totalDays: { type: Type.NUMBER },
-            dailySchedule: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  day: { type: Type.NUMBER },
-                  date: { type: Type.STRING },
-                  topic: { type: Type.STRING },
-                  hours: { type: Type.NUMBER },
-                  focus: { type: Type.STRING },
-                  status: { type: Type.STRING },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-
-    const parsed = JSON.parse(response.text || '{}');
-    return res.json({ success: true, source: 'gemini', data: parsed });
-  } catch (err: any) {
-    console.error('Gemini plan error:', err);
-    return res.status(500).json({ error: err.message || 'Failed to generate study plan' });
-  }
-});
-
-// Start Express server and Vite middleware
-async function startServer() {
-  // Initialize database
+export async function createApp() {
   await initDatabase();
-  db = await getDatabase();
+  const db = await getDatabase();
+  services.setDb(db);
+  return { app, db };
+}
+
+async function startServer() {
+  await createApp();
+  await auth.ensureDemoUser();
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -470,7 +624,10 @@ async function startServer() {
   });
 }
 
-startServer().catch(err => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+const isMain = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isMain) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}
