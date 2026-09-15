@@ -58,6 +58,7 @@ export type QuestionRow = {
 export type FeedbackRow = {
   id: string;
   questionId: string | null;
+  sessionId: string | null;
   questionText: string | null;
   score: number;
   maxMarks: number;
@@ -66,6 +67,10 @@ export type FeedbackRow = {
   improvements: string[];
   feedbackText: string | null;
   modelAnswerSnippet: string | null;
+  focus: number | null;
+  difficulty: string | null;
+  perceivedProgress: number | null;
+  notes: string | null;
   createdAt: string;
 };
 
@@ -150,6 +155,46 @@ export function findOwnedScheduleBlock(userId: string, blockId: string) {
   `).get(blockId, userId) as any | undefined;
 }
 
+function minutesOfDay(startTime: string): number {
+  const [hours, minutes] = String(startTime || '').split(':').map(Number);
+  return (Number.isFinite(hours) ? hours : 0) * 60 + (Number.isFinite(minutes) ? minutes : 0);
+}
+
+export function timeRangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  return aStart < bEnd && aEnd > bStart;
+}
+
+function userSlots(userId: string): Array<{ date: string; startMinutes: number; endMinutes: number }> {
+  const rows = getDb().prepare(`
+    SELECT date, start_time AS startTime, duration_minutes AS durationMinutes
+    FROM schedule_blocks WHERE user_id = ?
+  `).all(userId) as Array<{ date: string; startTime: string; durationMinutes: number }>;
+  return rows.map((row) => {
+    const startMinutes = minutesOfDay(row.startTime);
+    return { date: row.date, startMinutes, endMinutes: startMinutes + Math.max(1, Number(row.durationMinutes) || 0) };
+  });
+}
+
+export function findOverlappingBlock(
+  userId: string,
+  date: string,
+  startTime: string,
+  durationMinutes: number,
+  excludeBlockId?: string,
+): any | undefined {
+  const startMinutes = minutesOfDay(startTime);
+  const endMinutes = startMinutes + Math.max(1, Number(durationMinutes) || 0);
+  const rows = getDb().prepare(`
+    SELECT id, title, date, start_time AS startTime, duration_minutes AS durationMinutes
+    FROM schedule_blocks WHERE user_id = ? AND date = ?
+  `).all(userId, date) as Array<{ id: string; title: string; startTime: string; durationMinutes: number }>;
+  return rows.find((row) => {
+    if (excludeBlockId && row.id === excludeBlockId) return false;
+    const otherStart = minutesOfDay(row.startTime);
+    return timeRangesOverlap(startMinutes, endMinutes, otherStart, otherStart + Number(row.durationMinutes));
+  });
+}
+
 export function createScheduleBlock(userId: string, input: any) {
   const id = createId('block');
   getDb().prepare(`INSERT INTO schedule_blocks
@@ -161,16 +206,40 @@ export function createScheduleBlock(userId: string, input: any) {
 }
 
 export function saveScheduleBlocks(userId: string, blocks: any[]): any[] {
-  const created: any[] = [];
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    throw new HttpError(400, 'A non-empty scheduleBlocks array is required.');
+  }
   for (const block of blocks) {
-    if (!block.topicId || !block.title || !block.date || !block.startTime || !block.durationMinutes) {
+    if (!block?.topicId || !block?.title || !block?.date || !block?.startTime || !block?.durationMinutes) {
       throw new HttpError(400, 'Each schedule block requires topicId, title, date, startTime, and durationMinutes.');
     }
     if (!findOwnedTopic(userId, block.topicId)) {
       throw new HttpError(404, `Topic ${block.topicId} does not exist or is not owned by this user.`);
     }
-    created.push(createScheduleBlock(userId, block));
   }
+
+  const created: any[] = [];
+  const occupied = userSlots(userId);
+  const saveAll = getDb().transaction((items: any[]) => {
+    for (const block of items) {
+      const startMinutes = minutesOfDay(block.startTime);
+      const endMinutes = startMinutes + Math.max(1, Number(block.durationMinutes) || 0);
+      const conflicting = occupied.some((slot) =>
+        slot.date === block.date && timeRangesOverlap(startMinutes, endMinutes, slot.startMinutes, slot.endMinutes));
+      if (conflicting) {
+        throw new HttpError(409, `Block "${block.title}" on ${block.date} at ${block.startTime} overlaps an existing schedule block.`);
+      }
+      const id = createId('block');
+      getDb().prepare(`INSERT INTO schedule_blocks
+        (id, user_id, topic_id, title, date, start_time, duration_minutes, completed, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, userId, block.topicId, block.title, block.date, block.startTime,
+          Math.max(1, Number(block.durationMinutes) || 0), block.completed ? 1 : 0, now());
+      occupied.push({ date: block.date, startMinutes, endMinutes });
+      created.push(findOwnedScheduleBlock(userId, id));
+    }
+  });
+  saveAll(blocks);
   return created;
 }
 
@@ -196,15 +265,15 @@ export function updateScheduleBlock(userId: string, blockId: string, updates: {
     .run(...params);
 }
 
-export function recordScheduleChange(userId: string, blockId: string, field: string, oldValue: string | null, newValue: string | null) {
-  getDb().prepare(`INSERT INTO schedule_changes (id, user_id, block_id, field, old_value, new_value, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(createId('change'), userId, blockId, field, oldValue, newValue, now());
+export function recordScheduleChange(userId: string, blockId: string, field: string, oldValue: string | null, newValue: string | null, reason?: string) {
+  getDb().prepare(`INSERT INTO schedule_changes (id, user_id, block_id, field, old_value, new_value, reason, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(createId('change'), userId, blockId, field, oldValue, newValue, reason || null, now());
 }
 
 export function getScheduleChanges(userId: string, blockId?: string): any[] {
   const base = `SELECT id, block_id AS blockId, field, old_value AS oldValue, new_value AS newValue,
-    created_at AS createdAt FROM schedule_changes WHERE user_id = ?`;
+    reason, created_at AS createdAt FROM schedule_changes WHERE user_id = ?`;
   const sql = blockId ? `${base} AND block_id = ?` : base;
   const rows = blockId
     ? getDb().prepare(sql).all(userId, blockId)
@@ -378,20 +447,26 @@ export function createFeedback(userId: string, body: any): FeedbackRow {
   const strengths = JSON.stringify(Array.isArray(body.strengths) ? body.strengths.map(String) : []);
   const improvements = JSON.stringify(Array.isArray(body.improvements) ? body.improvements.map(String) : []);
   getDb().prepare(`INSERT INTO feedback
-    (id, user_id, question_id, score, max_marks, source, strengths, improvements, feedback_text, model_answer_snippet, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, userId, body.questionId || null, Number(body.score), Number(body.maxMarks),
+    (id, user_id, question_id, session_id, score, max_marks, source, strengths, improvements,
+     feedback_text, model_answer_snippet, focus, difficulty, perceived_progress, notes, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, userId, body.questionId || null, body.sessionId || null, Number(body.score), Number(body.maxMarks),
       String(body.source || 'gemini'), strengths, improvements,
-      body.feedbackText || null, body.modelAnswerSnippet || null, now());
+      body.feedbackText || null, body.modelAnswerSnippet || null,
+      body.focus !== undefined && body.focus !== null ? Number(body.focus) : null,
+      body.difficulty ? String(body.difficulty).toLowerCase() : null,
+      body.perceivedProgress !== undefined && body.perceivedProgress !== null ? Number(body.perceivedProgress) : null,
+      body.notes || null, now());
   const created = findOwnedFeedback(userId, id);
   return created!;
 }
 
 export function findOwnedFeedback(userId: string, feedbackId: string): FeedbackRow | undefined {
   const row = getDb().prepare(`
-    SELECT f.id, f.question_id AS questionId, f.score, f.max_marks AS maxMarks, f.source,
+    SELECT f.id, f.question_id AS questionId, f.session_id AS sessionId, f.score, f.max_marks AS maxMarks, f.source,
       f.strengths, f.improvements, f.feedback_text AS feedbackText,
-      f.model_answer_snippet AS modelAnswerSnippet, f.created_at AS createdAt,
+      f.model_answer_snippet AS modelAnswerSnippet, f.focus, f.difficulty,
+      f.perceived_progress AS perceivedProgress, f.notes, f.created_at AS createdAt,
       (SELECT q.question_text FROM questions q WHERE q.id = f.question_id) AS questionText
     FROM feedback f
     WHERE f.id = ? AND f.user_id = ?
@@ -406,9 +481,10 @@ export function findOwnedFeedback(userId: string, feedbackId: string): FeedbackR
 
 export function feedbackRows(userId: string): FeedbackRow[] {
   const rows = getDb().prepare(`
-    SELECT f.id, f.question_id AS questionId, f.score, f.max_marks AS maxMarks, f.source,
+    SELECT f.id, f.question_id AS questionId, f.session_id AS sessionId, f.score, f.max_marks AS maxMarks, f.source,
       f.strengths, f.improvements, f.feedback_text AS feedbackText,
-      f.model_answer_snippet AS modelAnswerSnippet, f.created_at AS createdAt,
+      f.model_answer_snippet AS modelAnswerSnippet, f.focus, f.difficulty,
+      f.perceived_progress AS perceivedProgress, f.notes, f.created_at AS createdAt,
       (SELECT q.question_text FROM questions q WHERE q.id = f.question_id) AS questionText
     FROM feedback f
     WHERE f.user_id = ?
@@ -419,4 +495,123 @@ export function feedbackRows(userId: string): FeedbackRow[] {
     strengths: parseJsonList(row.strengths),
     improvements: parseJsonList(row.improvements),
   }));
+}
+
+export const todayKey = (): string => {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+};
+
+function addDaysKey(dateKey: string, days: number): string {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + days);
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${mm}-${dd}`;
+}
+
+export interface TopicProgressEntry {
+  topicId: string;
+  topicName: string;
+  totalBlocks: number;
+  completedBlocks: number;
+  completionRate: number;
+}
+
+export interface AnalyticsSnapshot {
+  plannedMinutes: number;
+  completedMinutes: number;
+  completedCount: number;
+  missedCount: number;
+  completionRate: number;
+  upcomingWorkloadMinutes: number;
+  topicProgress: TopicProgressEntry[];
+  today: string;
+}
+
+export function computeAnalytics(userId: string): AnalyticsSnapshot {
+  const today = todayKey();
+  const rows = getDb().prepare(`
+    SELECT b.id, b.date, b.duration_minutes AS durationMinutes, CAST(b.completed AS INTEGER) AS completed,
+      b.topic_id AS topicId, t.name AS topicName
+    FROM schedule_blocks b
+    LEFT JOIN topics t ON t.id = b.topic_id AND t.user_id = b.user_id
+    WHERE b.user_id = ?
+  `).all(userId) as Array<{ id: string; date: string; durationMinutes: number; completed: number; topicId: string; topicName: string | null }>;
+
+  let plannedMinutes = 0;
+  let completedMinutes = 0;
+  let completedCount = 0;
+  let missedCount = 0;
+  let upcomingWorkloadMinutes = 0;
+  const byTopic = new Map<string, { topicId: string; topicName: string | null; total: number; completed: number }>();
+
+  for (const row of rows) {
+    const minutes = Math.max(0, Number(row.durationMinutes) || 0);
+    const done = row.completed === 1;
+    plannedMinutes += minutes;
+    if (done) {
+      completedCount += 1;
+      completedMinutes += minutes;
+    } else if (String(row.date) < today) {
+      missedCount += 1;
+    }
+    if (!done && String(row.date) >= today) {
+      upcomingWorkloadMinutes += minutes;
+    }
+    const topic = byTopic.get(row.topicId) || { topicId: row.topicId, topicName: row.topicName, total: 0, completed: 0 };
+    topic.total += 1;
+    if (done) topic.completed += 1;
+    byTopic.set(row.topicId, topic);
+  }
+
+  const due = completedCount + missedCount;
+  const completionRate = due > 0 ? completedCount / due : 0;
+
+  const topicProgress: TopicProgressEntry[] = Array.from(byTopic.values()).map((topic) => ({
+    topicId: topic.topicId,
+    topicName: topic.topicName || '',
+    totalBlocks: topic.total,
+    completedBlocks: topic.completed,
+    completionRate: topic.total > 0 ? topic.completed / topic.total : 0,
+  })).sort((a, b) => b.totalBlocks - a.totalBlocks);
+
+  return {
+    plannedMinutes,
+    completedMinutes,
+    completedCount,
+    missedCount,
+    completionRate,
+    upcomingWorkloadMinutes,
+    topicProgress,
+    today,
+  };
+}
+
+export interface AvailableSlot {
+  date: string;
+  startTime: string;
+}
+
+export function findNextAvailableSlot(userId: string, durationMinutes: number): AvailableSlot | null {
+  const duration = Math.max(15, Math.min(240, Number(durationMinutes) || 15));
+  const occupied = userSlots(userId);
+  const today = todayKey();
+  const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+
+  for (let dayOffset = 0; dayOffset < 14; dayOffset += 1) {
+    const date = addDaysKey(today, dayOffset);
+    const daySlots = occupied.filter((slot) => slot.date === date);
+    for (let start = 8 * 60; start + duration <= 22 * 60; start += 15) {
+      if (dayOffset === 0 && start < nowMinutes) continue;
+      const end = start + duration;
+      const conflicts = daySlots.some((slot) => timeRangesOverlap(start, end, slot.startMinutes, slot.endMinutes));
+      if (!conflicts) {
+        return { date, startTime: `${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}` };
+      }
+    }
+  }
+  return null;
 }

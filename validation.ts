@@ -52,6 +52,7 @@ export function validateDocumentInput(body: any): string | null {
 }
 
 export const ALLOWED_FEEDBACK_SOURCES = ['gemini', 'simulated', 'local-fallback', 'manual'];
+export const ALLOWED_FEEDBACK_DIFFICULTY = ['easy', 'medium', 'hard'];
 
 export function validateFeedbackInput(body: any): string | null {
   if (!body || typeof body !== 'object') return 'Feedback payload is required.';
@@ -67,6 +68,18 @@ export function validateFeedbackInput(body: any): string | null {
   }
   if (body.strengths !== undefined && !Array.isArray(body.strengths)) return 'strengths must be an array of strings.';
   if (body.improvements !== undefined && !Array.isArray(body.improvements)) return 'improvements must be an array of strings.';
+  if (body.difficulty !== undefined) {
+    if (typeof body.difficulty !== 'string' || !ALLOWED_FEEDBACK_DIFFICULTY.includes(body.difficulty.toLowerCase())) {
+      return `difficulty must be one of: ${ALLOWED_FEEDBACK_DIFFICULTY.join(', ')}.`;
+    }
+  }
+  if (body.focus !== undefined && (!Number.isFinite(Number(body.focus)) || Number(body.focus) < 0 || Number(body.focus) > 100)) {
+    return 'focus must be a number between 0 and 100.';
+  }
+  if (body.perceivedProgress !== undefined && (!Number.isFinite(Number(body.perceivedProgress)) || Number(body.perceivedProgress) < 0 || Number(body.perceivedProgress) > 100)) {
+    return 'perceivedProgress must be a number between 0 and 100.';
+  }
+  if (body.notes !== undefined && typeof body.notes !== 'string') return 'notes must be a string.';
   return null;
 }
 

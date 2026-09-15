@@ -205,6 +205,31 @@ const MIGRATIONS: Migration[] = [
       ]);
     },
   },
+  {
+    version: 2,
+    name: 'schedule-change-reason-and-session-feedback',
+    up: (db) => {
+      if (!pragmaTableInfo(db, 'schedule_changes').some((column) => column.name === 'reason')) {
+        db.run('ALTER TABLE schedule_changes ADD COLUMN reason TEXT;');
+      }
+      const feedbackColumns = pragmaTableInfo(db, 'feedback').map((column) => column.name);
+      if (!feedbackColumns.includes('session_id')) {
+        db.run('ALTER TABLE feedback ADD COLUMN session_id TEXT REFERENCES study_sessions(id) ON DELETE SET NULL;');
+      }
+      if (!feedbackColumns.includes('focus')) {
+        db.run('ALTER TABLE feedback ADD COLUMN focus REAL;');
+      }
+      if (!feedbackColumns.includes('difficulty')) {
+        db.run('ALTER TABLE feedback ADD COLUMN difficulty TEXT;');
+      }
+      if (!feedbackColumns.includes('perceived_progress')) {
+        db.run('ALTER TABLE feedback ADD COLUMN perceived_progress INTEGER;');
+      }
+      if (!feedbackColumns.includes('notes')) {
+        db.run('ALTER TABLE feedback ADD COLUMN notes TEXT;');
+      }
+    },
+  },
 ];
 
 function getMeta(db: SqlJsDatabase, key: string): string | undefined {
