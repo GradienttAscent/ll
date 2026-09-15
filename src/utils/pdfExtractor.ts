@@ -36,17 +36,11 @@ export async function extractFileContent(file: File): Promise<{ name: string; co
           .trim();
       }
 
-      if (!extracted || extracted.length < 20) {
-        extracted = `[PDF Content Extracted from ${file.name}]: Exam paper covering Data Structures, Algorithms, Complexity Analysis, Dynamic Programming, and Graph Traversals.`;
-      }
-
+      if (!extracted || extracted.length < 20) throw new Error('No readable PDF text was found.');
       return { name: file.name, content: extracted };
     } catch (err) {
       console.error('PDF text extraction error:', err);
-      return {
-        name: file.name,
-        content: `[PDF Document ${file.name}]: Past question paper content for syllabus analysis.`
-      };
+      throw new Error('This PDF could not be read. Please upload a text-based PDF or try again with OCR enabled.');
     }
   }
 

@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
+import { extractPdfText } from './pdfText';
 import { initDatabase, getDatabase } from './db';
 import * as auth from './auth';
 import * as services from './services';
@@ -26,7 +27,7 @@ const ADAPTIVE_REASONS = ['missed', 'abandoned', 'high-difficulty'];
 dotenv.config({ path: fs.existsSync('.env.local') ? '.env.local' : '.env' });
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 const PORT = Number(process.env.APP_PORT || process.env.PORT || 3000);
 
@@ -171,11 +172,13 @@ app.post('/api/study-rooms/:id/messages', (req, res) => {
   const text = req.body?.text;
   if (typeof text !== 'string' || !text.trim()) return sendError(res, 400, 'Message text is required.');
   try {
-    return res.status(201).json({ message: services.createStudyRoomMessage(userIdOf(req), req.params.id, {
-      text,
-      isQuestion: req.body?.isQuestion === true,
-      topicTag: typeof req.body?.topicTag === 'string' ? req.body.topicTag : undefined,
-    }) });
+    return res.status(201).json({
+      message: services.createStudyRoomMessage(userIdOf(req), req.params.id, {
+        text,
+        isQuestion: req.body?.isQuestion === true,
+        topicTag: typeof req.body?.topicTag === 'string' ? req.body.topicTag : undefined,
+      })
+    });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     throw error;
@@ -186,10 +189,12 @@ app.patch('/api/study-rooms/:id/session', (req, res) => {
   const status = req.body?.status;
   if (!['active', 'paused', 'stopped'].includes(status)) return sendError(res, 400, 'A valid room session status is required.');
   try {
-    return res.json({ session: services.updateStudyRoomSession(userIdOf(req), req.params.id, {
-      status,
-      durationMinutes: req.body?.durationMinutes,
-    }) });
+    return res.json({
+      session: services.updateStudyRoomSession(userIdOf(req), req.params.id, {
+        status,
+        durationMinutes: req.body?.durationMinutes,
+      })
+    });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     throw error;
@@ -572,20 +577,95 @@ app.post('/api/academic-documents/analyze', (req, res) => {
   if (typeof body.content !== 'string' || !body.content.trim()) return sendError(res, 400, 'content is required.');
   if (typeof body.docType !== 'string' || !body.docType.trim()) return sendError(res, 400, 'docType is required.');
   try {
-    return res.status(201).json({ analysis: services.ingestAcademicDocument(userIdOf(req), {
-      title: body.title,
-      docType: body.docType,
-      content: body.content,
-      fileSize: typeof body.fileSize === 'string' ? body.fileSize : '',
-    }) });
+    return res.status(201).json({
+      analysis: services.ingestAcademicDocument(userIdOf(req), {
+        title: body.title,
+        docType: body.docType,
+        content: body.content,
+        fileSize: typeof body.fileSize === 'string' ? body.fileSize : '',
+      })
+    });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 400, error instanceof Error ? error.message : 'Unable to analyze academic document.');
   }
 });
 
+type TopicMapping = { questionText: string; topicName: string; confidence: number };
+
+async function classifyPaperQuestions(content: string): Promise<TopicMapping[]> {
+  const ai = getAIClient();
+  if (!ai) return [];
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: `Classify each numbered exam question below into its most specific academic topic. Return no invented questions. If a question cannot be classified confidently, omit it.\n\n${content.slice(0, 18000)}`,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: { type: Type.OBJECT, properties: { mappings: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { questionText: { type: Type.STRING }, topicName: { type: Type.STRING }, confidence: { type: Type.NUMBER } }, required: ['questionText', 'topicName', 'confidence'] } } }, required: ['mappings'] },
+      },
+    });
+    const parsed = JSON.parse(response.text || '{}');
+    if (!Array.isArray(parsed.mappings)) return [];
+    return parsed.mappings
+      .filter((item: any) => typeof item?.questionText === 'string' && typeof item?.topicName === 'string' && Number.isFinite(Number(item?.confidence)))
+      .map((item: any) => ({ questionText: item.questionText.trim(), topicName: item.topicName.trim(), confidence: Math.max(0, Math.min(1, Number(item.confidence))) }))
+      .filter((item: TopicMapping) => item.questionText && item.topicName);
+  } catch (error) {
+    console.error('Question topic classification failed:', error);
+    return [];
+  }
+}
+
+async function ocrPdfWithAI(payload: Buffer, title: string): Promise<string> {
+  const ai = getAIClient();
+  if (!ai) throw new HttpError(422, 'This PDF has no extractable text. Configure GEMINI_API_KEY to analyze scanned PDFs, or upload a text-based PDF.');
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.0-flash',
+    contents: [{ inlineData: { mimeType: 'application/pdf', data: payload.toString('base64') } }, { text: `Extract the complete readable question-paper text from ${title}. Preserve question numbering and marks. Do not add or infer content.` }],
+  });
+  const text = String(response.text || '').trim();
+  if (text.length < 20) throw new HttpError(422, 'The PDF could not be read. Please upload a clearer text-based PDF.');
+  return text;
+}
+
+// Receives the original file, persists it with its extraction metadata, and never substitutes sample content.
+app.post('/api/academic-documents/upload', async (req, res) => {
+  try {
+    const { title, docType, base64, mimeType } = req.body || {};
+    if (typeof title !== 'string' || !title.trim()) return sendError(res, 400, 'title is required.');
+    if (typeof docType !== 'string' || !docType.trim()) return sendError(res, 400, 'docType is required.');
+    if (typeof base64 !== 'string' || !base64) return sendError(res, 400, 'A file payload is required.');
+    if (!/^[A-Za-z0-9+/=\r\n]+$/.test(base64)) return sendError(res, 400, 'The file payload is not valid base64.');
+    const payload = Buffer.from(base64, 'base64');
+    if (payload.length === 0 || payload.length > 15 * 1024 * 1024) return sendError(res, 413, 'Files must be between 1 byte and 15 MB.');
+    const isPdf = mimeType === 'application/pdf' || title.toLowerCase().endsWith('.pdf');
+    let content: string;
+    let extractionMethod: string;
+    if (isPdf) {
+      try { content = extractPdfText(payload); extractionMethod = 'embedded-pdf-text'; }
+      catch { content = await ocrPdfWithAI(payload, title); extractionMethod = 'gemini-pdf-ocr'; }
+    } else {
+      content = payload.toString('utf8').trim();
+      extractionMethod = 'utf8-text';
+      if (!content) return sendError(res, 422, 'The uploaded text file is empty or unreadable.');
+    }
+    const topicMappings = docType.toLowerCase().includes('past') ? await classifyPaperQuestions(content) : [];
+    const analysis = services.ingestAcademicDocument(userIdOf(req), {
+      title, docType, content, fileSize: `${payload.length} bytes`, fileData: payload,
+      mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'), extractionMethod, topicMappings,
+    });
+    return res.status(201).json({ analysis });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 422, error instanceof Error ? error.message : 'Unable to extract the uploaded file.');
+  }
+});
+
 app.get('/api/academic-evidence', (req, res) => {
-  return res.json({ academic: services.academicEvidence(userIdOf(req)) });
+  const documentId = typeof req.query.documentId === 'string' ? req.query.documentId : undefined;
+  if (documentId && !services.findOwnedDocument(userIdOf(req), documentId)) return sendError(res, 404, 'Document not found.');
+  return res.json({ academic: services.academicEvidence(userIdOf(req), documentId) });
 });
 
 app.get('/api/documents', (req, res) => {
@@ -659,19 +739,16 @@ app.post('/api/gemini/analyze-document', async (req, res) => {
     const ai = getAIClient();
     const suppliedText = String(content || '');
 
+    if (!suppliedText.trim()) return sendError(res, 400, 'content is required.');
     if (!ai) {
-      return res.json({
-        success: true,
-        source: 'local-fallback',
-        data: localAcademicAnalysis(suppliedText, documentName),
-      });
+      return sendError(res, 503, 'AI document analysis is unavailable. Configure GEMINI_API_KEY or use the persisted academic document upload flow.');
     }
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
       contents: `Analyze the following academic document (${documentType}: ${documentName}) content and extract topic weightages, frequency counts, difficulty levels, and representative exam questions.
-Content:
-${content ? content.substring(0, 4000) : 'Sample university past question paper for Data Structures & Algorithms'}`,
+          Content:
+${suppliedText.substring(0, 4000)}`,
       config: {
         systemInstruction: 'You are an expert university professor analyzing past papers and syllabi for exam preparation.',
         responseMimeType: 'application/json',
@@ -717,11 +794,7 @@ ${content ? content.substring(0, 4000) : 'Sample university past question paper 
     return res.json({ success: true, source: 'gemini', data: normalizeAnalysis(parsed, suppliedText, documentName) });
   } catch (err: any) {
     console.error('Gemini error analyzing document:', err);
-    return res.json({
-      success: true,
-      source: 'local-fallback',
-      data: localAcademicAnalysis(String((req as any).body?.content || ''), (req as any).body?.documentName),
-    });
+    return sendError(res, 502, err?.message || 'AI document analysis failed.');
   }
 });
 
@@ -732,18 +805,7 @@ app.post('/api/gemini/evaluate-answer', async (req, res) => {
     const ai = getAIClient();
 
     if (!ai) {
-      return res.json({
-        success: true,
-        source: 'simulated',
-        data: {
-          score: Math.min(maxMarks || 10, 8.5),
-          maxMarks: maxMarks || 10,
-          strengths: ['Accurately identified core base cases', 'Correct algorithm initialization parameters'],
-          improvements: ['Could elaborate on edge cases with negative cycle detection', 'Time complexity analysis was slightly vague'],
-          feedbackText: 'Great attempt! Your structure demonstrates solid understanding of graph relaxation. To score full marks on a final exam, explicitly state array initialization boundary constraints.',
-          modelAnswerSnippet: 'Initialize dist[] with infinity, set dist[src] = 0. Extract minimum vertex u from Priority Queue, iterate over neighbors v, and if dist[u] + weight(u,v) < dist[v], update dist[v] and decrease key in O((V + E) log V).',
-        },
-      });
+      return sendError(res, 503, 'AI answer evaluation is unavailable. Configure GEMINI_API_KEY to evaluate answers.');
     }
 
     const response = await ai.models.generateContent({
@@ -784,21 +846,7 @@ app.post('/api/gemini/generate-plan', async (req, res) => {
     const ai = getAIClient();
 
     if (!ai) {
-      return res.json({
-        success: true,
-        source: 'simulated',
-        data: {
-          title: `Personalized Revision Blueprint for ${examName || 'Algorithms'}`,
-          totalDays: 21,
-          dailySchedule: [
-            { day: 1, date: 'Today', topic: 'Graph Algorithms & Priority Queues', hours: dailyStudyHours || 4, focus: 'Dijkstra Implementation & Proofs', status: 'In Progress' },
-            { day: 2, date: 'Tomorrow', topic: 'Bellman-Ford & All-Pairs Shortest Path', hours: dailyStudyHours || 4, focus: 'Floyd-Warshall DP Transition Matrix', status: 'Upcoming' },
-            { day: 3, date: 'Day 3', topic: 'Dynamic Programming Core', hours: dailyStudyHours || 4, focus: 'Knapsack 0/1 & Memoization Trees', status: 'Upcoming' },
-            { day: 4, date: 'Day 4', topic: 'Big O Notation & Master Theorem', hours: dailyStudyHours || 3, focus: 'Asymptotic Bounds & Recurrence Solving', status: 'Upcoming' },
-            { day: 5, date: 'Day 5', topic: 'Timed Mock Exam #1 & AI Review', hours: 3.5, focus: 'Simulated 3-hour Paper + Feedback Analysis', status: 'Upcoming' },
-          ],
-        },
-      });
+      return sendError(res, 503, 'AI plan generation is unavailable. Use the persisted planner, which schedules analyzed topics from your academic evidence.');
     }
 
     const response = await ai.models.generateContent({
@@ -855,65 +903,21 @@ function getAIClient() {
   });
 }
 
-function localAcademicAnalysis(content: string, documentName: string) {
-  const topicPatterns: Array<[string, RegExp]> = [
-    ['Graphs and Traversal', /\b(graph|bfs|dfs|traversal|dijkstra)\b/gi],
-    ['Trees and AVL Rotations', /\b(tree|avl|binary search tree|rotation)\b/gi],
-    ['Linked Lists', /\b(linked[ -]?list|insertion|deletion)\b/gi],
-    ['Stacks and Queues', /\b(stack|queue)\b/gi],
-    ['Arrays', /\b(array|arrays)\b/gi],
-    ['Dynamic Programming', /\b(dynamic programming|knapsack|memoization)\b/gi],
-    ['Algorithm Complexity', /\b(big o|complexity|master theorem)\b/gi],
-  ];
-  const matched: Array<{ name: string; count: number }> = topicPatterns.map(([name, pattern]) => ({
-    name,
-    count: (content.match(pattern as RegExp) || []).length,
-  })).filter((topic) => topic.count > 0);
-  const headings = content.split(/\r?\n/)
-    .map((line) => line.replace(/^\s*(\d+[.)]|[-*])\s*/, '').trim())
-    .filter((line) => line.length > 2 && line.length < 70 && /:$/.test(line))
-    .map((line) => ({ name: line.replace(/:$/, ''), count: 1 }));
-  const candidates = matched.length > 0 ? matched : headings.length > 0 ? headings : [{ name: 'Academic Material Review', count: 1 }];
-  const total = candidates.reduce((sum, topic) => sum + topic.count, 0);
-  const topics = candidates.slice(0, 6).map((topic) => ({
-    name: topic.name,
-    priority: Math.min(10, 4 + topic.count * 2),
-    weightage: Math.max(5, Math.round((topic.count / total) * 100)),
-    source: 'extracted',
-  }));
-  const questionLines = content.split(/\r?\n/)
-    .filter((line) => /^\s*(?:q(?:uestion)?\s*)?\d+[.)]/i.test(line))
-    .slice(0, 8);
-  const questions = questionLines.map((line, index) => ({
-    id: `local-q-${index + 1}`,
-    topic: topics.find((topic) => new RegExp(topic.name.split(' ')[0], 'i').test(line))?.name || topics[0].name,
-    question: line.replace(/^\s*(?:q(?:uestion)?\s*)?\d+[.)]\s*/i, ''),
-    marks: Number((line.match(/\[(\d+)\s*marks?\]/i) || [])[1]) || 10,
-    type: 'Subjective',
-    suggestedTimeMinutes: 15,
-  }));
-  return {
-    title: documentName || 'Academic Topic Extraction',
-    summary: `Extracted ${topics.length} topic${topics.length === 1 ? '' : 's'} from the supplied academic text.`,
-    topics,
-    extractedQuestions: questions,
-  };
-}
-
 function normalizeAnalysis(raw: any, content: string, documentName: string) {
-  const fallback = localAcademicAnalysis(content, documentName);
-  if (!Array.isArray(raw?.topics) || raw.topics.length === 0) return fallback;
+  if (!Array.isArray(raw?.topics) || raw.topics.length === 0) throw new Error('AI returned no validated topics.');
   const topics = raw.topics.slice(0, 8).map((topic: any, index: number) => ({
-    name: String(topic.name || `Topic ${index + 1}`).trim(),
-    priority: Math.max(1, Math.min(10, Number(topic.priority) || (topic.highYield ? 9 : 6))),
-    weightage: Math.max(1, Number(topic.weightage) || Math.round(100 / raw.topics.length)),
+    name: typeof topic.name === 'string' ? topic.name.trim() : '',
+    priority: Number(topic.priority),
+    weightage: Number(topic.weightage),
     source: 'extracted',
-  })).filter((topic: TopicInput) => topic.name);
+  })).filter((topic: TopicInput) => topic.name && Number.isFinite(topic.priority) && Number.isFinite(topic.weightage));
+  if (topics.length === 0) throw new Error('AI returned no validated topics.');
+  if (!Array.isArray(raw.extractedQuestions)) throw new Error('AI returned no validated questions.');
   return {
-    title: raw.title || fallback.title,
-    summary: raw.summary || fallback.summary,
+    title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : documentName || 'Academic Topic Extraction',
+    summary: typeof raw.summary === 'string' ? raw.summary : `Extracted ${topics.length} topics from the supplied academic text.`,
     topics,
-    extractedQuestions: Array.isArray(raw.extractedQuestions) ? raw.extractedQuestions : fallback.extractedQuestions,
+    extractedQuestions: raw.extractedQuestions,
   };
 }
 

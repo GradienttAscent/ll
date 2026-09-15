@@ -28,6 +28,12 @@ describe('scheduling assistant parser', () => {
     assert.deepStrictEqual(parseSchedulingAssistantIntent('Move OS to Friday evening', currentTime), {
       type: 'move_topic', topicQuery: 'os', targetDate: '2026-09-18', period: 'evening',
     });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Move AI study blocks to Wednesday 2 PM', currentTime), {
+      type: 'move_topic', topicQuery: 'ai study blocks', targetDate: '2026-09-16', targetTime: '14:00', targetTimeMode: 'exact',
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Move all my DSA study sessions to after 6 PM', currentTime), {
+      type: 'move_topic', topicQuery: 'all dsa study sessions', targetTime: '18:00', targetTimeMode: 'after', allMatches: true,
+    });
     assert.deepStrictEqual(parseSchedulingAssistantIntent('Make DBMS shorter', currentTime), {
       type: 'shorten_topic', topicQuery: 'dbms', sourceDate: undefined,
     });
@@ -57,12 +63,14 @@ describe('scheduling assistant API', () => {
     topicId = topics.json.topics.find((topic: any) => topic.name === 'DBMS').id;
     const completedTopicId = topics.json.topics.find((topic: any) => topic.name === 'Completed Only').id;
     const created = await client.request('/api/schedule-blocks/bulk', {
-      method: 'POST', body: { scheduleBlocks: [
-        { topicId, title: 'DBMS morning', date: tomorrow, startTime: '08:00', durationMinutes: 60 },
-        { topicId, title: 'DBMS evening', date: tomorrow, startTime: '17:00', durationMinutes: 60 },
-        { topicId, title: 'DBMS late evening', date: tomorrow, startTime: '19:00', durationMinutes: 60 },
-        { topicId: completedTopicId, title: 'Finished only', date: tomorrow, startTime: '10:00', durationMinutes: 60 },
-      ] },
+      method: 'POST', body: {
+        scheduleBlocks: [
+          { topicId, title: 'DBMS morning', date: tomorrow, startTime: '08:00', durationMinutes: 60 },
+          { topicId, title: 'DBMS evening', date: tomorrow, startTime: '17:00', durationMinutes: 60 },
+          { topicId, title: 'DBMS late evening', date: tomorrow, startTime: '19:00', durationMinutes: 60 },
+          { topicId: completedTopicId, title: 'Finished only', date: tomorrow, startTime: '10:00', durationMinutes: 60 },
+        ]
+      },
     });
     unavailableBlockIds = created.json.scheduleBlocks
       .filter((block: any) => block.title === 'DBMS evening' || block.title === 'DBMS late evening')
@@ -161,11 +169,13 @@ describe('scheduling assistant API', () => {
     });
     const topicIdFor = (name: string) => topics.json.topics.find((topic: any) => topic.name === name).id;
     assert.strictEqual((await client.request('/api/schedule-blocks/bulk', {
-      method: 'POST', body: { scheduleBlocks: [
-        { topicId: topicIdFor('Move Demo'), title: 'Move Demo session', date: tomorrow, startTime: '13:00', durationMinutes: 60 },
-        { topicId: topicIdFor('Short Demo'), title: 'Short Demo session', date: tomorrow, startTime: '11:00', durationMinutes: 90 },
-        { topicId: topicIdFor('Time Demo'), title: 'Time Demo session', date: tomorrow, startTime: '20:00', durationMinutes: 60 },
-      ] },
+      method: 'POST', body: {
+        scheduleBlocks: [
+          { topicId: topicIdFor('Move Demo'), title: 'Move Demo session', date: tomorrow, startTime: '13:00', durationMinutes: 60 },
+          { topicId: topicIdFor('Short Demo'), title: 'Short Demo session', date: tomorrow, startTime: '11:00', durationMinutes: 90 },
+          { topicId: topicIdFor('Time Demo'), title: 'Time Demo session', date: tomorrow, startTime: '20:00', durationMinutes: 60 },
+        ]
+      },
     })).status, 201);
     const before = await blocks();
     const move = await client.request('/api/scheduling-assistant/preview', {

@@ -179,7 +179,7 @@ export default function App() {
       id: topic.id,
       name: topic.name,
       priorityScore: topic.priorityScore,
-      actualWeightage: topic.weightageAvailable ? topic.weightage : null,
+      actualWeightage: topic.calculatedWeightage,
       frequencyCount: topic.mappedQuestionCount,
       syllabusEvidence: topic.syllabusEvidence,
       sourceDocumentIds: topic.sourceDocumentIds,

@@ -8,6 +8,8 @@ export type SchedulingAssistantIntent = {
   period?: AssistantPeriod;
   sourceTime?: string;
   targetTime?: string;
+  targetTimeMode?: 'exact' | 'after';
+  allMatches?: boolean;
 };
 
 const WEEKDAYS: Record<string, number> = {
@@ -102,12 +104,19 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
   const moveTopic = /\b(?:move|shift) (.+?) to (.+)$/.exec(text);
   if (moveTopic) {
     const target = parseDatePeriod(moveTopic[2], now);
-    return {
+    const targetTime = parseTime(moveTopic[2]);
+    const intent: SchedulingAssistantIntent = {
       type: 'move_topic',
       topicQuery: topicText(moveTopic[1]),
       targetDate: target.date,
       period: target.period,
     };
+    if (targetTime) {
+      intent.targetTime = targetTime;
+      intent.targetTimeMode = /\bafter\b/.test(moveTopic[2]) ? 'after' : 'exact';
+    }
+    if (/\ball\b/.test(moveTopic[1])) intent.allMatches = true;
+    return intent;
   }
 
   const shortenAfter = /\b(?:make|shorten) (.+?) shorter(?:\s+(.*))?$/.exec(text);

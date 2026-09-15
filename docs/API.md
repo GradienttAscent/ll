@@ -121,9 +121,10 @@ Proposal generation is stateless and never writes a schedule block. A stopped se
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | POST | `/api/academic-documents/analyze` | `{ "title", "docType": "Syllabus" | "Past Paper", "content", "fileSize"? }` | `201 { "analysis" }` |
+| POST | `/api/academic-documents/upload` | `{ "title", "docType": "Syllabus" | "Past Paper", "base64", "mimeType"? }` | `201 { "analysis" }`; extracts the uploaded PDF on the server |
 | GET | `/api/academic-evidence` | — | `{ "academic": { "documents", "questions", "ranking" } }` |
 
-Academic ingestion persists the source document before extraction. Syllabus topics are stored even if the source has no questions and are linked to their originating document. Numbered past-paper questions are normalized and deduplicated per persisted source document. Mapping is deterministic: only matching topic tokens are recorded as evidence; questions without sufficient evidence remain `unmatched` with no topic id. Ranking is persisted to `topics.priority` and returns its score, mapped-question count, syllabus presence, source document ids, and a human-readable reason. Repeating the same title/content does not create duplicate document questions.
+Academic ingestion persists the source document and, for binary uploads, stores the original payload with its MIME type and extraction method. Syllabus topics are stored even if the source has no questions and are linked to their originating document. Numbered past-paper questions are normalized and deduplicated per persisted source document; marks are read from each original question section. Mapping uses validated AI classifications when configured, otherwise matching syllabus/topic tokens, with standalone papers receiving only conservative topic labels derived from explicit technical terms. Questions without sufficient evidence remain `unmatched` with no topic id. Ranking is persisted to `topics.priority` and returns its score, mapped-question count, calculated marks weightage, syllabus presence, source document ids, and a human-readable reason. Repeating the same title/content does not create duplicate document questions.
 
 ### Questions
 | Method | Path | Body | Returns |

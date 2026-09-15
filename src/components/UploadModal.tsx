@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { X, FileUp, Sparkles, Loader2 } from 'lucide-react';
-import { extractFileContent } from '../utils/pdfExtractor';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -12,7 +11,15 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
   const [docName, setDocName] = useState('');
   const [docType, setDocType] = useState<'Past Paper' | 'Syllabus'>('Past Paper');
   const [content, setContent] = useState('');
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+
+  const fileAsBase64 = async (file: File) => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+    return btoa(binary);
+  };
 
   if (!isOpen) return null;
 
@@ -26,14 +33,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
     setIsProcessing(true);
 
     try {
-      const res = await fetch('/api/academic-documents/analyze', {
+      const res = await fetch(uploadedFile ? '/api/academic-documents/upload' : '/api/academic-documents/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: docName,
-          docType,
-          content,
-        }),
+        body: JSON.stringify(uploadedFile
+          ? { title: uploadedFile.name, docType, base64: await fileAsBase64(uploadedFile), mimeType: uploadedFile.type || undefined }
+          : { title: docName, docType, content }),
       });
 
       const json = await res.json();
@@ -52,7 +57,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
       <div className="bg-[#FDFDFC] border border-black max-w-lg w-full p-6 sm:p-8 space-y-6 relative">
-        
+
         <div className="flex items-center justify-between border-b border-black pb-4">
           <div className="flex items-center space-x-2">
             <Sparkles className="w-4 h-4 text-black" />
@@ -86,22 +91,20 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
               <button
                 type="button"
                 onClick={() => setDocType('Past Paper')}
-                className={`py-2.5 text-[11px] font-bold uppercase tracking-wider border transition-colors ${
-                  docType === 'Past Paper'
+                className={`py-2.5 text-[11px] font-bold uppercase tracking-wider border transition-colors ${docType === 'Past Paper'
                     ? 'bg-black text-white border-black'
                     : 'bg-[#F8F7F2] text-black border-black/30 hover:border-black'
-                }`}
+                  }`}
               >
                 Past Question Paper
               </button>
               <button
                 type="button"
                 onClick={() => setDocType('Syllabus')}
-                className={`py-2.5 text-[11px] font-bold uppercase tracking-wider border transition-colors ${
-                  docType === 'Syllabus'
+                className={`py-2.5 text-[11px] font-bold uppercase tracking-wider border transition-colors ${docType === 'Syllabus'
                     ? 'bg-black text-white border-black'
                     : 'bg-[#F8F7F2] text-black border-black/30 hover:border-black'
-                }`}
+                  }`}
               >
                 Course Syllabus
               </button>
@@ -115,8 +118,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
                 const file = event.target.files?.[0];
                 if (!file) return;
                 setDocName(file.name);
-                const extracted = await extractFileContent(file);
-                setContent(extracted.content);
+                setUploadedFile(file);
+                setContent('');
               }} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
               <span className="text-[10px] font-bold uppercase tracking-wider">Choose PDF or TXT file</span>
             </div>

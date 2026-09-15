@@ -123,10 +123,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
   const [isChatLoading, setIsChatLoading] = useState(false);
 
   const loadData = async () => {
-    const [topicsResponse, blocksResponse] = await Promise.all([fetch('/api/topics'), fetch('/api/schedule-blocks')]);
+    const [topicsResponse, blocksResponse, evidenceResponse] = await Promise.all([fetch('/api/topics'), fetch('/api/schedule-blocks'), fetch('/api/academic-evidence')]);
     const topicsJson = await topicsResponse.json();
     const blocksJson = await blocksResponse.json();
-    if (topicsResponse.ok) setTopics(topicsJson.topics);
+    const evidenceJson = await evidenceResponse.json();
+    if (topicsResponse.ok) {
+      const activeIds = new Set((evidenceJson.academic?.ranking || []).map((topic: any) => topic.id));
+      setTopics(topicsJson.topics.filter((topic: PersistedTopic) => activeIds.has(topic.id)));
+    }
     if (blocksResponse.ok) setScheduleBlocks(blocksJson.scheduleBlocks);
   };
 

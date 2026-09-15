@@ -325,6 +325,24 @@ const MIGRATIONS: Migration[] = [
       db.run('CREATE INDEX IF NOT EXISTS idx_study_room_messages_room ON study_room_messages(room_id, created_at);');
     },
   },
+  {
+    version: 8,
+    name: 'uploaded-document-payload-and-extraction-metadata',
+    up: (db) => {
+      const columns = pragmaTableInfo(db, 'documents').map((column) => column.name);
+      if (!columns.includes('file_data')) db.run('ALTER TABLE documents ADD COLUMN file_data BLOB;');
+      if (!columns.includes('mime_type')) db.run("ALTER TABLE documents ADD COLUMN mime_type TEXT NOT NULL DEFAULT 'text/plain';");
+      if (!columns.includes('extraction_method')) db.run("ALTER TABLE documents ADD COLUMN extraction_method TEXT NOT NULL DEFAULT 'provided-text';");
+    },
+  },
+  {
+    version: 9,
+    name: 'repair-schedule-change-reason-column',
+    up: (db) => {
+      const columns = pragmaTableInfo(db, 'schedule_changes').map((column) => column.name);
+      if (!columns.includes('reason')) db.run('ALTER TABLE schedule_changes ADD COLUMN reason TEXT;');
+    },
+  },
 ];
 
 function getMeta(db: SqlJsDatabase, key: string): string | undefined {

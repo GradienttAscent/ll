@@ -445,30 +445,32 @@ export type DocumentRow = {
   docType: string;
   content: string | null;
   fileSize: string;
+  mimeType?: string;
+  extractionMethod?: string;
   createdAt: string;
 };
 
 export function documentRows(userId: string): DocumentRow[] {
   return getDb().prepare(`
-    SELECT id, title, doc_type AS docType, content, file_size AS fileSize, created_at AS createdAt
+    SELECT id, title, doc_type AS docType, content, file_size AS fileSize, mime_type AS mimeType, extraction_method AS extractionMethod, created_at AS createdAt
     FROM documents WHERE user_id = ? ORDER BY created_at DESC
   `).all(userId) as DocumentRow[];
 }
 
 export function findOwnedDocument(userId: string, documentId: string): DocumentRow | undefined {
   return getDb().prepare(`
-    SELECT id, title, doc_type AS docType, content, file_size AS fileSize, created_at AS createdAt
+    SELECT id, title, doc_type AS docType, content, file_size AS fileSize, mime_type AS mimeType, extraction_method AS extractionMethod, created_at AS createdAt
     FROM documents WHERE id = ? AND user_id = ?
   `).get(documentId, userId) as DocumentRow | undefined;
 }
 
 export function createDocument(userId: string, input: any): DocumentRow {
   const id = createId('document');
-  getDb().prepare(`INSERT INTO documents (id, user_id, title, doc_type, content, file_size, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+  getDb().prepare(`INSERT INTO documents (id, user_id, title, doc_type, content, file_size, file_data, mime_type, extraction_method, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, userId, String(input.title).trim(), String(input.docType || 'Past Paper'),
       typeof input.content === 'string' && input.content ? input.content : null,
-      String(input.fileSize || ''), now());
+      String(input.fileSize || ''), input.fileData || null, String(input.mimeType || 'text/plain'), String(input.extractionMethod || 'provided-text'), now());
   return findOwnedDocument(userId, id)!;
 }
 
@@ -486,7 +488,7 @@ export function normalizeAcademicQuestion(value: string): string {
 
 export function extractNumberedQuestions(content: string): string[] {
   const prefix = /^\s*(?:(?:question|q)\s*)?\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*/i;
-  const sections = content.replace(/\r/g, '').split(/(?=^\s*(?:(?:question|q)\s*)?\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*)/im);
+  const sections = content.replace(/\r/g, '').split(/(?=\s*(?:(?:question|q)\s*)\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*)/i);
   const unique = new Map<string, string>();
   for (const section of sections) {
     if (!prefix.test(section)) continue;
@@ -495,6 +497,44 @@ export function extractNumberedQuestions(content: string): string[] {
     if (question && !unique.has(normalized)) unique.set(normalized, question);
   }
   return [...unique.values()];
+}
+
+function extractNumberedQuestionRecords(content: string): Array<{ text: string; marks: number }> {
+  const prefix = /^\s*(?:(?:question|q)\s*)?\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*/i;
+  const sections = content.replace(/\r/g, '').split(/(?=\s*(?:(?:question|q)\s*)?\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*)/i);
+  const unique = new Map<string, { text: string; marks: number }>();
+  for (const section of sections) {
+    if (!prefix.test(section)) continue;
+    const text = normalizeAcademicQuestion(section);
+    if (!text) continue;
+    const normalized = text.toLowerCase();
+    if (!unique.has(normalized)) unique.set(normalized, { text, marks: questionMarks(section) });
+  }
+  return [...unique.values()];
+}
+
+function questionMarks(questionText: string): number {
+  const match = /(?:\(|\[|\b)(\d+(?:\.\d+)?)\s*(?:marks?|m)\s*(?:\)|\])?/i.exec(questionText);
+  return match ? Math.max(1, Math.round(Number(match[1]))) : 10;
+}
+
+function questionSimilarity(left: string, right: string): number {
+  const leftTokens = new Set(academicTokens(left));
+  const rightTokens = new Set(academicTokens(right));
+  if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
+  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  return intersection / (leftTokens.size + rightTokens.size - intersection);
+}
+
+function inferQuestionTopic(questionText: string): string | null {
+  const ignored = new Set(['Explain', 'Describe', 'Discuss', 'Compare', 'Solve', 'Apply', 'Using', 'State', 'Find', 'Derive', 'Construct', 'Demonstrate']);
+  const titlePhrases = questionText.match(/\b[A-Z][A-Za-z0-9']+(?:\s+[A-Z][A-Za-z0-9']+){1,3}\b/g) || [];
+  const phrase = titlePhrases.find((candidate) => !ignored.has(candidate.split(/\s+/)[0]));
+  if (phrase) return phrase.trim();
+  const acronym = questionText.match(/\b[A-Z]{2,}(?:[-/]\d+)?\b/);
+  if (acronym) return acronym[0];
+  const firstTechnicalTerm = questionText.match(/\b[A-Z][A-Za-z0-9']+\b/);
+  return firstTechnicalTerm && !ignored.has(firstTechnicalTerm[0]) ? firstTechnicalTerm[0] : null;
 }
 
 function extractSyllabusTopics(content: string): Array<{ name: string; weightage?: number }> {
@@ -536,35 +576,47 @@ export type AcademicQuestionRow = QuestionRow;
 export type RankedTopicRow = TopicRow & {
   priorityScore: number;
   mappedQuestionCount: number;
+  totalMarks: number;
+  calculatedWeightage: number;
   syllabusEvidence: boolean;
   sourceDocumentIds: string[];
   weightageAvailable: boolean;
   reason: string;
 };
 
-export function rankedTopicRows(userId: string): RankedTopicRow[] {
-  const topics = topicRows(userId);
+export function rankedTopicRows(userId: string, documentId?: string): RankedTopicRow[] {
+  const questionsForEvidence = questionRows(userId, documentId);
+  const mappedTopicIds = new Set(questionsForEvidence.flatMap((question) => question.topicId ? [question.topicId] : []));
+  const topics = topicRows(userId).filter((topic) => !documentId || mappedTopicIds.has(topic.id));
   const sourceDocumentIds = new Map<string, string[]>();
   for (const row of getDb().prepare(`SELECT topic_id AS topicId, document_id AS documentId
     FROM topic_document_sources WHERE user_id = ?`).all(userId) as any[]) {
     sourceDocumentIds.set(row.topicId, [...(sourceDocumentIds.get(row.topicId) || []), row.documentId]);
   }
   const mappedCounts = new Map<string, number>();
-  for (const question of questionRows(userId)) {
-    if (question.topicId) mappedCounts.set(question.topicId, (mappedCounts.get(question.topicId) || 0) + 1);
+  const mappedMarks = new Map<string, number>();
+  let totalMappedMarks = 0;
+  for (const question of questionsForEvidence) {
+    if (question.topicId) {
+      mappedCounts.set(question.topicId, (mappedCounts.get(question.topicId) || 0) + 1);
+      mappedMarks.set(question.topicId, (mappedMarks.get(question.topicId) || 0) + question.marks);
+      totalMappedMarks += question.marks;
+    }
   }
   const ranking = topics.map((topic) => {
     const mappedQuestionCount = mappedCounts.get(topic.id) || 0;
+    const totalMarks = mappedMarks.get(topic.id) || 0;
+    const calculatedWeightage = totalMappedMarks > 0 ? Number(((totalMarks / totalMappedMarks) * 100).toFixed(1)) : 0;
     const topicSourceDocumentIds = sourceDocumentIds.get(topic.id) || [];
     const syllabusEvidence = topicSourceDocumentIds.length > 0 || topic.source === 'syllabus';
     const storedWeightageBonus = topic.weightage >= 20 ? Math.min(2, Math.round(topic.weightage / 25)) : 0;
-    const priorityScore = Math.min(10, 1 + mappedQuestionCount * 2 + (syllabusEvidence ? 2 : 0) + storedWeightageBonus);
+    const priorityScore = Math.min(10, Math.max(1, Math.round(1 + mappedQuestionCount * 1.5 + calculatedWeightage / 20 + (syllabusEvidence ? 1 : 0) + storedWeightageBonus)));
     const reason = mappedQuestionCount > 0
-      ? `${priorityScore >= 7 ? 'High' : 'Medium'} priority: appears in ${mappedQuestionCount} mapped previous question${mappedQuestionCount === 1 ? '' : 's'}${syllabusEvidence ? ' and is present in the syllabus' : ''}.`
+      ? `${priorityScore >= 7 ? 'High' : 'Medium'} priority: appears in ${mappedQuestionCount} mapped previous question${mappedQuestionCount === 1 ? '' : 's'}, carrying ${totalMarks} marks (${calculatedWeightage}% of mapped-paper marks)${syllabusEvidence ? ', and is present in the syllabus' : ''}.`
       : syllabusEvidence
         ? 'Lower priority: present in the syllabus but no previous questions were mapped.'
         : 'Lower priority: no mapped previous-question evidence yet.';
-    return { ...topic, priority: priorityScore, priorityScore, mappedQuestionCount, syllabusEvidence, sourceDocumentIds: topicSourceDocumentIds, weightageAvailable: topic.hasWeightage, reason };
+    return { ...topic, priority: priorityScore, priorityScore, mappedQuestionCount, totalMarks, calculatedWeightage, syllabusEvidence, sourceDocumentIds: topicSourceDocumentIds, weightageAvailable: topic.hasWeightage, reason };
   });
   const updatePriority = getDb().prepare('UPDATE topics SET priority = ? WHERE user_id = ? AND id = ?');
   const apply = getDb().transaction((items: RankedTopicRow[]) => items.forEach((topic) => updatePriority.run(topic.priorityScore, userId, topic.id)));
@@ -572,7 +624,7 @@ export function rankedTopicRows(userId: string): RankedTopicRow[] {
   return ranking.sort((left, right) => right.priorityScore - left.priorityScore || right.mappedQuestionCount - left.mappedQuestionCount || left.name.localeCompare(right.name));
 }
 
-export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string }) {
+export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string; fileData?: Uint8Array; mimeType?: string; extractionMethod?: string; topicMappings?: Array<{ questionText: string; topicName: string; confidence: number }> }) {
   const existingDocument = getDb().prepare(`SELECT id, title, doc_type AS docType, content, file_size AS fileSize, created_at AS createdAt
     FROM documents WHERE user_id = ? AND title = ? AND content = ?`).get(userId, input.title.trim(), input.content) as DocumentRow | undefined;
   const document = existingDocument || createDocument(userId, input);
@@ -596,24 +648,59 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
     associateAll(syllabusTopics);
   }
   if (syllabusTopics.length > 0) remapUnmatchedQuestions(userId, topicRows(userId));
-  const topics = topicRows(userId);
-  const extractedQuestions = input.docType.toLowerCase().includes('past') ? extractNumberedQuestions(input.content) : [];
-  const existing = new Set((getDb().prepare('SELECT normalized_text AS normalizedText FROM questions WHERE user_id = ? AND document_id = ?').all(userId, document.id) as any[]).map((row) => row.normalizedText));
+  const paperMappings = (input.topicMappings || []).filter((mapping) => mapping.topicName.trim() && mapping.confidence >= 0.6);
+  if (paperMappings.length > 0) {
+    saveTopics(userId, [...new Set(paperMappings.map((mapping) => mapping.topicName.trim().toLowerCase()))].map((key) => ({
+      name: paperMappings.find((mapping) => mapping.topicName.trim().toLowerCase() === key)!.topicName.trim(),
+      priority: 1,
+      weightage: 1,
+      hasWeightage: false,
+      source: 'paper-analysis',
+    })));
+  }
+  const extractedQuestions = input.docType.toLowerCase().includes('past') ? extractNumberedQuestionRecords(input.content) : [];
+  const hasSyllabusTopics = topicRows(userId).some((topic) => topic.source === 'syllabus');
+  if (!hasSyllabusTopics && paperMappings.length === 0) {
+    const inferredTopics = extractedQuestions
+      .map((question) => inferQuestionTopic(question.text))
+      .filter((name): name is string => Boolean(name));
+    if (inferredTopics.length > 0) {
+      saveTopics(userId, [...new Set(inferredTopics)].map((name) => ({
+        name,
+        priority: 1,
+        weightage: 1,
+        hasWeightage: false,
+        source: 'paper-derived',
+      })));
+    }
+  }
+  const availableTopics = topicRows(userId);
+  const existing = (getDb().prepare('SELECT normalized_text AS normalizedText FROM questions WHERE user_id = ? AND document_id = ?').all(userId, document.id) as any[]).map((row) => row.normalizedText);
   const insert = getDb().prepare(`INSERT INTO questions
     (id, user_id, document_id, topic_id, question_text, normalized_text, marks, question_type, source, suggested_time_minutes, mapping_score, mapping_evidence, mapping_status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, document_id, normalized_text) WHERE document_id IS NOT NULL DO NOTHING`);
   const createdQuestionIds: string[] = [];
-  const saveQuestions = getDb().transaction((items: string[]) => {
-    for (const questionText of items) {
+  const saveQuestions = getDb().transaction((items: Array<{ text: string; marks: number }>) => {
+    for (const item of items) {
+      const questionText = item.text;
       const normalizedText = questionText.toLowerCase();
-      if (existing.has(normalizedText)) continue;
-      const mapping = mapQuestionToTopic(questionText, topics);
+      if (existing.some((stored) => stored === normalizedText || questionSimilarity(stored, normalizedText) >= 0.88)) continue;
+      const normalizedForMapping = normalizeAcademicQuestion(questionText).toLowerCase();
+      const hinted = paperMappings.find((candidate) => {
+        const candidateText = normalizeAcademicQuestion(candidate.questionText).toLowerCase();
+        return candidateText === normalizedForMapping || candidateText.includes(normalizedForMapping) || normalizedForMapping.includes(candidateText);
+      });
+      const hintedTopic = hinted ? findOwnedTopicByName(userId, hinted.topicName) : undefined;
+      const mapping = hintedTopic
+        ? { topic: hintedTopic, score: hinted!.confidence, evidence: ['AI topic classification from uploaded paper'] }
+        : mapQuestionToTopic(questionText, availableTopics);
       const id = createId('question');
-      insert.run(id, userId, document.id, mapping?.topic.id || null, questionText, normalizedText, 10, 'Subjective', 'pyq', 15,
+      const marks = item.marks;
+      insert.run(id, userId, document.id, mapping?.topic.id || null, questionText, normalizedText, marks, 'Subjective', 'pyq', Math.max(5, marks * 2),
         mapping?.score || null, JSON.stringify(mapping?.evidence || []), mapping ? 'mapped' : 'unmatched', now());
       createdQuestionIds.push(id);
-      existing.add(normalizedText);
+      existing.push(normalizedText);
     }
   });
   saveQuestions(extractedQuestions);
@@ -642,11 +729,13 @@ function remapUnmatchedQuestions(userId: string, topics: TopicRow[]) {
   apply(unmatched);
 }
 
-export function academicEvidence(userId: string) {
-  return { documents: documentRows(userId), questions: questionRows(userId), ranking: rankedTopicRows(userId) };
+export function academicEvidence(userId: string, documentId?: string) {
+  const documents = documentRows(userId);
+  const selectedDocumentId = documentId || documents.find((document) => document.docType.toLowerCase().includes('past'))?.id;
+  return { documents, activeDocumentId: selectedDocumentId || null, questions: questionRows(userId, selectedDocumentId), ranking: rankedTopicRows(userId, selectedDocumentId) };
 }
 
-export function questionRows(userId: string): QuestionRow[] {
+export function questionRows(userId: string, documentId?: string): QuestionRow[] {
   return getDb().prepare(`
     SELECT q.id, q.topic_id AS topicId, q.document_id AS documentId, q.question_text AS questionText, q.marks,
       q.question_type AS questionType, q.source, q.suggested_time_minutes AS suggestedTimeMinutes,
@@ -654,9 +743,9 @@ export function questionRows(userId: string): QuestionRow[] {
       q.created_at AS createdAt, t.name AS topicName
     FROM questions q
     LEFT JOIN topics t ON t.id = q.topic_id AND t.user_id = q.user_id
-    WHERE q.user_id = ?
+    WHERE q.user_id = ? ${documentId ? 'AND q.document_id = ?' : ''}
     ORDER BY q.created_at DESC
-  `).all(userId).map((row: any) => ({ ...row, mappingEvidence: parseJsonList(row.mappingEvidence), mappingStatus: row.mappingStatus || (row.topicId ? 'mapped' : 'unmatched') })) as QuestionRow[];
+  `).all(userId, ...(documentId ? [documentId] : [])).map((row: any) => ({ ...row, mappingEvidence: parseJsonList(row.mappingEvidence), mappingStatus: row.mappingStatus || (row.topicId ? 'mapped' : 'unmatched') })) as QuestionRow[];
 }
 
 export function findOwnedQuestion(userId: string, questionId: string): QuestionRow | undefined {
@@ -1239,15 +1328,18 @@ function assistantSlot(
   proposed: ScheduleBlockInput[],
   currentTime: Date,
   targetTime?: string,
+  targetTimeMode: 'exact' | 'after' = 'exact',
   searchDays = 1,
   avoidBlock?: Pick<ScheduleBlockInput, 'date' | 'startTime' | 'durationMinutes'>,
 ): ScheduleBlockInput | null {
   for (let dayOffset = 0; dayOffset < searchDays; dayOffset += 1) {
     const date = dateAfter(startDate, dayOffset);
     const [windowStart, windowEnd] = targetTime
-      ? [scheduleStartMinutes(targetTime)!, scheduleStartMinutes(targetTime)! + durationMinutes]
+      ? targetTimeMode === 'after'
+        ? [scheduleStartMinutes(targetTime)!, periodMinutes('evening')[1]]
+        : [scheduleStartMinutes(targetTime)!, scheduleStartMinutes(targetTime)! + durationMinutes]
       : periodMinutes(period);
-    for (let minutes = windowStart; minutes + durationMinutes <= windowEnd; minutes += targetTime ? windowEnd : ADAPTIVE_SLOT_INCREMENT_MINUTES) {
+    for (let minutes = windowStart; minutes + durationMinutes <= windowEnd; minutes += targetTime && targetTimeMode === 'exact' ? windowEnd : ADAPTIVE_SLOT_INCREMENT_MINUTES) {
       const candidate: ScheduleBlockInput = { topicId, title, date, startTime: timeFromMinutes(minutes), durationMinutes, completed: false };
       if (dateTimeValue(candidate.date, candidate.startTime) <= currentTime.getTime()) continue;
       if (avoidBlock && candidate.date === avoidBlock.date && candidate.startTime === avoidBlock.startTime && candidate.durationMinutes === avoidBlock.durationMinutes) continue;
@@ -1314,7 +1406,7 @@ export function previewSchedulingAssistant(
   let matches = matchingBlocks(futureBlocks, intent);
   if (selectedBlockId) matches = matches.filter((block) => block.id === selectedBlockId);
   if (matches.length === 0) return { intent, changes: [], assistantMessage: 'I could not find an unfinished future session matching that request.' };
-  if ((intent.type === 'move_topic' || intent.type === 'shorten_topic' || intent.type === 'move_time') && matches.length > 1) {
+  if ((intent.type === 'move_topic' || intent.type === 'shorten_topic' || intent.type === 'move_time') && matches.length > 1 && !intent.allMatches) {
     return {
       intent,
       changes: [],
@@ -1353,6 +1445,7 @@ export function previewSchedulingAssistant(
         proposed,
         currentTime,
         intent.targetTime,
+        intent.targetTimeMode,
         intent.type === 'unavailable_period' ? ADAPTIVE_SEARCH_DAYS : 1,
         block,
       );

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { PastPaper, ExtractedTopic, QuestionItem } from '../types';
 import { FileUp, Sparkles, FileText, CheckCircle2, BarChart3, ArrowRight, BookOpen, Loader2 } from 'lucide-react';
-import { extractFileContent } from '../utils/pdfExtractor';
 
 interface UploadExtractViewProps {
   papers: PastPaper[];
@@ -25,9 +24,18 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [fileError, setFileError] = useState('');
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [isSampleMode, setIsSampleMode] = useState(false);
+
+  const fileAsBase64 = async (file: File) => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+    return btoa(binary);
+  };
 
   const handleRunAnalysis = async () => {
-    if (!inputText.trim() && !selectedPaper) {
+    if (!uploadedFile && !inputText.trim() && !selectedPaper) {
       alert('Please enter document content or select an uploaded paper.');
       return;
     }
@@ -40,14 +48,12 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     const nameToAnalyze = docName || selectedPaper?.title || 'Academic Paper';
 
     try {
-      const res = await fetch('/api/academic-documents/analyze', {
+      const res = await fetch(uploadedFile ? '/api/academic-documents/upload' : '/api/academic-documents/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: nameToAnalyze,
-          docType,
-          content: contentToAnalyze,
-        }),
+        body: JSON.stringify(uploadedFile ? {
+          title: uploadedFile.name, docType, base64: await fileAsBase64(uploadedFile), mimeType: uploadedFile.type || undefined,
+        } : { title: nameToAnalyze, docType: isSampleMode ? 'Past Paper (Sample)' : docType, content: contentToAnalyze }),
       });
 
       const json = await res.json();
@@ -55,7 +61,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
       const analysis = json.analysis;
       setAnalysisResult({
         title: 'Academic document saved',
-        summary: `${analysis.extractedTopicCount} topics and ${analysis.createdQuestionCount} new questions were persisted. Existing matching questions were not duplicated.`,
+        summary: `${analysis.createdQuestionCount} questions were persisted from ${isSampleMode ? 'the sample paper' : 'the uploaded document'}. Topic evidence and marks were calculated from those stored questions.`,
       });
       await onAcademicUpdated();
     } catch (err) {
@@ -71,15 +77,10 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     if (file) {
       setDocName(file.name);
       setSelectedPaper(null);
+      setUploadedFile(file);
+      setIsSampleMode(false);
       setFileError('');
-      try {
-        const extracted = await extractFileContent(file);
-        if (!extracted.content.trim()) throw new Error('This file does not contain readable content.');
-        setInputText(extracted.content);
-      } catch (error: any) {
-        setInputText('');
-        setFileError(error.message || 'This file does not contain readable content.');
-      }
+      setInputText('');
     }
   };
 
@@ -104,6 +105,8 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
         <button
           onClick={() => {
             setDocName('CS301_Spring_2026_Sample.txt');
+            setUploadedFile(null);
+            setIsSampleMode(true);
             setInputText(`QUESTION 1 (10 Marks): Explain Dijkstra's shortest path algorithm. Compare time complexity of Binary Heap vs Fibonacci Heap.
 QUESTION 2 (12 Marks): Solve 0/1 Knapsack problem using Dynamic Programming memoization. Weights: [2,3,4], Values: [3,4,5], W=5.
 QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 and T(n) = 2T(n/4) + sqrt(n).`);
@@ -183,7 +186,7 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
               <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Or Paste Document Text</label>
               <textarea
                 value={inputText}
-                onChange={(e) => { setInputText(e.target.value); setFileError(''); }}
+                onChange={(e) => { setInputText(e.target.value); setUploadedFile(null); setIsSampleMode(false); setFileError(''); }}
                 placeholder="Paste questions or syllabus outline here..."
                 rows={5}
                 className="w-full bg-white border border-black/30 p-3 text-xs text-black focus:outline-none focus:border-black font-mono leading-relaxed"
