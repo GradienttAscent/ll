@@ -12,7 +12,7 @@ Storage uses [sql.js](https://sql.js.org/) (SQLite compiled to WebAssembly) pers
 - A `meta` table stores `schema_version`.
 - `db.ts` runs an ordered list of `MIGRATIONS` (`{ version, name, up }`) once each in a transaction.
 - `PRAGMA foreign_keys = ON` is set **after** migrations run (it stays off during migration so legacy-schema rebuilds and `ADD COLUMN` fixes are permitted).
-- Current schema version: `1`
+- Current schema version: `2`
 
 ## Tables
 
@@ -109,6 +109,7 @@ Unique index: `idx_topics_user_course_name ON topics(user_id, course_id, name)` 
 | `id` | TEXT | PK |
 | `user_id` | TEXT | FK → `users.id` (CASCADE); NOT NULL |
 | `question_id` | TEXT | FK → `questions.id` (SET NULL) |
+| `session_id` | TEXT | FK → `study_sessions.id` (SET NULL); v2, session-evidence feedback |
 | `score` | REAL | validated `0 ≤ score ≤ max_marks` |
 | `max_marks` | REAL | |
 | `source` | TEXT | one of `gemini` / `simulated` / `local-fallback` / `manual` |
@@ -116,6 +117,10 @@ Unique index: `idx_topics_user_course_name ON topics(user_id, course_id, name)` 
 | `improvements` | TEXT | JSON array string |
 | `feedback_text` | TEXT | |
 | `model_answer_snippet` | TEXT | |
+| `focus` | REAL | v2; 0–100 session focus score |
+| `difficulty` | TEXT | v2; `easy` / `medium` / `hard` session difficulty |
+| `perceived_progress` | INTEGER | v2; 0–100 |
+| `notes` | TEXT | v2; optional free-text note |
 | `created_at` | TEXT | |
 
 ### `schedule_changes`
@@ -128,7 +133,10 @@ History of every create / reschedule / complete event on a block.
 | `field` | TEXT | `created` / `rescheduled` / `completed` |
 | `old_value` | TEXT | nullable |
 | `new_value` | TEXT | nullable |
+| `reason` | TEXT | nullable (v2); e.g. `manual`, `adaptive-missed` |
 | `created_at` | TEXT | |
+
+Enough to reconstruct: affected block (`block_id`), prior scheduling info (`old_value`), new scheduling info (`new_value`), owning user (`user_id`), timestamp (`created_at`), and trigger (`reason`).
 
 ## Legacy data handling (migration v1)
 
