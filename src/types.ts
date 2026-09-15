@@ -1,4 +1,4 @@
-export type ActiveTab = 'dashboard' | 'upload' | 'practice' | 'mock' | 'planner' | 'room' | 'lms';
+export type ActiveTab = 'dashboard' | 'upload' | 'practice' | 'mock' | 'planner' | 'room' | 'lms' | 'calendar' | 'session' | 'insights' | 'history';
 
 export interface ExtractedTopic {
   id: string;
@@ -149,6 +149,7 @@ export interface PersistedQuestion extends QuestionItem {
 export interface FeedbackEntry {
   id: string;
   questionId: string | null;
+  sessionId: string | null;
   questionText: string | null;
   score: number;
   maxMarks: number;
@@ -157,6 +158,10 @@ export interface FeedbackEntry {
   improvements: string[];
   feedbackText: string | null;
   modelAnswerSnippet: string | null;
+  focus: number | null;
+  difficulty: string | null;
+  perceivedProgress: number | null;
+  notes: string | null;
   createdAt: string;
 }
 
@@ -166,6 +171,7 @@ export interface ScheduleChange {
   field: 'created' | 'rescheduled' | 'completed' | string;
   oldValue: string | null;
   newValue: string | null;
+  reason: string | null;
   createdAt: string;
 }
 
@@ -178,4 +184,64 @@ export interface StudySession {
   actualDurationSeconds: number;
   status: 'active' | 'paused' | 'completed' | 'stopped';
   endedAt: string | null;
+}
+
+// --- Analytics (matches GET /api/analytics response) ---
+
+export interface TopicProgressEntry {
+  topicId: string;
+  topicName: string;
+  totalBlocks: number;
+  completedBlocks: number;
+  completionRate: number;
+}
+
+export interface AnalyticsSnapshot {
+  plannedMinutes: number;
+  completedMinutes: number;
+  completedCount: number;
+  missedCount: number;
+  completionRate: number;
+  upcomingWorkloadMinutes: number;
+  topicProgress: TopicProgressEntry[];
+  today: string;
+}
+
+// --- Adaptive proposals (matches POST /api/adaptive/proposals response) ---
+
+export interface AdaptiveProposal {
+  sourceBlockId: string;
+  reason: string;
+  topicId: string;
+  topicName: string;
+  title: string;
+  date: string;
+  startTime: string;
+  durationMinutes: number;
+}
+
+// --- Session feedback payload (sent to POST /api/feedback) ---
+
+export interface SessionFeedbackPayload {
+  sessionId: string;
+  score: number;
+  maxMarks: number;
+  source: 'manual';
+  difficulty: 'easy' | 'medium' | 'hard';
+  focus: number;
+  perceivedProgress: number;
+  notes?: string;
+}
+
+// --- Active study session state (frontend-only state machine) ---
+
+export type SessionPhase = 'idle' | 'active' | 'paused' | 'feedback' | 'done';
+
+export interface ActiveSessionState {
+  phase: SessionPhase;
+  block: ScheduleBlock;
+  sessionId: string;
+  startedAt: number;        // Date.now() when session started or last resumed
+  accumulatedMs: number;    // total accumulated milliseconds of actual study time
+  pausedAt: number | null;  // Date.now() when last paused, null if not paused
 }

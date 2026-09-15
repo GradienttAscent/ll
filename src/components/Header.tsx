@@ -1,6 +1,7 @@
 import React from 'react';
 import { ActiveTab } from '../types';
-import { Bell, Settings, Sparkles } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import { Bell, Settings, Sparkles, LogOut } from 'lucide-react';
 
 interface HeaderProps {
   activeTab: ActiveTab;
@@ -9,8 +10,20 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenUpload }) => {
+  const { user, logout } = useAuth();
+
+  const getInitials = (name?: string, email?: string) => {
+    if (name && name.trim()) {
+      const parts = name.trim().split(' ');
+      if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+      return name.slice(0, 2).toUpperCase();
+    }
+    if (email) return email.slice(0, 2).toUpperCase();
+    return 'LL';
+  };
+
   return (
-    <header className="sticky top-0 z-30 bg-[#FDFDFC] border-b border-black px-6 py-3.5 transition-all">
+    <header className="sticky top-0 z-30 bg-[#FDFDFC] border-b border-black px-6 py-3.5 transition-all select-none">
       <div className="max-w-[1600px] mx-auto flex items-center justify-between">
         
         {/* Brand Logo & Name */}
@@ -27,12 +40,12 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenU
                 LazyLift
               </span>
               <span className="hidden sm:inline-block text-[9px] uppercase tracking-[0.2em] font-bold text-black/40">
-                Academic
+                Academic Planner
               </span>
             </div>
           </div>
 
-          {/* Nav Tabs matching Editorial layout */}
+          {/* Editorial Nav Tabs */}
           <nav className="hidden lg:flex items-center space-x-6 text-[11px] font-semibold uppercase tracking-widest text-black/50">
             <button
               onClick={() => setActiveTab('dashboard')}
@@ -42,7 +55,27 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenU
                   : 'border-transparent text-black/40 hover:text-black'
               }`}
             >
-              Journal
+              Dashboard
+            </button>
+            <button
+              onClick={() => setActiveTab('calendar')}
+              className={`py-1 transition-colors border-b ${
+                activeTab === 'calendar'
+                  ? 'text-black border-black font-bold'
+                  : 'border-transparent text-black/40 hover:text-black'
+              }`}
+            >
+              Calendar Grid
+            </button>
+            <button
+              onClick={() => setActiveTab('insights')}
+              className={`py-1 transition-colors border-b ${
+                activeTab === 'insights'
+                  ? 'text-black border-black font-bold'
+                  : 'border-transparent text-black/40 hover:text-black'
+              }`}
+            >
+              Adaptive Insights
             </button>
             <button
               onClick={() => setActiveTab('upload')}
@@ -52,17 +85,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenU
                   : 'border-transparent text-black/40 hover:text-black'
               }`}
             >
-              Past Papers & AI Analysis
-            </button>
-            <button
-              onClick={() => setActiveTab('planner')}
-              className={`py-1 transition-colors border-b ${
-                activeTab === 'planner'
-                  ? 'text-black border-black font-bold'
-                  : 'border-transparent text-black/40 hover:text-black'
-              }`}
-            >
-              Planner
+              Past Papers & Topics
             </button>
             <button
               onClick={() => setActiveTab('practice')}
@@ -72,7 +95,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenU
                   : 'border-transparent text-black/40 hover:text-black'
               }`}
             >
-              Practice
+              Practice Mode
             </button>
             <button
               onClick={() => setActiveTab('mock')}
@@ -84,26 +107,6 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenU
             >
               Mock Exam
             </button>
-            <button
-              onClick={() => setActiveTab('room')}
-              className={`py-1 transition-colors border-b ${
-                activeTab === 'room'
-                  ? 'text-black border-black font-bold'
-                  : 'border-transparent text-black/40 hover:text-black'
-              }`}
-            >
-              Study Room
-            </button>
-            <button
-              onClick={() => setActiveTab('lms')}
-              className={`py-1 transition-colors border-b ${
-                activeTab === 'lms'
-                  ? 'text-black border-black font-bold'
-                  : 'border-transparent text-black/40 hover:text-black'
-              }`}
-            >
-              LMS Sync
-            </button>
           </nav>
         </div>
 
@@ -113,28 +116,39 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenU
             onClick={onOpenUpload}
             className="hidden sm:flex items-center space-x-2 border border-black bg-white hover:bg-black hover:text-white text-black px-4 py-2 text-[10px] font-bold uppercase tracking-[0.15em] transition-colors"
           >
-            <Sparkles className="w-3.5 h-3.5" />
+            <Sparkles className="w-3.5 h-3.5 text-violet-700" />
             <span>Upload Document</span>
           </button>
 
           <button className="p-2 border border-black/20 hover:border-black text-black/60 hover:text-black transition-colors relative" title="Notifications">
             <Bell className="w-4 h-4" />
-            <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-black rounded-full"></span>
+            <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-violet-700 rounded-full"></span>
           </button>
 
           <button className="p-2 border border-black/20 hover:border-black text-black/60 hover:text-black transition-colors" title="Settings">
             <Settings className="w-4 h-4" />
           </button>
 
-          {/* User Profile Avatar */}
-          <div className="flex items-center space-x-2.5 pl-3 border-l border-black/20">
+          {/* User Profile Avatar & Logout */}
+          <div className="flex items-center space-x-3 pl-3 border-l border-black/20">
             <div className="w-8 h-8 rounded-full bg-black flex items-center justify-center text-white text-[10px] font-bold">
-              AV
+              {getInitials(user?.displayName, user?.email)}
             </div>
             <div className="hidden lg:block text-left text-xs">
-              <div className="font-bold text-black uppercase tracking-wider text-[11px]">Alex Vance</div>
-              <div className="text-[9px] uppercase tracking-widest text-black/40">CS301 Major</div>
+              <div className="font-bold text-black uppercase tracking-wider text-[11px] truncate max-w-[120px]">
+                {user?.displayName || 'Student User'}
+              </div>
+              <div className="text-[9px] uppercase tracking-widest text-black/40 truncate max-w-[120px]">
+                {user?.email || 'Academic Major'}
+              </div>
             </div>
+            <button
+              onClick={() => logout()}
+              className="p-1.5 text-black/40 hover:text-red-700 hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors"
+              title="Sign Out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
@@ -142,4 +156,3 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenU
     </header>
   );
 };
-

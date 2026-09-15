@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, FileUp, Sparkles, Loader2 } from 'lucide-react';
 import { PastPaper, PersistedTopic } from '../types';
+import { extractFileContent } from '../utils/pdfExtractor';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -134,12 +135,31 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPap
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Content / Text Outline (Optional)</label>
+            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Upload PDF / TXT File or Paste Content</label>
+            <div className="relative border border-dashed border-black bg-[#F8F7F2] hover:bg-black/5 p-3 text-center transition-colors cursor-pointer mb-2">
+              <input
+                type="file"
+                accept=".pdf,.txt,.text,text/plain,application/pdf"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    setDocName(file.name);
+                    const { content: fileText } = await extractFileContent(file);
+                    setContent(fileText);
+                  }
+                }}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+              />
+              <div className="text-[10px] font-bold uppercase tracking-wider text-black flex items-center justify-center gap-2">
+                <FileUp className="w-3.5 h-3.5" />
+                <span>Choose PDF or TXT File</span>
+              </div>
+            </div>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              placeholder="Paste questions or syllabus chapters here..."
-              rows={4}
+              placeholder="Or paste questions / syllabus chapters here..."
+              rows={3}
               className="w-full bg-[#F8F7F2] border border-black/30 p-3 text-xs text-black focus:outline-none focus:border-black font-mono"
             />
           </div>

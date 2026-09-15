@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { PastPaper, ExtractedTopic, QuestionItem, PersistedTopic } from '../types';
+import { extractFileContent } from '../utils/pdfExtractor';
 import { FileUp, Sparkles, FileText, CheckCircle2, BarChart3, ArrowRight, BookOpen, Loader2 } from 'lucide-react';
 
 interface UploadExtractViewProps {
@@ -97,16 +98,12 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     }
   };
 
-  const handleSimulatedFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setDocName(file.name);
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        const text = evt.target?.result as string;
-        setInputText(text || `Sample content extracted from ${file.name}: CS301 Algorithms past paper questions covering Dijkstra, Dynamic Programming knapsack, and Big O notation.`);
-      };
-      reader.readAsText(file);
+      const { content } = await extractFileContent(file);
+      setInputText(content);
     }
   };
 
@@ -196,13 +193,13 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
             <div className="border border-dashed border-black hover:bg-black/5 p-6 text-center bg-white transition-colors cursor-pointer relative group">
               <input
                 type="file"
-                accept=".txt,text/plain"
-                onChange={handleSimulatedFileUpload}
+                accept=".pdf,.txt,.text,text/plain,application/pdf"
+                onChange={handleFileUpload}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               />
               <FileUp className="w-6 h-6 text-black mx-auto mb-2" />
-              <div className="text-[11px] font-bold uppercase tracking-wider text-black">Drop a TXT file</div>
-              <div className="text-[9px] uppercase tracking-widest text-black/50 mt-1">TXT or pasted academic text for this prototype</div>
+              <div className="text-[11px] font-bold uppercase tracking-wider text-black">Upload PDF or TXT File</div>
+              <div className="text-[9px] uppercase tracking-widest text-black/50 mt-1">Select a PDF (.pdf) or text (.txt) question paper</div>
             </div>
 
             {/* Raw Text Input */}
