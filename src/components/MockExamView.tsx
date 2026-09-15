@@ -7,6 +7,9 @@ interface MockExamViewProps {
 }
 
 export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
+  if (questions.length === 0) {
+    return <div className="max-w-5xl mx-auto py-10 px-6 sm:px-8"><div className="border border-black bg-[#F8F7F2] p-8"><div className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/50">Mock Exam</div><h1 className="font-serif text-4xl italic mt-2">No mock exam questions available yet</h1><p className="text-xs text-black/60 mt-3">Analyze previous papers before starting a mock exam.</p></div></div>;
+  }
   const [examStarted, setExamStarted] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -162,17 +165,17 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
           <div className="bg-white border border-black p-6 space-y-3">
             <div className="flex items-center space-x-2 text-xs font-bold uppercase tracking-wider text-black">
               <Sparkles className="w-4 h-4" />
-              <span>AI Exam Performance Insights</span>
+              <span>Prototype Exam Note</span>
             </div>
             <p className="text-xs text-black/80 leading-relaxed font-sans">
-              {examReport.aiAdvice}
+              This prototype report is not stored or AI-evaluated. {examReport.aiAdvice}
             </p>
           </div>
 
           {/* Topic-wise Breakdown */}
           <div className="space-y-4">
             <h3 className="font-serif text-2xl italic font-normal text-black">
-              Topic Mastery Breakdown
+              Illustrative Prototype Breakdown
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {examReport.topicBreakdown.map((tb: any, idx: number) => (

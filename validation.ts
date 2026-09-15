@@ -38,11 +38,34 @@ export function validateBlockInput(body: any): string | null {
   if (!body || typeof body !== 'object') return 'Request body is required.';
   if (typeof body.topicId !== 'string' || !body.topicId) return 'topicId is required.';
   if (typeof body.title !== 'string' || !body.title.trim()) return 'title is required.';
-  if (typeof body.date !== 'string' || !body.date.trim()) return 'date is required.';
-  if (typeof body.startTime !== 'string' || !body.startTime.trim()) return 'startTime is required.';
+  if (!isValidScheduleDate(body.date)) return 'date must be a real YYYY-MM-DD date.';
+  const startMinutes = scheduleStartMinutes(body.startTime);
+  if (startMinutes === null) return 'startTime must be a valid HH:MM 24-hour time.';
   const minutes = Number(body.durationMinutes);
-  if (!Number.isFinite(minutes) || minutes < 1) return 'durationMinutes must be a positive number.';
+  if (!Number.isInteger(minutes) || minutes < 1) return 'durationMinutes must be a positive integer.';
+  if (startMinutes + minutes > 24 * 60) return 'Schedule blocks cannot cross midnight.';
   return null;
+}
+
+export function scheduleStartMinutes(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function isValidScheduleDate(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 export function validateDocumentInput(body: any): string | null {
@@ -80,6 +103,18 @@ export function validateFeedbackInput(body: any): string | null {
     return 'perceivedProgress must be a number between 0 and 100.';
   }
   if (body.notes !== undefined && typeof body.notes !== 'string') return 'notes must be a string.';
+  return null;
+}
+
+export function validateSessionFeedbackInput(body: any): string | null {
+  if (!body || typeof body !== 'object') return 'Session feedback payload is required.';
+  for (const field of ['focusRating', 'difficultyRating', 'progressRating']) {
+    const rating = Number(body[field]);
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) return `${field} must be an integer from 1 to 5.`;
+  }
+  if (body.notes !== undefined && (typeof body.notes !== 'string' || body.notes.length > 2000)) {
+    return 'notes must be a string with at most 2000 characters.';
+  }
   return null;
 }
 

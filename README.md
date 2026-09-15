@@ -14,9 +14,9 @@ Single-user-friendly exam prep app backed by a multi-user persistence layer (aut
 
 Open `http://localhost:3000`. SQLite data is created automatically at `data/lazylift.db`.
 
-## Auth & demo account
+## Authentication
 
-The web client signs in automatically as the demo user (`demo@lazylift.app` / `demo1234`, overridable via `LAZYLIFT_DEMO_EMAIL` / `LAZYLIFT_DEMO_PASSWORD`). Real multi-user flows use direct API calls (`/api/auth/register`, `/api/auth/login`) — see `docs/API.md`.
+Register or log in through the web client. LazyLift stores an authenticated session locally and restores it on refresh while the server-side session remains valid. There is no automatic demo authentication.
 
 ## Scripts
 

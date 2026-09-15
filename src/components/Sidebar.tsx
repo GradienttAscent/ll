@@ -20,6 +20,8 @@ interface SidebarProps {
   toggleTimer: () => void;
   activeStudyBlock: ScheduleBlock | null;
   onCompleteStudy: () => void;
+  onStopStudy: () => void;
+  sessionMessage: string;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -31,6 +33,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   toggleTimer,
   activeStudyBlock,
   onCompleteStudy,
+  onStopStudy,
+  sessionMessage,
 }) => {
   const formatTime = (totalSeconds: number) => {
     const mins = Math.floor(totalSeconds / 60);
@@ -42,23 +46,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside className="w-72 border-r border-black p-6 sm:p-8 flex flex-col justify-between min-h-[calc(100vh-61px)] bg-[#FDFDFC] select-none">
       <div className="space-y-8">
         
-        {/* Active Course & Exam Readiness Header */}
+        {/* Study controls */}
         <div>
-          <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-black/40 mb-2">Active Sanctuary Course</p>
-          <h2 className="text-3xl font-serif italic mb-1 leading-none text-black">CS301: Algorithms</h2>
-          <p className="text-xs text-black/60 mb-6 font-mono">Final Exam: August 24, 2026</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-black/40 mb-2">Study controls</p>
+          <h2 className="text-3xl font-serif italic mb-6 leading-none text-black">Focus session</h2>
 
           <div className="space-y-5">
-            <div>
-              <div className="flex justify-between text-[11px] font-bold mb-2 uppercase tracking-wider text-black">
-                <span>Readiness Score</span>
-                <span>74%</span>
-              </div>
-              <div className="h-1 w-full bg-black/10">
-                <div className="h-full bg-black w-[74%]"></div>
-              </div>
-            </div>
-
             {/* Deep Focus Widget embedded */}
             <div className="p-4 border border-black bg-[#F8F7F2] space-y-3">
               <div className="flex items-center justify-between">
@@ -77,7 +70,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   {isTimerRunning ? 'Pause' : 'Resume'}
                 </button>
               </div>
-              {activeStudyBlock ? <div className="border-t border-black/20 pt-3 space-y-2"><div className="text-[9px] uppercase tracking-widest text-black/50">Studying now</div><div className="text-xs font-bold">{activeStudyBlock.title}</div><button onClick={onCompleteStudy} className="text-[9px] uppercase font-bold border-b border-black">Complete Study Block</button></div> : <div className="text-[10px] text-black/50">Select “Start Study” on a saved calendar block.</div>}
+               {activeStudyBlock ? <div className="border-t border-black/20 pt-3 space-y-2"><div className="text-[9px] uppercase tracking-widest text-black/50">Studying now</div><div className="text-xs font-bold">{activeStudyBlock.title}</div><div className="flex gap-3"><button onClick={onCompleteStudy} className="text-[9px] uppercase font-bold border-b border-black">Complete Study Block</button><button onClick={onStopStudy} className="text-[9px] uppercase font-bold border-b border-black text-black/60">Stop Session</button></div></div> : <div className="text-[10px] text-black/50">Select “Start Study” on a saved calendar block.</div>}
+               {sessionMessage && <div className="text-[10px] text-black/70">{sessionMessage}</div>}
             </div>
           </div>
         </div>

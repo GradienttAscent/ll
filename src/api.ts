@@ -1,7 +1,8 @@
+import type { UserAccount } from './types';
+
 let sessionToken: string | null = null;
 const TOKEN_KEY = 'lazylift_session_token';
-const DEMO_EMAIL = 'demo@lazylift.app';
-const DEMO_PASSWORD = 'demo1234';
+let onSessionExpired: (() => void) | null = null;
 
 const originalFetch: typeof globalThis.fetch =
   typeof globalThis.fetch === 'function'
@@ -12,56 +13,100 @@ export function getSessionToken(): string | null {
   return sessionToken;
 }
 
-export async function ensureSession(): Promise<string | null> {
-  if (sessionToken) return sessionToken;
+export function hasStoredSession(): boolean {
+  return Boolean(sessionToken || storedToken());
+}
 
+function storedToken(): string | null {
   try {
     const stored = window.localStorage.getItem(TOKEN_KEY);
-    if (stored) {
-      sessionToken = stored;
-      return stored;
-    }
+    return stored || null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearSession() {
+  sessionToken = null;
+  try {
+    window.localStorage.removeItem(TOKEN_KEY);
   } catch {
     // localStorage unavailable
   }
+}
 
+function clearSessionIfCurrent(token: string | null) {
+  if (token && (sessionToken || storedToken()) !== token) return;
+  clearSession();
+}
+
+function saveSession(token: string) {
+  sessionToken = token;
   try {
-    const response = await originalFetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: DEMO_EMAIL, password: DEMO_PASSWORD }),
-    });
-    const data = await response.json();
-    if (response.ok && data.token) {
-      sessionToken = data.token;
-      try { window.localStorage.setItem(TOKEN_KEY, sessionToken); } catch { /* ignore */ }
-      return sessionToken;
-    }
+    window.localStorage.setItem(TOKEN_KEY, token);
   } catch {
-    // server not reachable
+    // localStorage unavailable
   }
+}
 
-  return null;
+async function authRequest(path: string, body: Record<string, string>) {
+  const response = await originalFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.token || !data.user) {
+    throw new Error(data.error || 'Unable to authenticate. Please try again.');
+  }
+  saveSession(data.token);
+  return data.user as UserAccount;
+}
+
+export function login(email: string, password: string) {
+  return authRequest('/api/auth/login', { email, password });
+}
+
+export function register(displayName: string, email: string, password: string) {
+  return authRequest('/api/auth/register', { displayName, email, password });
+}
+
+export async function restoreSession(): Promise<UserAccount | null> {
+  const token = sessionToken || storedToken();
+  if (!token) return null;
+  sessionToken = token;
+  const response = await originalFetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.user) {
+    clearSessionIfCurrent(token);
+    return null;
+  }
+  return data.user as UserAccount;
+}
+
+export async function logout() {
+  const token = sessionToken || storedToken();
+  clearSessionIfCurrent(token);
+  if (token) await originalFetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+}
+
+export function setSessionExpiredHandler(handler: (() => void) | null) {
+  onSessionExpired = handler;
 }
 
 async function authorizedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const token = await ensureSession();
+  const token = sessionToken || storedToken();
+  if (token) sessionToken = token;
   const headers = new Headers(init?.headers);
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  let response = await originalFetch(input, { ...init, headers });
+  const response = await originalFetch(input, { ...init, headers });
 
-  if (response.status === 401) {
-    sessionToken = null;
-    try { window.localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
-    const freshToken = await ensureSession();
-    if (freshToken) {
-      const retryHeaders = new Headers(init?.headers);
-      retryHeaders.set('Authorization', `Bearer ${freshToken}`);
-      response = await originalFetch(input, { ...init, headers: retryHeaders });
-    }
+  if (response.status === 401 && token && !String(input).includes('/api/auth/') && (sessionToken || storedToken()) === token) {
+    clearSession();
+    onSessionExpired?.();
   }
 
   return response;

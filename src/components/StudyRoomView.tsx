@@ -19,8 +19,8 @@ export const StudyRoomView: React.FC<StudyRoomViewProps> = ({ peers, messages, o
 
     const newMsg: StudyRoomMessage = {
       id: `msg-${Date.now()}`,
-      senderName: 'Alex (You)',
-      senderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
+      senderName: 'You',
+      senderAvatar: '',
       timestamp: 'Just now',
       text: inputText,
       isQuestion: isAskingQuestion,
@@ -43,7 +43,7 @@ export const StudyRoomView: React.FC<StudyRoomViewProps> = ({ peers, messages, o
             <span>Collaborative Peer Sanctuary</span>
           </div>
           <h1 className="font-serif text-4xl sm:text-5xl italic font-normal text-black">
-            CS301 Group Study Room
+            Study Room Prototype
           </h1>
           <p className="text-xs text-black/70 mt-2 max-w-xl font-sans">
             Connect with classmates, share practice solutions, solve conceptual bottlenecks, and run synchronized group focus timers.
@@ -99,13 +99,13 @@ export const StudyRoomView: React.FC<StudyRoomViewProps> = ({ peers, messages, o
           {/* Shared Synchronized Group Focus Timer */}
           <div className="bg-black text-white border border-black p-8 text-center space-y-3">
             <div className="text-[9px] uppercase tracking-[0.2em] text-white/70 font-bold">
-              Shared Group Pomodoro
+              Prototype Shared Timer
             </div>
             <div className="font-serif text-5xl italic font-normal tracking-tight text-white">
               25:00
             </div>
             <p className="text-[10px] text-white/60 font-mono pt-1">
-              4 peers currently focusing together
+              {peers.length} peer{peers.length === 1 ? '' : 's'} currently listed
             </p>
           </div>
         </div>

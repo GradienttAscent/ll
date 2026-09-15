@@ -5,9 +5,6 @@ import { createId, now } from './utils';
 const SCRYPT_KEYLEN = 64;
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-export const DEMO_EMAIL = process.env.LAZYLIFT_DEMO_EMAIL || 'demo@lazylift.app';
-export const DEMO_PASSWORD = process.env.LAZYLIFT_DEMO_PASSWORD || 'demo1234';
-
 export interface AuthUser {
   id: string;
   email: string;
@@ -82,13 +79,4 @@ export function getSessionUser(token: string): AuthUser | null {
     .get(hashToken(token), now()) as any | undefined;
   if (!row) return null;
   return { id: row.id, email: row.email, displayName: row.displayName || '', createdAt: row.createdAt };
-}
-
-export function ensureDemoUser() {
-  const email = DEMO_EMAIL.toLowerCase();
-  const existing = getDb().prepare('SELECT id FROM users WHERE email = ?').get(email);
-  if (existing) return;
-  const { stored } = hashPassword(DEMO_PASSWORD);
-  getDb().prepare(`INSERT INTO users (id, email, password_hash, display_name, created_at)
-    VALUES (?, ?, ?, ?, ?)`).run(createId('user'), email, stored, 'Demo User', now());
 }

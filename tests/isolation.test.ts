@@ -25,10 +25,10 @@ async function seedFully(client: Api) {
   assert.strictEqual(blockRes.status, 201);
   const block = blockRes.json.scheduleBlocks[0];
 
-  // block reschedule + completion
+  // Block reschedule. Completion is recorded through the measured session lifecycle.
   const patched = await client.request(`/api/schedule-blocks/${block.id}`, {
     method: 'PATCH',
-    body: { startTime: '10:00', completed: true },
+    body: { startTime: '10:00' },
   });
   assert.strictEqual(patched.status, 200);
 
@@ -218,6 +218,55 @@ describe('user isolation', () => {
       })).status,
       404,
     );
+  });
+
+  it('keeps academic evidence and analytics scoped to the authenticated user', async () => {
+    const academic = await alice.request('/api/academic-documents/analyze', {
+      method: 'POST',
+      body: {
+        title: 'Alice private syllabus',
+        docType: 'Syllabus',
+        content: 'Unit 1: Alice Graph Theory',
+      },
+    });
+    assert.strictEqual(academic.status, 201);
+
+    const bobEvidence = await bob.request('/api/academic-evidence');
+    assert.strictEqual(bobEvidence.status, 200);
+    assert.ok(!bobEvidence.json.academic.documents.some((document: any) => document.title === 'Alice private syllabus'));
+    assert.ok(!bobEvidence.json.academic.ranking.some((topic: any) => topic.name === 'Alice Graph Theory'));
+
+    const bobAnalytics = await bob.request('/api/analytics/dashboard');
+    assert.strictEqual(bobAnalytics.status, 200);
+    assert.strictEqual(bobAnalytics.json.analytics.summary.plannedMinutes, 60);
+    assert.strictEqual(bobAnalytics.json.analytics.summary.actualSeconds, 2400);
+  });
+
+  it('returns truthful empty feature state for a newly registered user', async () => {
+    const newUser = new Api(server.baseUrl);
+    const { token } = await newUser.register('new-user@iso.com', 'secret123');
+    newUser.token = token;
+
+    assert.deepStrictEqual((await newUser.request('/api/academic-evidence')).json.academic.documents, []);
+    assert.deepStrictEqual((await newUser.request('/api/topics')).json.topics, []);
+    assert.deepStrictEqual((await newUser.request('/api/schedule-blocks')).json.scheduleBlocks, []);
+    assert.deepStrictEqual((await newUser.request('/api/study-sessions')).json.studySessions, []);
+    assert.deepStrictEqual((await newUser.request('/api/feedback')).json.feedback, []);
+    const analytics = await newUser.request('/api/analytics/dashboard');
+    assert.strictEqual(analytics.json.analytics.summary.plannedMinutes, 0);
+    assert.strictEqual(analytics.json.analytics.summary.actualSeconds, 0);
+
+    const assistant = await newUser.request('/api/scheduling-assistant/preview', {
+      method: 'POST', body: { message: 'What is on my schedule tomorrow?' },
+    });
+    assert.strictEqual(assistant.status, 200);
+    assert.strictEqual(assistant.json.preview.changes.length, 0);
+
+    const aliceSessions = (await alice.request('/api/study-sessions')).json.studySessions;
+    const foreignAdaptive = await newUser.request('/api/adaptive-proposals', {
+      method: 'POST', body: { studySessionId: aliceSessions[0].id },
+    });
+    assert.strictEqual(foreignAdaptive.status, 404);
   });
 
   it('bob can read all of his own resources after the cross-user attempts', async () => {

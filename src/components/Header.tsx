@@ -1,14 +1,18 @@
 import React from 'react';
-import { ActiveTab } from '../types';
-import { Bell, Settings, Sparkles } from 'lucide-react';
+import { ActiveTab, UserAccount } from '../types';
+import { Bell, LogOut, Settings, Sparkles } from 'lucide-react';
 
 interface HeaderProps {
   activeTab: ActiveTab;
   setActiveTab: (tab: ActiveTab) => void;
   onOpenUpload: () => void;
+  user: UserAccount;
+  onLogout: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenUpload }) => {
+export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenUpload, user, onLogout }) => {
+  const identity = user.displayName || user.email;
+  const initials = identity.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
   return (
     <header className="sticky top-0 z-30 bg-[#FDFDFC] border-b border-black px-6 py-3.5 transition-all">
       <div className="max-w-[1600px] mx-auto flex items-center justify-between">
@@ -129,12 +133,15 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenU
           {/* User Profile Avatar */}
           <div className="flex items-center space-x-2.5 pl-3 border-l border-black/20">
             <div className="w-8 h-8 rounded-full bg-black flex items-center justify-center text-white text-[10px] font-bold">
-              AV
+              {initials}
             </div>
             <div className="hidden lg:block text-left text-xs">
-              <div className="font-bold text-black uppercase tracking-wider text-[11px]">Alex Vance</div>
-              <div className="text-[9px] uppercase tracking-widest text-black/40">CS301 Major</div>
+              <div className="font-bold text-black uppercase tracking-wider text-[11px]">{identity}</div>
+              <div className="text-[9px] tracking-widest text-black/40">{user.email}</div>
             </div>
+            <button onClick={onLogout} className="p-2 border border-black/20 hover:border-black text-black/60 hover:text-black transition-colors" title="Log out">
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
 

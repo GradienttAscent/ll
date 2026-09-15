@@ -1,14 +1,12 @@
 import React, { useState } from 'react';
-import { PastPaper, ExtractedTopic, QuestionItem, PersistedTopic } from '../types';
+import { PastPaper, ExtractedTopic, QuestionItem } from '../types';
 import { FileUp, Sparkles, FileText, CheckCircle2, BarChart3, ArrowRight, BookOpen, Loader2 } from 'lucide-react';
 
 interface UploadExtractViewProps {
   papers: PastPaper[];
   topics: ExtractedTopic[];
   questions: QuestionItem[];
-  onAddPaper: (paper: PastPaper) => void;
-  onQuestionsExtracted: (newQuestions: QuestionItem[], newTopics: ExtractedTopic[]) => void;
-  onTopicsSaved: (topics: PersistedTopic[]) => void;
+  onAcademicUpdated: () => Promise<void>;
   setActiveTab: (tab: string) => void;
 }
 
@@ -16,8 +14,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   papers,
   topics,
   questions,
-  onQuestionsExtracted,
-  onTopicsSaved,
+  onAcademicUpdated,
   setActiveTab
 }) => {
   const [selectedPaper, setSelectedPaper] = useState<PastPaper | null>(papers[0] || null);
@@ -26,12 +23,14 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   const [docType, setDocType] = useState<'Past Paper' | 'Syllabus'>('Past Paper');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
+  const [fileError, setFileError] = useState('');
 
   const handleRunAnalysis = async () => {
     if (!inputText.trim() && !selectedPaper) {
       alert('Please enter document content or select an uploaded paper.');
       return;
     }
+    if (fileError) return;
 
     setIsAnalyzing(true);
     setAnalysisResult(null);
@@ -40,55 +39,24 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     const nameToAnalyze = docName || selectedPaper?.title || 'Academic Paper';
 
     try {
-      const res = await fetch('/api/gemini/analyze-document', {
+      const res = await fetch('/api/academic-documents/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          documentName: nameToAnalyze,
-          documentType: docType,
+          title: nameToAnalyze,
+          docType,
           content: contentToAnalyze,
         }),
       });
 
       const json = await res.json();
-      if (json.success && json.data) {
-        setAnalysisResult(json.data);
-
-        // Convert extracted questions to QuestionItem format
-        if (json.data.extractedQuestions && json.data.extractedQuestions.length > 0) {
-          const newQuestions: QuestionItem[] = json.data.extractedQuestions.map((q: any, i: number) => ({
-            id: `ext-${Date.now()}-${i}`,
-            subject: 'Algorithms (CS301)',
-            topic: q.topic || 'General Algorithms',
-            questionText: q.question || 'Extracted question from paper',
-            marks: q.marks || 10,
-            year: nameToAnalyze,
-            type: (q.type as any) || 'Subjective',
-            suggestedTimeMinutes: q.suggestedTimeMinutes || 15,
-            modelAnswer: 'See practice view for AI step-by-step guidance.',
-          }));
-
-          const extractedTopics = json.data.topics || [];
-          const saveResponse = await fetch('/api/topics/bulk', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ topics: extractedTopics }),
-          });
-          const savedJson = await saveResponse.json();
-          if (!saveResponse.ok) throw new Error(savedJson.error || 'Unable to save extracted topics.');
-          onTopicsSaved(savedJson.topics);
-          const newTopics: ExtractedTopic[] = extractedTopics.map((topic: any, index: number) => ({
-            id: `analysis-${Date.now()}-${index}`,
-            name: topic.name,
-            weightage: topic.weightage || 10,
-            frequencyCount: topic.priority || 5,
-            difficulty: topic.priority >= 8 ? 'Hard' : topic.priority >= 5 ? 'Medium' : 'Easy',
-            highYield: topic.priority >= 8,
-          }));
-          onQuestionsExtracted(newQuestions, newTopics);
-          alert(`Topics extracted and saved (${savedJson.topics.length} stored topics).`);
-        }
-      }
+      if (!res.ok) throw new Error(json.error || 'Unable to persist academic document.');
+      const analysis = json.analysis;
+      setAnalysisResult({
+        title: 'Academic document saved',
+        summary: `${analysis.extractedTopicCount} topics and ${analysis.createdQuestionCount} new questions were persisted. Existing matching questions were not duplicated.`,
+      });
+      await onAcademicUpdated();
     } catch (err) {
       console.error('Failed to run AI document analysis:', err);
       alert('Error analyzing document. Please try again.');
@@ -101,11 +69,19 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     const file = e.target.files?.[0];
     if (file) {
       setDocName(file.name);
+      setSelectedPaper(null);
+      setFileError('');
       const reader = new FileReader();
       reader.onload = (evt) => {
         const text = evt.target?.result as string;
-        setInputText(text || `Sample content extracted from ${file.name}: CS301 Algorithms past paper questions covering Dijkstra, Dynamic Programming knapsack, and Big O notation.`);
+        if (!text?.trim()) {
+          setInputText('');
+          setFileError('This text file does not contain readable content.');
+          return;
+        }
+        setInputText(text);
       };
+      reader.onerror = () => setFileError('This text file does not contain readable content.');
       reader.readAsText(file);
     }
   };
@@ -210,11 +186,12 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
               <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Or Paste Document Text</label>
               <textarea
                 value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
+                onChange={(e) => { setInputText(e.target.value); setFileError(''); }}
                 placeholder="Paste questions or syllabus outline here..."
                 rows={5}
                 className="w-full bg-white border border-black/30 p-3 text-xs text-black focus:outline-none focus:border-black font-mono leading-relaxed"
               />
+              {fileError && <p className="text-[10px] font-bold text-black">{fileError}</p>}
             </div>
 
             {/* Run AI Analysis Button */}
@@ -226,7 +203,7 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
               {isAnalyzing ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Analyzing with Gemini...</span>
+              <span>Saving and mapping...</span>
                 </>
               ) : (
                 <>
@@ -298,7 +275,7 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
                   <span>Topic Weightage &amp; Trend Analysis</span>
                 </h3>
                 <p className="text-xs text-black/60 mt-1">
-                  Based on occurrence frequency in CS301 past papers from 2021&ndash;2025.
+                  Based on your persisted syllabus and previous-question evidence.
                 </p>
               </div>
               <span className="text-[9px] bg-black text-white font-bold px-3 py-1 uppercase tracking-[0.2em]">
@@ -320,8 +297,8 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
                       )}
                     </div>
                     <div className="flex items-center space-x-3 text-black/60">
-                      <span>{t.frequencyCount} past questions</span>
-                      <span className="font-bold text-black font-mono">{t.weightage}% weight</span>
+                      <span>Priority {t.priorityScore}/10</span>
+                      <span>{t.frequencyCount} mapped past questions</span>
                     </div>
                   </div>
 
@@ -330,10 +307,16 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
                     <div
                       className="h-full bg-black transition-all duration-700"
                       style={{
-                        width: `${t.weightage * 2.5}%`,
+                        width: `${(t.priorityScore || 0) * 10}%`,
                       }}
                     ></div>
                   </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-black/60">
+                    <span>PYQ frequency: {t.frequencyCount}</span>
+                    <span>Syllabus: {t.syllabusEvidence ? 'Present' : 'Not present'}</span>
+                    {t.actualWeightage !== null && t.actualWeightage !== undefined && <span>Declared weightage: {t.actualWeightage}%</span>}
+                  </div>
+                  {t.reason && <p className="text-[10px] text-black/60">Reason: {t.reason}</p>}
                 </div>
               ))}
             </div>
@@ -368,6 +351,9 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
                   <p className="text-xs font-sans text-black leading-relaxed">
                     {q.questionText}
                   </p>
+                  {q.mappingStatus === 'mapped' && q.mappingEvidence && q.mappingEvidence.length > 0 && (
+                    <p className="text-[10px] text-black/60">{q.mappingEvidence.join('; ')}</p>
+                  )}
                 </div>
               ))}
             </div>

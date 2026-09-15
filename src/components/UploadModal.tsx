@@ -1,15 +1,13 @@
 import React, { useState } from 'react';
 import { X, FileUp, Sparkles, Loader2 } from 'lucide-react';
-import { PastPaper, PersistedTopic } from '../types';
 
 interface UploadModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onPaperUploaded: (paper: PastPaper) => void;
-  onTopicsSaved: (topics: PersistedTopic[]) => void;
+  onAcademicUpdated: () => Promise<void>;
 }
 
-export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPaperUploaded, onTopicsSaved }) => {
+export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAcademicUpdated }) => {
   const [docName, setDocName] = useState('');
   const [docType, setDocType] = useState<'Past Paper' | 'Syllabus'>('Past Paper');
   const [content, setContent] = useState('');
@@ -27,45 +25,21 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPap
     setIsProcessing(true);
 
     try {
-      // Call Gemini API to extract key topics
-      const res = await fetch('/api/gemini/analyze-document', {
+      const res = await fetch('/api/academic-documents/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          documentName: docName,
-          documentType: docType,
-          content: content || `Extracted text from ${docName}`,
+          title: docName,
+          docType,
+          content,
         }),
       });
 
       const json = await res.json();
-      if (!res.ok || !json.success) throw new Error(json.error || 'Failed to analyze document.');
-      const topicsResponse = await fetch('/api/topics/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topics: json.data?.topics || [] }),
-      });
-      const savedTopics = await topicsResponse.json();
-      if (!topicsResponse.ok) throw new Error(savedTopics.error || 'Unable to save extracted topics.');
-      onTopicsSaved(savedTopics.topics);
-      const extractedCount = json.data?.extractedQuestions?.length || 5;
-
-      const newPaper: PastPaper = {
-        id: `paper-${Date.now()}`,
-        title: docName.endsWith('.txt') ? docName : `${docName}.txt`,
-        courseCode: 'CS301',
-        semester: 'Spring 2026',
-        year: '2026',
-        fileSize: '1.5 MB',
-        uploadDate: 'Just now',
-        topicsCount: json.data?.topics?.length || 4,
-        extractedQuestionsCount: extractedCount,
-        parsedContent: content || `Extracted text for ${docName}`,
-      };
-
-      onPaperUploaded(newPaper);
+      if (!res.ok) throw new Error(json.error || 'Failed to save academic document.');
+      await onAcademicUpdated();
       onClose();
-      alert(`Topics extracted and saved. ${extractedCount} practice questions were identified.`);
+      alert(`Document saved. ${json.analysis.createdQuestionCount} new questions were identified.`);
     } catch (err) {
       console.error('Error uploading paper:', err);
       alert('Failed to process document.');
@@ -134,7 +108,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPap
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Content / Text Outline (Optional)</label>
+            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Content / Text Outline</label>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}

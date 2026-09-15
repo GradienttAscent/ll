@@ -12,7 +12,7 @@ Storage uses [sql.js](https://sql.js.org/) (SQLite compiled to WebAssembly) pers
 - A `meta` table stores `schema_version`.
 - `db.ts` runs an ordered list of `MIGRATIONS` (`{ version, name, up }`) once each in a transaction.
 - `PRAGMA foreign_keys = ON` is set **after** migrations run (it stays off during migration so legacy-schema rebuilds and `ADD COLUMN` fixes are permitted).
-- Current schema version: `2`
+- Current schema version: `6`
 
 ## Tables
 
@@ -46,6 +46,7 @@ Shared course catalog (`course-demo` seeded). Courses are not per-user; topics a
 | `name` | TEXT | |
 | `priority` | INTEGER | 1–10 |
 | `weightage` | REAL | percentage |
+| `has_weightage` | INTEGER | `1` when a source declared weightage; distinguishes an absent value from `0` |
 | `source` | TEXT | e.g. `extracted` |
 | `created_at` | TEXT | |
 
@@ -77,7 +78,21 @@ Unique index: `idx_topics_user_course_name ON topics(user_id, course_id, name)` 
 | `duration_minutes` | INTEGER | planned duration |
 | `actual_duration_seconds` | INTEGER | additive counter (accumulated via PATCH) |
 | `status` | TEXT | `active` / `paused` / `completed` / `stopped` |
+| `active_since` | TEXT nullable | timestamp of the current active interval; cleared while paused/finished |
 | `ended_at` | TEXT | auto-set when status becomes `completed` or `stopped` |
+
+### `session_feedback`
+Separate from question-answer feedback, with one updatable record per completed study session.
+| column | type | notes |
+| --- | --- | --- |
+| `id` | TEXT | PK |
+| `user_id` | TEXT | FK → `users.id` (CASCADE) |
+| `study_session_id` | TEXT | UNIQUE FK → `study_sessions.id` (CASCADE) |
+| `focus_rating` | INTEGER | 1–5 |
+| `difficulty_rating` | INTEGER | 1–5; 4–5 qualifies completed sessions for adaptation |
+| `progress_rating` | INTEGER | 1–5 |
+| `notes` | TEXT nullable | max 2000 characters at API boundary |
+| `created_at` / `updated_at` | TEXT | ISO-8601 |
 
 ### `documents`
 | column | type | notes |
@@ -96,12 +111,30 @@ Unique index: `idx_topics_user_course_name ON topics(user_id, course_id, name)` 
 | `id` | TEXT | PK |
 | `user_id` | TEXT | FK → `users.id` (CASCADE); NOT NULL |
 | `topic_id` | TEXT | FK → `topics.id` (SET NULL) |
+| `document_id` | TEXT nullable | FK → `documents.id` (SET NULL); source association for extracted PYQs |
 | `question_text` | TEXT | |
+| `normalized_text` | TEXT | normalized extracted text; unique with user/document when a document is present |
 | `marks` | INTEGER | |
 | `question_type` | TEXT | e.g. `Subjective` |
 | `source` | TEXT | e.g. `extracted` |
 | `suggested_time_minutes` | INTEGER | |
+| `mapping_score` | REAL nullable | deterministic topic-token match score |
+| `mapping_evidence` | TEXT | JSON list of matched tokens; `[]` when unmatched |
+| `mapping_status` | TEXT | `mapped` or `unmatched` |
 | `created_at` | TEXT | |
+
+Partial unique index: `idx_questions_user_document_normalized ON questions(user_id, document_id, normalized_text) WHERE document_id IS NOT NULL`. This prevents re-processing the same persisted document from duplicating extracted questions while preserving standalone legacy/manual questions.
+
+### `topic_document_sources`
+Associates extracted topics with the persisted source document that supplied syllabus evidence.
+| column | type | notes |
+| --- | --- | --- |
+| `user_id` | TEXT | FK → `users.id` (CASCADE) |
+| `topic_id` | TEXT | FK → `topics.id` (CASCADE) |
+| `document_id` | TEXT | FK → `documents.id` (CASCADE) |
+| `created_at` | TEXT | ISO-8601 |
+
+Primary key: `(user_id, topic_id, document_id)`.
 
 ### `feedback`
 | column | type | notes |
@@ -130,7 +163,7 @@ History of every create / reschedule / complete event on a block.
 | `id` | TEXT | PK |
 | `user_id` | TEXT | FK → `users.id` (CASCADE); NOT NULL |
 | `block_id` | TEXT | FK → `schedule_blocks.id` (CASCADE) |
-| `field` | TEXT | `created` / `rescheduled` / `completed` |
+| `field` | TEXT | `created` / `rescheduled` / `completed` / `adaptive_revision` |
 | `old_value` | TEXT | nullable |
 | `new_value` | TEXT | nullable |
 | `reason` | TEXT | nullable (v2); e.g. `manual`, `adaptive-missed` |
@@ -138,9 +171,13 @@ History of every create / reschedule / complete event on a block.
 
 Enough to reconstruct: affected block (`block_id`), prior scheduling info (`old_value`), new scheduling info (`new_value`), owning user (`user_id`), timestamp (`created_at`), and trigger (`reason`).
 
-## Legacy data handling (migration v1)
+## Legacy data handling (migrations v1-v6)
 
 If a pre-auth database exists:
 - `topics` is rebuilt to add `user_id` (legacy rows get an empty owner and are invisible until owned by a user).
 - `schedule_blocks` / `study_sessions` gain `user_id` via `ADD COLUMN`; `study_sessions` also gains `ended_at`, `actual_duration_seconds`, `created_at`.
 - All new tables are created afresh.
+- v2 adds schedule-change reasons and legacy session fields to question-answer feedback.
+- v3-v4 add document-backed academic evidence, deterministic PYQ mapping, and topic-source associations.
+- v5 adds `topics.has_weightage` so ranking can present declared weightage truthfully.
+- v6 adds `study_sessions.active_since` and the dedicated `session_feedback` table.

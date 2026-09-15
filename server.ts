@@ -8,6 +8,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { initDatabase, getDatabase } from './db';
 import * as auth from './auth';
 import * as services from './services';
+import { parseSchedulingAssistantIntent } from './schedulingAssistant';
 import {
   HttpError,
   sendError,
@@ -15,12 +16,12 @@ import {
   validateDocumentInput,
   validateEmail,
   validateFeedbackInput,
+  validateSessionFeedbackInput,
   validatePassword,
   VALID_SESSION_STATUSES,
 } from './validation';
 
 const ADAPTIVE_REASONS = ['missed', 'abandoned', 'high-difficulty'];
-const SCHEDULING_FIELDS = ['date', 'startTime', 'durationMinutes', 'topicId'];
 
 dotenv.config({ path: fs.existsSync('.env.local') ? '.env.local' : '.env' });
 
@@ -126,19 +127,13 @@ app.get('/api/schedule-blocks', (req, res) => {
 
 app.post('/api/schedule-blocks', (req, res) => {
   const block = req.body || {};
-  const validationError = validateBlockInput(block);
-  if (validationError) return sendError(res, 400, validationError);
-  if (!services.findOwnedTopic(userIdOf(req), block.topicId)) {
-    return sendError(res, 404, 'The selected topic does not exist.');
+  try {
+    services.saveScheduleBlocks(userIdOf(req), [block]);
+    return res.status(201).json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to save schedule block.');
   }
-  if (services.findOverlappingBlock(userIdOf(req), block.date, block.startTime, block.durationMinutes)) {
-    return sendError(res, 409, 'This block overlaps an existing schedule block.');
-  }
-  const created = services.createScheduleBlock(userIdOf(req), block);
-  services.recordScheduleChange(userIdOf(req), created.id, 'created', null, JSON.stringify({
-    title: created.title, date: created.date, startTime: created.startTime, durationMinutes: created.durationMinutes,
-  }));
-  return res.status(201).json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
 });
 
 app.post('/api/schedule-blocks/bulk', (req, res) => {
@@ -147,11 +142,7 @@ app.post('/api/schedule-blocks/bulk', (req, res) => {
     return sendError(res, 400, 'A non-empty scheduleBlocks array is required.');
   }
   try {
-    services.saveScheduleBlocks(userIdOf(req), blocks).forEach((created) => {
-      services.recordScheduleChange(userIdOf(req), created.id, 'created', null, JSON.stringify({
-        title: created.title, date: created.date, startTime: created.startTime, durationMinutes: created.durationMinutes,
-      }));
-    });
+    services.saveScheduleBlocks(userIdOf(req), blocks);
     return res.status(201).json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
@@ -180,18 +171,18 @@ app.patch('/api/schedule-blocks/:id', (req, res) => {
     summaryChanges.title = { field: 'title', oldValue: existing.title, newValue: updates.title };
   }
   if (body.date !== undefined) {
-    if (typeof body.date !== 'string' || !body.date.trim()) return sendError(res, 400, 'date must be a non-empty string.');
+    if (typeof body.date !== 'string') return sendError(res, 400, 'date must be a real YYYY-MM-DD date.');
     updates.date = body.date;
     summaryChanges.date = { field: 'date', oldValue: existing.date, newValue: updates.date };
   }
   if (body.startTime !== undefined) {
-    if (typeof body.startTime !== 'string' || !body.startTime.trim()) return sendError(res, 400, 'startTime must be a non-empty string.');
+    if (typeof body.startTime !== 'string') return sendError(res, 400, 'startTime must be a valid HH:MM 24-hour time.');
     updates.startTime = body.startTime;
     summaryChanges.startTime = { field: 'startTime', oldValue: existing.startTime, newValue: updates.startTime };
   }
   if (body.durationMinutes !== undefined) {
     const minutes = Number(body.durationMinutes);
-    if (!Number.isFinite(minutes) || minutes < 1) return sendError(res, 400, 'durationMinutes must be a positive number.');
+    if (!Number.isInteger(minutes) || minutes < 1) return sendError(res, 400, 'durationMinutes must be a positive integer.');
     updates.durationMinutes = minutes;
     summaryChanges.durationMinutes = { field: 'durationMinutes', oldValue: String(existing.durationMinutes), newValue: String(minutes) };
   }
@@ -213,20 +204,26 @@ app.patch('/api/schedule-blocks/:id', (req, res) => {
     return sendError(res, 400, 'At least one updatable field is required.');
   }
 
-  const mergedDate = updates.date !== undefined ? updates.date : existing.date;
-  const mergedStartTime = updates.startTime !== undefined ? updates.startTime : existing.startTime;
-  const mergedDuration = updates.durationMinutes !== undefined ? updates.durationMinutes : Number(existing.durationMinutes);
-  const schedulingChanged = SCHEDULING_FIELDS.some((field) => {
-    if (updates[field as keyof typeof updates] === undefined) return false;
-    if (field === 'durationMinutes') return Number(updates.durationMinutes) !== Number(existing.durationMinutes);
-    return updates[field as keyof typeof updates] !== existing[field as keyof typeof existing];
-  });
-  if (Boolean(existing.completed) && schedulingChanged) {
+  const schedulingChanged = updates.date !== undefined && updates.date !== existing.date
+    || updates.startTime !== undefined && updates.startTime !== existing.startTime
+    || updates.durationMinutes !== undefined && updates.durationMinutes !== existing.durationMinutes
+    || updates.topicId !== undefined && updates.topicId !== existing.topicId;
+  if (existing.completed && schedulingChanged) {
     return sendError(res, 409, 'Completed schedule blocks cannot be rescheduled.');
   }
-  if (schedulingChanged) {
-    const overlapping = services.findOverlappingBlock(userIdOf(req), mergedDate, mergedStartTime, mergedDuration, req.params.id);
-    if (overlapping) return sendError(res, 409, `This change overlaps "${overlapping.title}".`);
+
+  try {
+    services.assertScheduleBlocksAreValid(userIdOf(req), [{
+      topicId: updates.topicId || existing.topicId,
+      title: updates.title || existing.title,
+      date: updates.date || existing.date,
+      startTime: updates.startTime || existing.startTime,
+      durationMinutes: updates.durationMinutes || existing.durationMinutes,
+      completed: updates.completed === undefined ? existing.completed : Boolean(updates.completed),
+    }], req.params.id);
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to validate schedule block.');
   }
 
   services.updateScheduleBlock(userIdOf(req), req.params.id, updates);
@@ -343,6 +340,42 @@ app.post('/api/adaptive/proposals/reject', (req, res) => {
   return res.json({ ok: true });
 });
 
+// ---- Conversational scheduling assistant ----
+app.post('/api/scheduling-assistant/preview', (req, res) => {
+  const message = req.body?.message;
+  const selectedBlockId = req.body?.selectedBlockId;
+  if (typeof message !== 'string' || !message.trim()) return sendError(res, 400, 'message is required.');
+  if (selectedBlockId !== undefined && (typeof selectedBlockId !== 'string' || !selectedBlockId)) return sendError(res, 400, 'selectedBlockId must be a non-empty string.');
+  try {
+    const preview = services.previewSchedulingAssistant(userIdOf(req), parseSchedulingAssistantIntent(message), new Date(), selectedBlockId);
+    return res.json({ preview });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to prepare a schedule suggestion.');
+  }
+});
+
+app.post('/api/scheduling-assistant/confirm', (req, res) => {
+  const message = req.body?.message;
+  const changes = req.body?.changes;
+  const selectedBlockId = req.body?.selectedBlockId;
+  if (typeof message !== 'string' || !message.trim()) return sendError(res, 400, 'message is required.');
+  if (!Array.isArray(changes) || changes.length === 0) return sendError(res, 400, 'changes are required.');
+  if (selectedBlockId !== undefined && (typeof selectedBlockId !== 'string' || !selectedBlockId)) return sendError(res, 400, 'selectedBlockId must be a non-empty string.');
+  try {
+    const scheduleBlocks = services.confirmSchedulingAssistant(userIdOf(req), parseSchedulingAssistantIntent(message), changes, selectedBlockId);
+    return res.json({ scheduleBlocks });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to confirm schedule changes.');
+  }
+});
+
+app.post('/api/scheduling-assistant/cancel', (_req, res) => {
+  // Previews are never persisted, so cancelling deliberately performs no writes.
+  return res.json({ ok: true });
+});
+
 // ---- Study sessions ----
 app.post('/api/study-sessions', (req, res) => {
   const { scheduleBlockId, durationMinutes } = (req.body || {}) as { scheduleBlockId?: unknown; durationMinutes?: unknown };
@@ -351,6 +384,10 @@ app.post('/api/study-sessions', (req, res) => {
   }
   const block = services.findOwnedScheduleBlock(userIdOf(req), scheduleBlockId);
   if (!block) return sendError(res, 404, 'Schedule block not found.');
+  if (block.completed) return sendError(res, 409, 'Completed schedule blocks cannot start a study session.');
+  if (services.studySessionRows(userIdOf(req)).some((session) => session.status === 'active' || session.status === 'paused')) {
+    return sendError(res, 409, 'Finish or stop your current study session before starting another.');
+  }
   const session = services.createStudySession(userIdOf(req), {
     scheduleBlockId,
     durationMinutes: Math.max(1, Number(durationMinutes) || block.durationMinutes),
@@ -363,11 +400,17 @@ app.patch('/api/study-sessions/:id', (req, res) => {
   if (typeof status !== 'string' || !VALID_SESSION_STATUSES.includes(status)) {
     return sendError(res, 400, 'A valid session status is required.');
   }
-  if (!services.findOwnedStudySession(userIdOf(req), req.params.id)) {
+  const existing = services.findOwnedStudySession(userIdOf(req), req.params.id);
+  if (!existing) {
     return sendError(res, 404, 'Study session not found.');
   }
-  const delta = Math.max(0, Number(actualDurationSeconds) || 0);
-  services.updateStudySession(userIdOf(req), req.params.id, { status, deltaSeconds: delta });
+  if (existing.status === 'completed' || existing.status === 'stopped') {
+    return sendError(res, 409, 'Finished study sessions cannot be resumed or changed.');
+  }
+  const delta = Number(actualDurationSeconds ?? 0);
+  if (!Number.isInteger(delta) || delta < 0) return sendError(res, 400, 'actualDurationSeconds must be a non-negative integer delta.');
+  if (status === 'completed') services.completeStudySession(userIdOf(req), req.params.id, delta);
+  else services.updateStudySession(userIdOf(req), req.params.id, { status, deltaSeconds: delta });
   return res.json({ studySession: { id: req.params.id, status } });
 });
 
@@ -375,7 +418,100 @@ app.get('/api/study-sessions', (req, res) => {
   res.json({ studySessions: services.studySessionRows(userIdOf(req)) });
 });
 
+app.post('/api/study-sessions/:id/feedback', (req, res) => {
+  const session = services.findOwnedStudySession(userIdOf(req), req.params.id);
+  if (!session) return sendError(res, 404, 'Study session not found.');
+  if (session.status !== 'completed') return sendError(res, 409, 'Session feedback can only be saved after completing a study session.');
+  const validationError = validateSessionFeedbackInput(req.body || {});
+  if (validationError) return sendError(res, 400, validationError);
+  const feedback = services.upsertSessionFeedback(userIdOf(req), req.params.id, req.body);
+  return res.status(201).json({ feedback });
+});
+
+app.get('/api/study-sessions/:id/feedback', (req, res) => {
+  if (!services.findOwnedStudySession(userIdOf(req), req.params.id)) return sendError(res, 404, 'Study session not found.');
+  return res.json({ feedback: services.findSessionFeedback(userIdOf(req), req.params.id) || null });
+});
+
+// ---- Analytics ----
+app.get('/api/analytics/dashboard', (req, res) => {
+  res.json({ analytics: services.getDashboardAnalytics(userIdOf(req)) });
+});
+
+// ---- Adaptive revisions ----
+app.post('/api/adaptive-proposals', (req, res) => {
+  const studySessionId = req.body?.studySessionId;
+  if (typeof studySessionId !== 'string' || !studySessionId) {
+    return sendError(res, 400, 'studySessionId is required.');
+  }
+  try {
+    return res.json(services.buildAdaptiveProposal(userIdOf(req), studySessionId));
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to generate adaptive proposal.');
+  }
+});
+
+app.post('/api/adaptive-proposals/accept', (req, res) => {
+  const body = req.body || {};
+  if (typeof body.studySessionId !== 'string' || !body.studySessionId) {
+    return sendError(res, 400, 'studySessionId is required.');
+  }
+  if (typeof body.proposedDate !== 'string' || typeof body.proposedStartTime !== 'string') {
+    return sendError(res, 400, 'proposedDate and proposedStartTime are required.');
+  }
+  const proposedDurationMinutes = Number(body.proposedDurationMinutes);
+  if (!Number.isInteger(proposedDurationMinutes) || proposedDurationMinutes < 1) {
+    return sendError(res, 400, 'proposedDurationMinutes must be a positive integer.');
+  }
+  try {
+    const scheduleBlock = services.acceptAdaptiveProposal(userIdOf(req), {
+      studySessionId: body.studySessionId,
+      proposedDate: body.proposedDate,
+      proposedStartTime: body.proposedStartTime,
+      proposedDurationMinutes,
+    });
+    return res.status(201).json({ scheduleBlock, scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to accept adaptive proposal.');
+  }
+});
+
+app.post('/api/adaptive-proposals/reject', (req, res) => {
+  const studySessionId = req.body?.studySessionId;
+  if (typeof studySessionId !== 'string' || !studySessionId) {
+    return sendError(res, 400, 'studySessionId is required.');
+  }
+  if (!services.findOwnedStudySession(userIdOf(req), studySessionId)) {
+    return sendError(res, 404, 'Study session not found.');
+  }
+  return res.json({ ok: true });
+});
+
 // ---- Documents ----
+app.post('/api/academic-documents/analyze', (req, res) => {
+  const body = req.body || {};
+  if (typeof body.title !== 'string' || !body.title.trim()) return sendError(res, 400, 'title is required.');
+  if (typeof body.content !== 'string' || !body.content.trim()) return sendError(res, 400, 'content is required.');
+  if (typeof body.docType !== 'string' || !body.docType.trim()) return sendError(res, 400, 'docType is required.');
+  try {
+    return res.status(201).json({ analysis: services.ingestAcademicDocument(userIdOf(req), {
+      title: body.title,
+      docType: body.docType,
+      content: body.content,
+      fileSize: typeof body.fileSize === 'string' ? body.fileSize : '',
+    }) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to analyze academic document.');
+  }
+});
+
+app.get('/api/academic-evidence', (req, res) => {
+  return res.json({ academic: services.academicEvidence(userIdOf(req)) });
+});
+
 app.get('/api/documents', (req, res) => {
   res.json({ documents: services.documentRows(userIdOf(req)) });
 });
@@ -714,7 +850,6 @@ export async function createApp() {
 
 async function startServer() {
   await createApp();
-  await auth.ensureDemoUser();
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

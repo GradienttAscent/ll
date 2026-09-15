@@ -7,6 +7,9 @@ interface PracticeViewProps {
 }
 
 export const PracticeView: React.FC<PracticeViewProps> = ({ questions }) => {
+  if (questions.length === 0) {
+    return <div className="max-w-5xl mx-auto py-10 px-6 sm:px-8"><div className="border border-black bg-[#F8F7F2] p-8"><div className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/50">Practice</div><h1 className="font-serif text-4xl italic mt-2">No practice questions yet</h1><p className="text-xs text-black/60 mt-3">Analyze previous papers first to generate your academic question set.</p></div></div>;
+  }
   const [selectedQuestion, setSelectedQuestion] = useState<QuestionItem>(questions[0]);
   const [studentAnswer, setStudentAnswer] = useState('');
   const [isEvaluating, setIsEvaluating] = useState(false);
@@ -165,22 +168,6 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ questions }) => {
 
             <div className="flex items-center justify-between pt-2">
               <button
-                onClick={() => setStudentAnswer(`Dijkstra's algorithm works as follows:
-1. Initialize dist[] array with infinity for all vertices except source dist[src] = 0.
-2. Insert all vertices into Min-Priority Queue keyed by distance.
-3. While Priority Queue is not empty:
-   - u = extract_min()
-   - For each adjacent vertex v with weight w(u,v):
-     If dist[u] + w(u,v) < dist[v]:
-       dist[v] = dist[u] + w(u,v)
-       decrease_key(v, dist[v])
-Time complexity with Binary Min-Heap: O((V + E) log V). With Fibonacci Heap: O(E + V log V).`)}
-                className="text-[10px] font-bold uppercase tracking-[0.15em] text-black/60 hover:text-black border-b border-black/30"
-              >
-                Fill Sample Answer
-              </button>
-
-              <button
                 onClick={handleEvaluate}
                 disabled={isEvaluating}
                 className="bg-black text-white hover:bg-white hover:text-black border border-black px-6 py-3 font-bold text-[10px] uppercase tracking-[0.2em] flex items-center space-x-2 transition-colors disabled:opacity-50"
@@ -188,12 +175,12 @@ Time complexity with Binary Min-Heap: O((V + E) log V). With Fibonacci Heap: O(E
                 {isEvaluating ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Grading with Gemini...</span>
+                    <span>Evaluating...</span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4" />
-                    <span>Get AI Evaluation &amp; Grade</span>
+                    <span>Get Practice Evaluation</span>
                   </>
                 )}
               </button>
@@ -208,7 +195,7 @@ Time complexity with Binary Min-Heap: O((V + E) log V). With Fibonacci Heap: O(E
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-black pb-4">
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-black/50">
-                    Gemini Grade Report
+                      Practice Evaluation Report
                   </div>
                   <h3 className="font-serif text-3xl italic font-normal text-black">
                     Answer Assessment

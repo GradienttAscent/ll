@@ -230,6 +230,63 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 3,
+    name: 'academic-document-question-evidence',
+    up: (db) => {
+      const questionColumns = pragmaTableInfo(db, 'questions').map((column) => column.name);
+      if (!questionColumns.includes('document_id')) db.run('ALTER TABLE questions ADD COLUMN document_id TEXT REFERENCES documents(id) ON DELETE SET NULL;');
+      if (!questionColumns.includes('normalized_text')) db.run("ALTER TABLE questions ADD COLUMN normalized_text TEXT NOT NULL DEFAULT ''; ");
+      if (!questionColumns.includes('mapping_score')) db.run('ALTER TABLE questions ADD COLUMN mapping_score REAL;');
+      if (!questionColumns.includes('mapping_evidence')) db.run("ALTER TABLE questions ADD COLUMN mapping_evidence TEXT NOT NULL DEFAULT '[]';");
+      if (!questionColumns.includes('mapping_status')) db.run("ALTER TABLE questions ADD COLUMN mapping_status TEXT NOT NULL DEFAULT 'unmatched';");
+      db.run("UPDATE questions SET normalized_text = lower(trim(question_text)) WHERE normalized_text = ''; ");
+      db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_user_document_normalized ON questions(user_id, document_id, normalized_text) WHERE document_id IS NOT NULL;');
+    },
+  },
+  {
+    version: 4,
+    name: 'topic-document-sources',
+    up: (db) => {
+      db.run(`CREATE TABLE IF NOT EXISTS topic_document_sources (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, topic_id, document_id)
+      );`);
+    },
+  },
+  {
+    version: 5,
+    name: 'topic-weightage-availability',
+    up: (db) => {
+      const topicColumns = pragmaTableInfo(db, 'topics').map((column) => column.name);
+      if (!topicColumns.includes('has_weightage')) db.run('ALTER TABLE topics ADD COLUMN has_weightage INTEGER NOT NULL DEFAULT 0;');
+    },
+  },
+  {
+    version: 6,
+    name: 'study-session-lifecycle-feedback',
+    up: (db) => {
+      const sessionColumns = pragmaTableInfo(db, 'study_sessions').map((column) => column.name);
+      if (!sessionColumns.includes('active_since')) {
+        db.run('ALTER TABLE study_sessions ADD COLUMN active_since TEXT;');
+        db.run("UPDATE study_sessions SET active_since = started_at WHERE status = 'active';");
+      }
+      db.run(`CREATE TABLE IF NOT EXISTS session_feedback (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        study_session_id TEXT NOT NULL UNIQUE REFERENCES study_sessions(id) ON DELETE CASCADE,
+        focus_rating INTEGER NOT NULL,
+        difficulty_rating INTEGER NOT NULL,
+        progress_rating INTEGER NOT NULL,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );`);
+    },
+  },
 ];
 
 function getMeta(db: SqlJsDatabase, key: string): string | undefined {
