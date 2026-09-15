@@ -3,10 +3,15 @@ export type ActiveTab = 'dashboard' | 'upload' | 'practice' | 'mock' | 'planner'
 export interface ExtractedTopic {
   id: string;
   name: string;
-  weightage: number; // percentage e.g. 28
-  frequencyCount: number; // e.g. 14 times in past 5 years
+  priorityScore?: number;
+  actualWeightage?: number | null;
+  weightage?: number;
+  frequencyCount: number;
+  syllabusEvidence?: boolean;
+  sourceDocumentIds?: string[];
   difficulty: 'Easy' | 'Medium' | 'Hard';
   highYield: boolean;
+  reason?: string;
   color?: string;
 }
 
@@ -21,6 +26,9 @@ export interface QuestionItem {
   suggestedTimeMinutes: number;
   solutionHint?: string;
   modelAnswer?: string;
+  documentId?: string | null;
+  mappingStatus?: 'mapped' | 'unmatched';
+  mappingEvidence?: string[];
 }
 
 export interface PastPaper {
@@ -62,6 +70,7 @@ export interface PersistedTopic {
   name: string;
   priority: number;
   weightage: number;
+  hasWeightage?: boolean;
   source: string;
   createdAt: string;
 }
@@ -98,6 +107,33 @@ export interface StudyRoomMessage {
   upvotes?: number;
 }
 
+export interface StudyRoom {
+  id: string;
+  name: string;
+  topic: string;
+  ownerId: string;
+  ownerName: string;
+  memberCount: number;
+  joined: boolean;
+  createdAt: string;
+}
+
+export interface StudyRoomMember {
+  id: string;
+  displayName: string;
+  email: string;
+  joinedAt: string;
+}
+
+export interface StudyRoomSession {
+  startedBy: string;
+  startedByName: string;
+  startedAt: string;
+  durationMinutes: number;
+  status: 'active' | 'paused' | 'stopped';
+  updatedAt: string;
+}
+
 export interface LMSCourse {
   id: string;
   platform: 'Canvas' | 'Moodle' | 'Blackboard' | 'Google Classroom';
@@ -124,6 +160,8 @@ export interface AuthSession {
   token: string;
   user: UserAccount;
 }
+
+export type AuthUser = UserAccount;
 
 export interface DocumentRecord {
   id: string;
@@ -184,6 +222,81 @@ export interface StudySession {
   actualDurationSeconds: number;
   status: 'active' | 'paused' | 'completed' | 'stopped';
   endedAt: string | null;
+  activeSince: string | null;
+}
+
+export interface AdaptiveProposal {
+  studySessionId: string;
+  originalBlockId: string;
+  topicId: string;
+  topicName: string;
+  proposedDate: string;
+  proposedStartTime: string;
+  proposedEndTime: string;
+  proposedDurationMinutes: number;
+  reason: string;
+  actionType: 'create_revision';
+  trigger: 'stopped' | 'high_difficulty';
+}
+
+export interface SessionFeedback {
+  id: string;
+  studySessionId: string;
+  focusRating: number;
+  difficultyRating: number;
+  progressRating: number;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DashboardAnalytics {
+  summary: {
+    plannedMinutes: number;
+    actualSeconds: number;
+    completedSessions: number;
+    stoppedSessions: number;
+    completionRate: number;
+    upcomingBlocks: number;
+    upcomingMinutes: number;
+  };
+  sevenDay: {
+    startDate: string;
+    endDate: string;
+    plannedMinutes: number;
+    actualSeconds: number;
+    completedSessions: number;
+    stoppedSessions: number;
+    completionRate: number;
+  };
+  feedback: {
+    averageFocus: number | null;
+    averageDifficulty: number | null;
+    averageProgress: number | null;
+    responseCount: number;
+  };
+  topics: Array<{
+    topicId: string;
+    topicName: string;
+    plannedMinutes: number;
+    actualSeconds: number;
+    completedSessions: number;
+    stoppedSessions: number;
+  }>;
+}
+
+export interface SchedulingAssistantChange {
+  blockId: string;
+  topicId: string;
+  topicName: string;
+  original: Pick<ScheduleBlock, 'title' | 'date' | 'startTime' | 'durationMinutes'>;
+  proposed: Pick<ScheduleBlock, 'date' | 'startTime' | 'durationMinutes'>;
+}
+
+export interface SchedulingAssistantPreview {
+  assistantMessage: string;
+  changes: SchedulingAssistantChange[];
+  matches?: Array<Pick<ScheduleBlock, 'topicName' | 'title' | 'date' | 'startTime' | 'durationMinutes'> & { blockId: string }>;
 }
 
 // --- Analytics (matches GET /api/analytics response) ---

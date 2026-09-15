@@ -131,6 +131,73 @@ describe('persistence layer', () => {
     assert.strictEqual(missing.status, 404);
   });
 
+  it('persists academic evidence, maps only supported PYQs, and ranks stored topics', async () => {
+    const syllabus = await client.request('/api/academic-documents/analyze', {
+      method: 'POST',
+      body: {
+        title: 'Operating Systems syllabus.txt',
+        docType: 'Syllabus',
+        content: 'Unit 1: Deadlocks and Resource Allocation\nUnit 2: Memory Management',
+      },
+    });
+    assert.strictEqual(syllabus.status, 201);
+    assert.strictEqual(syllabus.json.analysis.extractedTopicCount, 2);
+    assert.strictEqual(syllabus.json.analysis.createdQuestionCount, 0);
+
+    const paperBody = {
+      title: 'Operating Systems 2025.txt',
+      docType: 'Past Paper',
+      content: 'QUESTION 1 (10 Marks): Explain deadlock prevention.\nQUESTION 2 (10 Marks): Compare deadlock avoidance and prevention.\nQUESTION 3 (10 Marks): Explain paging in an operating system.',
+    };
+    const paper = await client.request('/api/academic-documents/analyze', { method: 'POST', body: paperBody });
+    assert.strictEqual(paper.status, 201);
+    assert.strictEqual(paper.json.analysis.createdQuestionCount, 3);
+
+    const evidence = await client.request('/api/academic-evidence');
+    assert.strictEqual(evidence.status, 200);
+    const deadlocks = evidence.json.academic.ranking.find((topic: any) => topic.name === 'Deadlocks and Resource Allocation');
+    assert.strictEqual(deadlocks.mappedQuestionCount, 2);
+    assert.ok(deadlocks.priorityScore >= 7);
+    assert.ok(deadlocks.sourceDocumentIds.includes(syllabus.json.analysis.document.id));
+    const mapped = evidence.json.academic.questions.find((question: any) => question.questionText.includes('deadlock prevention'));
+    assert.strictEqual(mapped.mappingStatus, 'mapped');
+    assert.ok(mapped.mappingEvidence.includes('matched keyword: deadlock'));
+    const unmatched = evidence.json.academic.questions.find((question: any) => question.questionText.includes('paging'));
+    assert.strictEqual(unmatched.mappingStatus, 'unmatched');
+    assert.strictEqual(unmatched.topicId, null);
+
+    const repeat = await client.request('/api/academic-documents/analyze', { method: 'POST', body: paperBody });
+    assert.strictEqual(repeat.status, 201);
+    assert.strictEqual(repeat.json.analysis.createdQuestionCount, 0);
+  });
+
+  it('remaps existing unmatched PYQs when syllabus topics arrive later without duplicating questions', async () => {
+    const paper = await client.request('/api/academic-documents/analyze', {
+      method: 'POST', body: {
+        title: 'Token ring paper.txt', docType: 'Past Paper',
+        content: 'QUESTION 1: Explain token ring recovery after a node failure.',
+      },
+    });
+    assert.strictEqual(paper.status, 201);
+    assert.strictEqual(paper.json.analysis.questions[0].mappingStatus, 'unmatched');
+
+    const syllabus = await client.request('/api/academic-documents/analyze', {
+      method: 'POST', body: {
+        title: 'Networks syllabus.txt', docType: 'Syllabus',
+        content: 'Unit 1: Token Ring Recovery',
+      },
+    });
+    assert.strictEqual(syllabus.status, 201);
+    const evidence = await client.request('/api/academic-evidence');
+    const remapped = evidence.json.academic.questions.find((question: any) => question.questionText.includes('token ring recovery'));
+    assert.strictEqual(remapped.mappingStatus, 'mapped');
+    assert.strictEqual(remapped.topicName, 'Token Ring Recovery');
+    assert.strictEqual(evidence.json.academic.questions.filter((question: any) => question.questionText.includes('token ring recovery')).length, 1);
+    const ranked = evidence.json.academic.ranking.find((topic: any) => topic.name === 'Token Ring Recovery');
+    assert.strictEqual(typeof ranked.priorityScore, 'number');
+    assert.strictEqual(ranked.weightageAvailable, false);
+  });
+
   it('feedback validates score, maxMarks, and source', async () => {
     const over = await client.request('/api/feedback', { method: 'POST', body: { score: 11, maxMarks: 10 } });
     assert.strictEqual(over.status, 400);
@@ -144,8 +211,11 @@ describe('persistence layer', () => {
   });
 
   it('study sessions accumulate duration and stamp ended_at', async () => {
-    const { scheduleBlocks } = (await client.request('/api/schedule-blocks')).json;
-    const blockId = scheduleBlocks[0].id;
+    const { topics } = (await client.request('/api/topics')).json;
+    const createdBlock = await client.request('/api/schedule-blocks', {
+      method: 'POST', body: { topicId: topics[0].id, title: 'Session evidence block', date: '2026-10-01', startTime: '08:00', durationMinutes: 45 },
+    });
+    const blockId = createdBlock.json.scheduleBlocks.find((block: any) => block.title === 'Session evidence block').id;
 
     const started = await client.request('/api/study-sessions', { method: 'POST', body: { scheduleBlockId: blockId, durationMinutes: 45 } });
     assert.strictEqual(started.status, 201);

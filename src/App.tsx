@@ -1,27 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  ActiveTab, 
-  PastPaper, 
-  ExtractedTopic, 
-  QuestionItem, 
-  PeerUser, 
-  StudyRoomMessage, 
-  LMSCourse, 
-  PersistedTopic, 
-  ScheduleBlock,
-  ActiveSessionState,
-  SessionFeedbackPayload
-} from './types';
-import { 
-  INITIAL_TOPICS, 
-  INITIAL_QUESTIONS, 
-  INITIAL_PAPERS, 
-  INITIAL_PEERS, 
-  INITIAL_MESSAGES, 
-  INITIAL_LMS_COURSES 
-} from './data/initialData';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import { AuthModal } from './components/AuthModal';
+import React, { useState, useEffect } from 'react';
+import { ActiveTab, AdaptiveProposal, PastPaper, ExtractedTopic, QuestionItem, PeerUser, StudyRoomMessage, LMSCourse, ScheduleBlock, StudySession, UserAccount } from './types';
+import { hasStoredSession, logout as logoutSession, restoreSession, setSessionExpiredHandler } from './api';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
@@ -30,259 +9,371 @@ import { PracticeView } from './components/PracticeView';
 import { MockExamView } from './components/MockExamView';
 import { PlannerView } from './components/PlannerView';
 import { CalendarView } from './components/CalendarView';
-import { StudySessionView } from './components/StudySessionView';
-import { FeedbackForm } from './components/FeedbackForm';
 import { InsightsView } from './components/InsightsView';
 import { HistoryView } from './components/HistoryView';
 import { StudyRoomView } from './components/StudyRoomView';
 import { LMSIntegrationView } from './components/LMSIntegrationView';
 import { UploadModal } from './components/UploadModal';
-import { RefreshCw } from 'lucide-react';
+import { SessionFeedbackCard } from './components/SessionFeedbackCard';
+import { AuthScreen } from './components/AuthScreen';
 
-function AppContent() {
-  const { user, isLoading } = useAuth();
+export default function App() {
+  const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
+  const [user, setUser] = useState<UserAccount | null>(null);
+  const [authMessage, setAuthMessage] = useState('');
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  const [focusTimerSeconds, setFocusTimerSeconds] = useState<number>(45 * 60);
+  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
+  const [activeStudyBlock, setActiveStudyBlock] = useState<ScheduleBlock | null>(null);
+  const [activeStudySessionId, setActiveStudySessionId] = useState<string | null>(null);
+  const [sessionActualSeconds, setSessionActualSeconds] = useState(0);
+  const [activeSinceMs, setActiveSinceMs] = useState<number | null>(null);
+  const [isSessionTransitioning, setIsSessionTransitioning] = useState(false);
+  const [feedbackSession, setFeedbackSession] = useState<{ id: string; title: string } | null>(null);
+  const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0);
   const [scheduleBlocks, setScheduleBlocks] = useState<ScheduleBlock[]>([]);
-  const [scheduleRefreshKey, setScheduleRefreshKey] = useState<number>(0);
+  const [adaptiveProposal, setAdaptiveProposal] = useState<AdaptiveProposal | null>(null);
+  const [dismissedAdaptiveSessionId, setDismissedAdaptiveSessionId] = useState<string | null>(null);
+  const [adaptiveMessage, setAdaptiveMessage] = useState('');
+  const [sessionMessage, setSessionMessage] = useState('');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
 
-  // Active Session State Machine
-  const [activeSession, setActiveSession] = useState<ActiveSessionState | null>(null);
-
   // App data state
-  const [papers, setPapers] = useState<PastPaper[]>(INITIAL_PAPERS);
-  const [topics, setTopics] = useState<ExtractedTopic[]>(INITIAL_TOPICS);
-  const [questions, setQuestions] = useState<QuestionItem[]>(INITIAL_QUESTIONS);
-  const [peers, setPeers] = useState<PeerUser[]>(INITIAL_PEERS);
-  const [messages, setMessages] = useState<StudyRoomMessage[]>(INITIAL_MESSAGES);
-  const [lmsCourses, setLmsCourses] = useState<LMSCourse[]>(INITIAL_LMS_COURSES);
+  const [papers, setPapers] = useState<PastPaper[]>([]);
+  const [topics, setTopics] = useState<ExtractedTopic[]>([]);
+  const [questions, setQuestions] = useState<QuestionItem[]>([]);
+  const [peers, setPeers] = useState<PeerUser[]>([]);
+  const [messages, setMessages] = useState<StudyRoomMessage[]>([]);
+  const [lmsCourses, setLmsCourses] = useState<LMSCourse[]>([]);
 
-  // Fetch schedule blocks when user is logged in
-  const fetchScheduleBlocks = useCallback(async () => {
-    if (!user) return;
-    try {
-      const res = await fetch('/api/schedule-blocks');
-      if (res.ok) {
-        const data = await res.json();
-        setScheduleBlocks(data.scheduleBlocks || []);
+  const clearUserState = () => {
+    setActiveTab('dashboard');
+    setFocusTimerSeconds(45 * 60);
+    setIsTimerRunning(false);
+    setActiveStudyBlock(null);
+    setActiveStudySessionId(null);
+    setSessionActualSeconds(0);
+    setActiveSinceMs(null);
+    setIsSessionTransitioning(false);
+    setFeedbackSession(null);
+    setScheduleRefreshKey((key) => key + 1);
+    setAdaptiveProposal(null);
+    setDismissedAdaptiveSessionId(null);
+    setAdaptiveMessage('');
+    setSessionMessage('');
+    setIsUploadModalOpen(false);
+    setPapers([]);
+    setTopics([]);
+    setQuestions([]);
+    setPeers([]);
+    setMessages([]);
+    setLmsCourses([]);
+    setScheduleBlocks([]);
+  };
+
+  useEffect(() => {
+    setSessionExpiredHandler(() => {
+      clearUserState();
+      setUser(null);
+      setAuthMessage('Your session has expired. Please log in again.');
+      setAuthState('unauthenticated');
+    });
+    return () => setSessionExpiredHandler(null);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const restoreAuthentication = async () => {
+      const hadStoredSession = hasStoredSession();
+      const restoredUser = await restoreSession();
+      if (cancelled) return;
+      if (restoredUser) {
+        setUser(restoredUser);
+        setAuthState('authenticated');
+      } else {
+        setAuthMessage(hadStoredSession ? 'Your session has expired. Please log in again.' : '');
+        setAuthState('unauthenticated');
       }
-    } catch (err) {
-      console.error('Failed to fetch schedule blocks:', err);
-    }
-  }, [user]);
+    };
+    void restoreAuthentication();
+    return () => { cancelled = true; };
+  }, []);
 
+  // Remaining time is derived from persisted accumulated seconds plus one active interval.
   useEffect(() => {
-    fetchScheduleBlocks();
-  }, [fetchScheduleBlocks, scheduleRefreshKey]);
-
-  // Sidebar Focus Timer state (synced with active session if running)
-  const [sidebarSeconds, setSidebarSeconds] = useState<number>(45 * 60);
-  const [isSidebarTimerRunning, setIsSidebarTimerRunning] = useState<boolean>(false);
-
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isSidebarTimerRunning && sidebarSeconds > 0) {
-      interval = setInterval(() => {
-        setSidebarSeconds((prev) => Math.max(0, prev - 1));
-      }, 1000);
-    }
+    const updateRemaining = () => {
+      if (!activeStudyBlock) return;
+      const unpersisted = isTimerRunning && activeSinceMs ? Math.max(0, Math.floor((Date.now() - activeSinceMs) / 1000)) : 0;
+      setFocusTimerSeconds(Math.max(0, activeStudyBlock.durationMinutes * 60 - sessionActualSeconds - unpersisted));
+    };
+    updateRemaining();
+    if (!isTimerRunning) return undefined;
+    const interval = setInterval(updateRemaining, 500);
     return () => clearInterval(interval);
-  }, [isSidebarTimerRunning, sidebarSeconds]);
+  }, [activeStudyBlock, activeSinceMs, isTimerRunning, sessionActualSeconds]);
 
-  const handleAddPaper = (newPaper: PastPaper) => {
-    setPapers([newPaper, ...papers]);
-  };
-
-  const handleQuestionsExtracted = (newQuestions: QuestionItem[], newTopics: ExtractedTopic[]) => {
-    if (newQuestions.length > 0) {
-      setQuestions([...newQuestions, ...questions]);
+  useEffect(() => {
+    if (activeStudySessionId && isTimerRunning && focusTimerSeconds === 0 && !isSessionTransitioning) {
+      void completeStudy();
     }
-    if (newTopics.length > 0) {
-      setTopics(newTopics);
-    }
-  };
+  }, [focusTimerSeconds, activeStudySessionId, isTimerRunning, isSessionTransitioning]);
 
-  const handleTopicsSaved = (storedTopics: PersistedTopic[]) => {
-    setTopics(storedTopics.map((topic) => ({
+  useEffect(() => {
+    if (authState !== 'authenticated') return undefined;
+    let cancelled = false;
+    const restoreSession = async () => {
+      try {
+        const [sessionsResponse, blocksResponse] = await Promise.all([fetch('/api/study-sessions'), fetch('/api/schedule-blocks')]);
+        const sessionsData = await sessionsResponse.json();
+        const blocksData = await blocksResponse.json();
+        if (!sessionsResponse.ok || !blocksResponse.ok || cancelled) return;
+        const session = (sessionsData.studySessions as StudySession[]).find((item) => item.status === 'active')
+          || (sessionsData.studySessions as StudySession[]).find((item) => item.status === 'paused');
+        const block = (blocksData.scheduleBlocks as ScheduleBlock[]).find((item) => item.id === session?.scheduleBlockId);
+        if (!session || !block) return;
+        setActiveStudySessionId(session.id);
+        setActiveStudyBlock(block);
+        setSessionActualSeconds(session.actualDurationSeconds);
+        const activeSince = session.status === 'active' && session.activeSince ? Date.parse(session.activeSince) : null;
+        setActiveSinceMs(Number.isFinite(activeSince) ? activeSince : null);
+        setIsTimerRunning(Boolean(activeSince));
+        if (session.status === 'active' && !activeSince) setSessionMessage('Active session restored without a reliable active-time timestamp. Resume to continue timing.');
+      } catch {
+        // A failed restoration must not fabricate an active session in the UI.
+      }
+    };
+    void restoreSession();
+    return () => { cancelled = true; };
+  }, [authState, user?.id]);
+
+  useEffect(() => {
+    if (authState !== 'authenticated') return undefined;
+    let cancelled = false;
+    const loadSchedule = async () => {
+      const response = await fetch('/api/schedule-blocks');
+      const data = await response.json();
+      if (!cancelled && response.ok) setScheduleBlocks(data.scheduleBlocks || []);
+    };
+    void loadSchedule();
+    return () => { cancelled = true; };
+  }, [authState, scheduleRefreshKey]);
+
+  const refreshAcademicData = async () => {
+    const response = await fetch('/api/academic-evidence');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to load academic evidence.');
+    const academic = data.academic;
+    setPapers(academic.documents.map((document: any) => ({
+      id: document.id,
+      title: document.title,
+      courseCode: 'Stored document',
+      semester: document.docType,
+      year: new Date(document.createdAt).getFullYear().toString(),
+      fileSize: document.fileSize || 'Text',
+      uploadDate: new Date(document.createdAt).toLocaleDateString(),
+      topicsCount: academic.ranking.filter((topic: any) => topic.syllabusEvidence).length,
+      extractedQuestionsCount: academic.questions.filter((question: any) => question.documentId === document.id).length,
+      parsedContent: document.content || '',
+    })));
+    setTopics(academic.ranking.map((topic: any) => ({
       id: topic.id,
       name: topic.name,
-      weightage: topic.weightage,
-      frequencyCount: topic.priority,
-      difficulty: topic.priority >= 8 ? 'Hard' : topic.priority >= 5 ? 'Medium' : 'Easy',
-      highYield: topic.priority >= 8,
+      priorityScore: topic.priorityScore,
+      actualWeightage: topic.weightageAvailable ? topic.weightage : null,
+      frequencyCount: topic.mappedQuestionCount,
+      syllabusEvidence: topic.syllabusEvidence,
+      sourceDocumentIds: topic.sourceDocumentIds,
+      difficulty: topic.priorityScore >= 7 ? 'Hard' : topic.priorityScore >= 4 ? 'Medium' : 'Easy',
+      highYield: topic.priorityScore >= 7,
+      reason: topic.reason,
+    })));
+    setQuestions(academic.questions.map((question: any) => ({
+      id: question.id,
+      subject: 'Persisted academic material',
+      topic: question.topicName || 'Unmatched: needs topic review',
+      questionText: question.questionText,
+      marks: question.marks,
+      year: question.documentId ? 'Stored document' : question.source,
+      type: 'Short Answer',
+      suggestedTimeMinutes: question.suggestedTimeMinutes,
+      documentId: question.documentId,
+      mappingStatus: question.mappingStatus,
+      mappingEvidence: question.mappingEvidence,
     })));
   };
 
-  // Start Study Session
-  const startStudy = async (block: ScheduleBlock) => {
+  useEffect(() => {
+    if (authState !== 'authenticated') return;
+    void refreshAcademicData().catch(() => {
+      // Empty or unavailable academic evidence should not fabricate fixture data.
+    });
+  }, [authState, user?.id]);
+
+  const requestAdaptiveProposal = async (studySessionId: string) => {
+    const proposalResponse = await fetch('/api/adaptive-proposals', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ studySessionId }),
+    });
+    const proposalData = await proposalResponse.json();
+    if (!proposalResponse.ok) {
+      setAdaptiveProposal(null);
+      const message = proposalData.error || 'Unable to generate a revision suggestion.';
+      setAdaptiveMessage(message);
+      setSessionMessage(message);
+      return;
+    }
+    setAdaptiveProposal(proposalData.proposal || null);
+    if (proposalData.proposal) setDismissedAdaptiveSessionId(null);
+    const message = proposalData.message || (proposalData.proposal ? 'Revision suggested.' : '');
+    setAdaptiveMessage(proposalData.message || '');
+    if (message) setSessionMessage(message);
+  };
+
+  const activeElapsedDelta = () => activeSinceMs ? Math.max(0, Math.floor((Date.now() - activeSinceMs) / 1000)) : 0;
+
+  const persistSessionStatus = async (status: 'active' | 'paused' | 'completed' | 'stopped', deltaSeconds = 0): Promise<StudySession> => {
+    if (!activeStudySessionId) throw new Error('No active study session.');
+    const response = await fetch(`/api/study-sessions/${activeStudySessionId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, actualDurationSeconds: deltaSeconds }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to update study session.');
+    const sessionsResponse = await fetch('/api/study-sessions');
+    const sessionsData = await sessionsResponse.json();
+    const updated = sessionsResponse.ok && (sessionsData.studySessions as StudySession[]).find((session) => session.id === activeStudySessionId);
+    if (!updated) throw new Error('Session was updated but could not be reloaded.');
+    return updated;
+  };
+
+  const toggleTimer = async () => {
+    if (!activeStudySessionId || !activeStudyBlock || isSessionTransitioning) return;
+    setIsSessionTransitioning(true);
     try {
-      if (activeSession) {
-        await fetch(`/api/study-sessions/${activeSession.sessionId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'stopped' })
-        });
+      if (isTimerRunning) {
+        const session = await persistSessionStatus('paused', activeElapsedDelta());
+        setSessionActualSeconds(session.actualDurationSeconds);
+        setActiveSinceMs(null);
+        setIsTimerRunning(false);
+        setSessionMessage('Session paused.');
+      } else {
+        const session = await persistSessionStatus('active');
+        setSessionActualSeconds(session.actualDurationSeconds);
+        setActiveSinceMs(Date.parse(session.activeSince));
+        setIsTimerRunning(true);
+        setSessionMessage('Session resumed.');
       }
-
-      const res = await fetch('/api/study-sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scheduleBlockId: block.id, durationMinutes: block.durationMinutes })
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to start study session');
-
-      const newSession: ActiveSessionState = {
-        phase: 'active',
-        block,
-        sessionId: data.studySession.id,
-        startedAt: Date.now(),
-        accumulatedMs: 0,
-        pausedAt: null
-      };
-
-      setActiveSession(newSession);
-      setSidebarSeconds(block.durationMinutes * 60);
-      setIsSidebarTimerRunning(true);
-      setActiveTab('session');
-    } catch (err: any) {
-      alert(err.message || 'Error starting study session');
-    }
-  };
-
-  // Pause Active Session
-  const handlePauseSession = () => {
-    if (!activeSession || activeSession.phase !== 'active') return;
-    const now = Date.now();
-    const currentSegment = now - activeSession.startedAt;
-    setActiveSession({
-      ...activeSession,
-      phase: 'paused',
-      accumulatedMs: activeSession.accumulatedMs + currentSegment,
-      pausedAt: now
-    });
-    setIsSidebarTimerRunning(false);
-
-    fetch(`/api/study-sessions/${activeSession.sessionId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'paused' })
-    }).catch(console.error);
-  };
-
-  // Resume Active Session
-  const handleResumeSession = () => {
-    if (!activeSession || activeSession.phase !== 'paused') return;
-    setActiveSession({
-      ...activeSession,
-      phase: 'active',
-      startedAt: Date.now(),
-      pausedAt: null
-    });
-    setIsSidebarTimerRunning(true);
-
-    fetch(`/api/study-sessions/${activeSession.sessionId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'active' })
-    }).catch(console.error);
-  };
-
-  // Complete Session (transitions to feedback step)
-  const handleCompleteSession = (actualSeconds: number) => {
-    if (!activeSession) return;
-    setActiveSession({
-      ...activeSession,
-      phase: 'feedback',
-      accumulatedMs: actualSeconds * 1000
-    });
-    setIsSidebarTimerRunning(false);
-  };
-
-  // Stop / Abandon Session
-  const handleStopSession = async (actualSeconds: number) => {
-    if (!activeSession) return;
-    try {
-      await fetch(`/api/study-sessions/${activeSession.sessionId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          status: 'stopped',
-          actualDurationSeconds: actualSeconds,
-          endedAt: new Date().toISOString()
-        })
-      });
-    } catch (err) {
-      console.error('Failed to patch stopped session:', err);
+    } catch (error: any) {
+      setSessionMessage(error.message || 'Unable to update study session.');
     } finally {
-      setActiveSession(null);
-      setIsSidebarTimerRunning(false);
-      setActiveTab('calendar');
+      setIsSessionTransitioning(false);
     }
   };
 
-  // Submit Feedback payload
-  const handleSubmitFeedback = async (payload: SessionFeedbackPayload) => {
-    if (!activeSession) return;
-    const actualSeconds = Math.round(activeSession.accumulatedMs / 1000);
+  const stopActiveStudy = async () => {
+    if (!activeStudySessionId || !activeStudyBlock) return;
+    const stoppedSessionId = activeStudySessionId;
+    const stopped = await persistSessionStatus('stopped', activeElapsedDelta());
+    setSessionActualSeconds(stopped.actualDurationSeconds);
+    setIsTimerRunning(false);
+    setActiveSinceMs(null);
+    setActiveStudySessionId(null);
+    setActiveStudyBlock(null);
+      setFocusTimerSeconds(0);
+      setSessionMessage('Session stopped.');
+      setScheduleRefreshKey((key) => key + 1);
+      await requestAdaptiveProposal(stoppedSessionId);
+  };
 
-    const fbRes = await fetch('/api/feedback', {
+  const stopStudy = async () => {
+    try {
+      setSessionMessage('');
+      await stopActiveStudy();
+    } catch (error: any) {
+      setSessionMessage(error.message || 'Unable to stop study session.');
+    }
+  };
+
+  const startStudy = async (block: ScheduleBlock) => {
+    if (activeStudySessionId) {
+      await stopActiveStudy();
+    }
+    const response = await fetch('/api/study-sessions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduleBlockId: block.id, durationMinutes: block.durationMinutes }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to start study session.');
+    setActiveStudyBlock(block);
+    setActiveStudySessionId(data.studySession.id);
+    setSessionActualSeconds(0);
+    setActiveSinceMs(Date.parse(data.studySession.activeSince));
+    setFocusTimerSeconds(block.durationMinutes * 60);
+    setIsTimerRunning(true);
+    setSessionMessage('');
+  };
+
+  const acceptAdaptiveProposal = async (proposal: AdaptiveProposal) => {
+    const response = await fetch('/api/adaptive-proposals/accept', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (!fbRes.ok) {
-      const fbData = await fbRes.json();
-      throw new Error(fbData.error || 'Failed to record feedback');
-    }
-
-    await fetch(`/api/study-sessions/${activeSession.sessionId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        status: 'completed',
-        actualDurationSeconds: actualSeconds,
-        endedAt: new Date().toISOString()
-      })
+        studySessionId: proposal.studySessionId,
+        proposedDate: proposal.proposedDate,
+        proposedStartTime: proposal.proposedStartTime,
+        proposedDurationMinutes: proposal.proposedDurationMinutes,
+      }),
     });
-
-    await fetch(`/api/schedule-blocks/${activeSession.block.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ completed: true })
-    });
-
-    setActiveSession(null);
-    setIsSidebarTimerRunning(false);
-    setScheduleRefreshKey((k) => k + 1);
-    setActiveTab('insights');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to accept revision suggestion.');
+    setAdaptiveProposal(null);
+    setScheduleRefreshKey((key) => key + 1);
   };
 
-  const handleSkipFeedback = async () => {
-    if (!activeSession) return;
-    const actualSeconds = Math.round(activeSession.accumulatedMs / 1000);
-
-    await fetch(`/api/study-sessions/${activeSession.sessionId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status: 'completed',
-        actualDurationSeconds: actualSeconds,
-        endedAt: new Date().toISOString()
-      })
+  const rejectAdaptiveProposal = async (proposal: AdaptiveProposal) => {
+    const response = await fetch('/api/adaptive-proposals/reject', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ studySessionId: proposal.studySessionId }),
     });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to reject revision suggestion.');
+    setAdaptiveProposal(null);
+    setDismissedAdaptiveSessionId(proposal.studySessionId);
+    setAdaptiveMessage('Suggestion dismissed. You can reconsider it against your current calendar.');
+  };
 
-    await fetch(`/api/schedule-blocks/${activeSession.block.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ completed: true })
+  const completeStudy = async () => {
+    if (!activeStudySessionId || !activeStudyBlock || isSessionTransitioning) return;
+    setIsSessionTransitioning(true);
+    try {
+      const completedSessionId = activeStudySessionId;
+      const completedBlock = activeStudyBlock;
+      const completed = await persistSessionStatus('completed', activeElapsedDelta());
+      setSessionActualSeconds(completed.actualDurationSeconds);
+      setIsTimerRunning(false);
+      setActiveSinceMs(null);
+      setActiveStudySessionId(null);
+      setActiveStudyBlock(null);
+      setFocusTimerSeconds(0);
+      setFeedbackSession({ id: completedSessionId, title: completedBlock.title });
+      setScheduleRefreshKey((key) => key + 1);
+      setSessionMessage('Session completed.');
+    } catch (error: any) {
+      setSessionMessage(error.message || 'Unable to complete study session.');
+    } finally {
+      setIsSessionTransitioning(false);
+    }
+  };
+
+  const saveSessionFeedback = async (input: { focusRating: number; difficultyRating: number; progressRating: number; notes: string }) => {
+    if (!feedbackSession) return;
+    const response = await fetch(`/api/study-sessions/${feedbackSession.id}/feedback`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
     });
-
-    setActiveSession(null);
-    setIsSidebarTimerRunning(false);
-    setScheduleRefreshKey((k) => k + 1);
-    setActiveTab('calendar');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to save session feedback.');
+    const sessionId = feedbackSession.id;
+    setFeedbackSession(null);
+    setSessionMessage('Session feedback saved.');
+    setScheduleRefreshKey((key) => key + 1);
+    if (data.feedback.difficultyRating >= 4) await requestAdaptiveProposal(sessionId);
   };
 
   const handleSendMessage = (msg: StudyRoomMessage) => {
@@ -299,48 +390,63 @@ function AppContent() {
     );
   };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-[#FAFAFA] flex flex-col items-center justify-center space-y-4 text-neutral-600">
-        <RefreshCw className="w-8 h-8 animate-spin text-indigo-600" />
-        <span className="text-sm font-medium">Restoring academic sanctuary session...</span>
-      </div>
-    );
+  const handleAuthenticated = (authenticatedUser: UserAccount) => {
+    clearUserState();
+    setUser(authenticatedUser);
+    setAuthMessage('');
+    setAuthState('authenticated');
+  };
+
+  const handleLogout = () => {
+    clearUserState();
+    setUser(null);
+    setAuthMessage('You have been logged out.');
+    setAuthState('unauthenticated');
+    void logoutSession();
+  };
+
+  if (authState === 'checking') {
+    return <main className="min-h-screen bg-[#FDFDFC] text-[#1A1A1A] flex items-center justify-center text-xs uppercase tracking-[0.2em] font-bold">Restoring your workspace...</main>;
   }
 
-  if (!user) {
-    return <AuthModal />;
+  if (authState === 'unauthenticated' || !user) {
+    return <AuthScreen initialMessage={authMessage} onAuthenticated={handleAuthenticated} />;
   }
 
   return (
-    <div className="min-h-screen bg-[#FAFAFA] text-[#171717] flex flex-col font-sans selection:bg-indigo-600 selection:text-white">
+    <div key={user.id} className="min-h-screen bg-[#FDFDFC] text-[#1A1A1A] flex flex-col font-sans selection:bg-black selection:text-white">
+      
       {/* Top Header */}
       <Header
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onOpenUpload={() => setIsUploadModalOpen(true)}
+        user={user}
+        onLogout={handleLogout}
       />
 
       <div className="flex-1 flex max-w-[1600px] w-full mx-auto">
+        
         {/* Left Sidebar */}
         <Sidebar
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           onOpenUpload={() => setIsUploadModalOpen(true)}
-          focusTimerSeconds={sidebarSeconds}
-          isTimerRunning={isSidebarTimerRunning}
-          toggleTimer={() => setIsSidebarTimerRunning(!isSidebarTimerRunning)}
-          activeStudyBlock={activeSession?.block || null}
-          onCompleteStudy={() => activeSession && handleCompleteSession(Math.round(activeSession.accumulatedMs / 1000))}
+          focusTimerSeconds={focusTimerSeconds}
+          isTimerRunning={isTimerRunning}
+          toggleTimer={() => void toggleTimer()}
+          activeStudyBlock={activeStudyBlock}
+          onCompleteStudy={() => void completeStudy()}
+          onStopStudy={() => void stopStudy()}
+          sessionMessage={sessionMessage}
         />
 
         {/* Main Sanctuary Body View */}
-        <main className="flex-1 bg-[#FAFAFA] min-h-[calc(100vh-61px)] pb-12 px-4 sm:px-8 py-6">
+        <main className="flex-1 bg-[#FDFDFC] min-h-[calc(100vh-61px)] pb-12">
           {activeTab === 'dashboard' && (
             <DashboardView
               setActiveTab={setActiveTab}
-              onOpenUpload={() => setIsUploadModalOpen(true)}
-              onStartStudy={startStudy}
+              refreshKey={scheduleRefreshKey}
             />
           )}
 
@@ -349,9 +455,7 @@ function AppContent() {
               papers={papers}
               topics={topics}
               questions={questions}
-              onAddPaper={handleAddPaper}
-              onQuestionsExtracted={handleQuestionsExtracted}
-              onTopicsSaved={handleTopicsSaved}
+              onAcademicUpdated={refreshAcademicData}
               setActiveTab={setActiveTab}
             />
           )}
@@ -368,61 +472,31 @@ function AppContent() {
             <PlannerView
               onStartStudy={startStudy}
               refreshKey={scheduleRefreshKey}
+              adaptiveProposal={adaptiveProposal}
+              dismissedAdaptiveSessionId={dismissedAdaptiveSessionId}
+              adaptiveMessage={adaptiveMessage}
+              onAcceptAdaptiveProposal={acceptAdaptiveProposal}
+              onRejectAdaptiveProposal={rejectAdaptiveProposal}
+              onReconsiderAdaptiveProposal={requestAdaptiveProposal}
             />
           )}
 
-          {activeTab === 'calendar' && (
-            <CalendarView
-              scheduleBlocks={scheduleBlocks}
-              onStartStudy={startStudy}
-              onRefresh={fetchScheduleBlocks}
-            />
-          )}
-
-          {activeTab === 'session' && (
-            <div>
-              {!activeSession ? (
-                <div className="max-w-xl mx-auto p-12 text-center bg-white rounded-2xl border border-neutral-200 shadow-xs space-y-4">
-                  <h2 className="text-xl font-serif font-bold text-neutral-900">No Active Study Session</h2>
-                  <p className="text-sm text-neutral-600">
-                    Select a study block from your Calendar or Planner and click "Start Study" to launch an active count-up session.
-                  </p>
-                  <button
-                    onClick={() => setActiveTab('calendar')}
-                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold uppercase tracking-wider rounded-xl transition-colors shadow-xs"
-                  >
-                    Go to Calendar
-                  </button>
-                </div>
-              ) : activeSession.phase === 'feedback' ? (
-                <FeedbackForm
-                  sessionId={activeSession.sessionId}
-                  topicName={activeSession.block.topicName}
-                  blockTitle={activeSession.block.title}
-                  onSubmit={handleSubmitFeedback}
-                  onSkip={handleSkipFeedback}
-                />
-              ) : (
-                <StudySessionView
-                  sessionState={activeSession}
-                  onPause={handlePauseSession}
-                  onResume={handleResumeSession}
-                  onComplete={handleCompleteSession}
-                  onStop={handleStopSession}
-                />
-              )}
-            </div>
-          )}
+          {activeTab === 'calendar' && <CalendarView onStartStudy={startStudy} refreshKey={scheduleRefreshKey} />}
 
           {activeTab === 'insights' && (
             <InsightsView
               scheduleBlocks={scheduleBlocks}
-              onRefreshSchedule={fetchScheduleBlocks}
+              onRefreshSchedule={async () => setScheduleRefreshKey((key) => key + 1)}
             />
           )}
 
-          {activeTab === 'history' && (
-            <HistoryView />
+          {activeTab === 'history' && <HistoryView />}
+
+          {activeTab === 'session' && (
+            <div className="max-w-3xl mx-auto py-16 px-6 text-center space-y-4">
+              <h1 className="font-serif text-4xl italic">{activeStudyBlock ? activeStudyBlock.title : 'No Active Study Session'}</h1>
+              <p className="text-xs text-black/60">Use the focus controls in the sidebar to pause, resume, complete, or stop the persisted session.</p>
+            </div>
           )}
 
           {activeTab === 'room' && (
@@ -446,17 +520,10 @@ function AppContent() {
       <UploadModal
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}
-        onPaperUploaded={handleAddPaper}
-        onTopicsSaved={handleTopicsSaved}
+        onAcademicUpdated={refreshAcademicData}
       />
-    </div>
-  );
-}
+      {feedbackSession && <SessionFeedbackCard key={feedbackSession.id} sessionId={feedbackSession.id} title={feedbackSession.title} onSave={saveSessionFeedback} />}
 
-export default function App() {
-  return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    </div>
   );
 }

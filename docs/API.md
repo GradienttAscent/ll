@@ -20,7 +20,7 @@ Base URL: `http://localhost:3000` in dev. JSON in, JSON out. Error shape: `{ "er
 Authorization: Bearer <token>
 ```
 
-Tokens are opaque 64-char hex strings, stored hashed (SHA-256), expire after 30 days. The web app acquires the demo session automatically (see `src/api.ts`); default demo credentials are `demo@lazylift.app` / `demo1234`.
+Tokens are opaque 64-char hex strings, stored hashed (SHA-256), and expire after 30 days. The web app uses registration/login and restores a valid stored session through `/api/auth/me`; there are no automatic demo credentials.
 
 ## Authorization model
 
@@ -46,119 +46,42 @@ Upsert key is `(user_id, course_id, name)` — two users can use the same topic 
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | GET | `/api/schedule-blocks` | — | `{ "scheduleBlocks" }` |
-| POST | `/api/schedule-blocks` | `{ "topicId", "title", "date", "startTime", "durationMinutes", "completed"? }` | `201 { "scheduleBlocks" }`; `404` if `topicId` is not the caller's |
-| POST | `/api/schedule-blocks/bulk` | `{ "scheduleBlocks": [...] }` | `201 { "scheduleBlocks" }`; `404` if any referenced topic is not the caller's |
-| PATCH | `/api/schedule-blocks/:id` | any of `{ "title", "date", "startTime", "durationMinutes", "topicId", "completed" }` | `{ "scheduleBlocks" }`; `404` if not the caller's block |
+| POST | `/api/schedule-blocks` | `{ "topicId", "title", "date", "startTime", "durationMinutes", "completed"? }` | `201 { "scheduleBlocks" }`; `404` if `topicId` is not the caller's; `409` on overlap |
+| POST | `/api/schedule-blocks/bulk` | `{ "scheduleBlocks": [...] }` | `201 { "scheduleBlocks" }`; `404` if any referenced topic is not the caller's; `409` on overlap |
+| PATCH | `/api/schedule-blocks/:id` | any of `{ "title", "date", "startTime", "durationMinutes", "topicId", "completed" }` | `{ "scheduleBlocks" }`; `404` if not the caller's block; `409` on overlap or completed-block rescheduling |
+
+Dates must be real `YYYY-MM-DD` values, times must be `HH:MM` 24-hour values, durations must be positive integers, and blocks cannot cross midnight. Blocks may be adjacent but cannot overlap stored blocks or other blocks in the same bulk request. Bulk schedule writes are atomic.
 
 ### Schedule change history
 | Method | Path | Query | Returns |
 | --- | --- | --- | --- |
 | GET | `/api/schedule-changes` | `blockId?` | `{ "scheduleChanges" }` |
 
-A change is recorded with `field` = `created` (on block create), `rescheduled` (on title/date/time/duration/topic change), or `completed`. `?blockId=` on another user's block → `404`. An optional `reason` string is stored on each change (e.g. `manual` for manual PATCH reschedules, `adaptive-missed` for accepted adaptive proposals).
+A change is recorded with `field` = `created`, `rescheduled`, `completed`, `conversational_reschedule`, or `adaptive_revision`. `reason` is populated for legacy adaptive/manual changes. Requests for another user's block return `404`.
 
-### Schedule lifecycle rules
-
-**Overlap detection (genuine time-range):** schedule blocks are compared on `(<date>, <startTime>, <startTime> + durationMinutes)`. Two blocks on the same date conflict when `startA < endB AND endA > startB`. This rejects partial overlap, contained/containing intervals and identical intervals; exact boundaries (`10:00–11:00` then `11:00–12:00`) and fully non-overlapping intervals are allowed. All checks are scoped to the caller's own blocks.
-
-Errors: `409` if a single POST, a bulk POST, or a PATCH that changes `date`/`startTime`/`durationMinutes`/`topicId` would overlap an existing block.
-
-**Completed-block protection:** `PATCH /api/schedule-blocks/:id` on a completed block that changes any scheduling field (`date`, `startTime`, `durationMinutes`, `topicId`) → `409`. Toggling `completed` or editing `title` remains allowed. Adaptive proposal/accept flows reject completed source blocks with `409`.
+Blocks use genuine time-range overlap checks and bulk writes are atomic. Completed blocks cannot be rescheduled on scheduling fields.
 
 ### Analytics
 | Method | Path | Returns |
 | --- | --- | --- |
-| GET | `/api/analytics` | `{ "analytics" }` |
+| GET | `/api/analytics` | `{ "analytics" }`; caller-scoped block completion/workload summary |
+| GET | `/api/analytics/dashboard` | `{ "analytics" }`; session-derived all-time/7-day summaries, feedback averages, and topic aggregates |
 
-Computed from the caller's persisted schedule data (never simulated). `today` is the server's local `YYYY-MM-DD`.
+### Legacy adaptive scheduling
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| POST | `/api/adaptive/proposals` | `{ "scheduleBlockId", "reason" }` | Non-mutating proposal; `reason` is `missed`, `abandoned`, or `high-difficulty` |
+| POST | `/api/adaptive/proposals/accept` | Proposed block with `sourceBlockId` and `reason` | `201 { "scheduleBlocks" }` after ownership and overlap validation |
+| POST | `/api/adaptive/proposals/reject` | `{ "sourceBlockId", "reason" }` | `{ "ok": true }`; no writes |
 
-```json
-{
-  "analytics": {
-    "plannedMinutes": 240,
-    "completedMinutes": 120,
-    "completedCount": 2,
-    "missedCount": 1,
-    "completionRate": 0.666,
-    "upcomingWorkloadMinutes": 180,
-    "topicProgress": [
-      { "topicId": "topic-…", "topicName": "Graphs", "totalBlocks": 3, "completedBlocks": 2, "completionRate": 0.666 }
-    ],
-    "today": "2026-09-15"
-  }
-}
-```
+### Conversational scheduling assistant
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| POST | `/api/scheduling-assistant/preview` | `{ "message", "selectedBlockId"? }` | `{ "preview" }`; non-mutating answer, changes, or clarification matches |
+| POST | `/api/scheduling-assistant/confirm` | `{ "message", "changes", "selectedBlockId"? }` | `{ "scheduleBlocks" }`; atomically revalidates and applies current changes |
+| POST | `/api/scheduling-assistant/cancel` | — | `{ "ok": true }`; performs no writes |
 
-Definitions:
-- `plannedMinutes` — Σ `duration_minutes` over all of the caller's blocks.
-- `completedMinutes` — Σ duration of blocks with `completed = true`.
-- `completedCount` — number of completed blocks.
-- `missedCount` — number of non-completed blocks with `date < today`.
-- `completionRate` — `completedCount / (completedCount + missedCount)` (0 when there are no due blocks).
-- `upcomingWorkloadMinutes` — Σ duration of non-completed blocks with `date >= today`.
-- `topicProgress` — per-topic totals and completion ratio for topics that have schedule blocks (sorted by `totalBlocks` desc).
-
-Errors: `401` unauthenticated; a caller only ever sees their own data.
-
-### Adaptive scheduling (proposal → accept / reject; never auto-applied)
-The backend never modifies the schedule on its own. Gowri's client consumes these three endpoints.
-
-**`POST /api/adaptive/proposals`** — suggest a shorter revision block after a missed / abandoned / high-difficulty session.
-- Auth: required.
-- Request:
-```json
-{ "scheduleBlockId": "block-…", "reason": "missed" }
-```
-`reason` ∈ `missed | abandoned | high-difficulty`.
-- Response `200` (pure computation, no writes; the slot is the next free interval the caller has, searched forward from today):
-```json
-{
-  "proposal": {
-    "sourceBlockId": "block-…",
-    "reason": "missed",
-    "topicId": "topic-…",
-    "topicName": "Graphs",
-    "title": "Revision: Study Graphs",
-    "date": "2026-09-16",
-    "startTime": "09:00",
-    "durationMinutes": 30
-  }
-}
-```
-- Errors: `400` missing/invalid payload; `404` block not owned; `409` completed source block, or no free slot in the next 14 days.
-
-**`POST /api/adaptive/proposals/accept`** — apply a validated change.
-- Auth: required.
-- Request (the client returns the final block it wants, adjusting the proposal if desired):
-```json
-{
-  "sourceBlockId": "block-…",
-  "reason": "missed",
-  "topicId": "topic-…",
-  "title": "Revision: Study Graphs",
-  "date": "2026-09-16",
-  "startTime": "09:00",
-  "durationMinutes": 30
-}
-```
-- Response `201`:
-```json
-{ "scheduleBlocks": [ … ] }
-```
-- Behaviour on accept: re-validates topic ownership (`404`), refuses completed source blocks (`409`), re-checks real time-range overlap (`409`), persists the new block, and writes a `created` schedule-change history entry with `reason` = `adaptive-<reason>`.
-- Errors: `400`, `404`, `409` as above.
-
-**`POST /api/adaptive/proposals/reject`** — decline a proposal.
-- Auth: required.
-- Request:
-```json
-{ "sourceBlockId": "block-…", "reason": "missed" }
-```
-- Response `200`:
-```json
-{ "ok": true }
-```
-- The schedule is left completely unchanged (no block creation, no history row).
+Assistant previews are deterministic and never persisted. Confirmation rejects completed/stale/conflicting blocks.
 
 ### Study sessions
 | Method | Path | Body | Returns |
@@ -166,8 +89,26 @@ The backend never modifies the schedule on its own. Gowri's client consumes thes
 | GET | `/api/study-sessions` | — | `{ "studySessions" }` |
 | POST | `/api/study-sessions` | `{ "scheduleBlockId", "durationMinutes"? }` | `201 { "studySession" }`; `404` if the block is not the caller's |
 | PATCH | `/api/study-sessions/:id` | `{ "status", "actualDurationSeconds"? }` | `{ "studySession": { "id", "status" } }`; `404` if not the caller's session |
+| GET | `/api/study-sessions/:id/feedback` | — | `{ "feedback" }`; `404` if not the caller's session |
+| POST | `/api/study-sessions/:id/feedback` | `{ "focusRating", "difficultyRating", "progressRating", "notes"? }` | `201 { "feedback" }`; ratings are integers 1–5 and the session must be completed |
 
-`status` ∈ `active | paused | completed | stopped`. Setting `completed`/`stopped` stamps `endedAt`. `actualDurationSeconds` is **additive** (accumulates on the session).
+`status` ∈ `active | paused | completed | stopped`. Setting `completed`/`stopped` stamps `endedAt`. `actualDurationSeconds` is a non-negative integer **delta** added to the session accumulator. `activeSince` identifies the current active interval and is cleared on pause/finish. Completing a session also marks its source schedule block complete atomically.
+
+### Dashboard analytics
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| GET | `/api/analytics/dashboard` | — | `{ "analytics" }`; caller-scoped all-time summary, rolling seven-day summary, feedback averages, and topic aggregates |
+
+All-time planned minutes come from distinct persisted `schedule_blocks`; actual seconds and session completion/stopped counts come from persisted `study_sessions`. Upcoming workload includes only unfinished blocks whose date/time is in the future. The rolling seven-day window covers the current UTC day and six preceding UTC dates; active unpersisted timer time is deliberately excluded.
+
+### Adaptive revision proposals
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| POST | `/api/adaptive-proposals` | `{ "studySessionId" }` | `{ "proposal", "message"? }`; a proposal is generated only from an owned stopped session |
+| POST | `/api/adaptive-proposals/accept` | `{ "studySessionId", "proposedDate", "proposedStartTime", "proposedDurationMinutes" }` | `201 { "scheduleBlock", "scheduleBlocks" }`; `409` if the deterministic proposal has changed or conflicts |
+| POST | `/api/adaptive-proposals/reject` | `{ "studySessionId" }` | `{ "ok": true }`; no schedule changes |
+
+Proposal generation is stateless and never writes a schedule block. A stopped session, or a completed session with persisted session-feedback difficulty 4 or 5, qualifies for a proposal. Acceptance rebuilds the proposal from persisted session/block/feedback data, verifies the submitted proposal still matches, then uses normal schedule validation before creating the shorter same-topic revision block.
 
 ### Documents
 | Method | Path | Body | Returns |
@@ -176,12 +117,20 @@ The backend never modifies the schedule on its own. Gowri's client consumes thes
 | POST | `/api/documents` | `{ "title", "docType"?, "content"?, "fileSize"? }` | `201 { "document" }` |
 | GET | `/api/documents/:id` | — | `{ "document" }`; `404` if not the caller's |
 
+### Academic ingestion and evidence
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| POST | `/api/academic-documents/analyze` | `{ "title", "docType": "Syllabus" | "Past Paper", "content", "fileSize"? }` | `201 { "analysis" }` |
+| GET | `/api/academic-evidence` | — | `{ "academic": { "documents", "questions", "ranking" } }` |
+
+Academic ingestion persists the source document before extraction. Syllabus topics are stored even if the source has no questions and are linked to their originating document. Numbered past-paper questions are normalized and deduplicated per persisted source document. Mapping is deterministic: only matching topic tokens are recorded as evidence; questions without sufficient evidence remain `unmatched` with no topic id. Ranking is persisted to `topics.priority` and returns its score, mapped-question count, syllabus presence, source document ids, and a human-readable reason. Repeating the same title/content does not create duplicate document questions.
+
 ### Questions
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | GET | `/api/questions` | — | `{ "questions" }` |
 | GET | `/api/questions/:id` | — | `{ "question" }`; `404` if not the caller's |
-| POST | `/api/questions/bulk` | `{ "questions": [{ "topicId"? , "topicName"?, "questionText", "marks"?, "questionType"?, "source"?, "suggestedTimeMinutes"? }] }` | `201 { "questions" }`; `404` if a `topicId` is not the caller's |
+| POST | `/api/questions/bulk` | `{ "questions": [{ "topicId"? , "topicName"?, "documentId"?, "questionText", "marks"?, "questionType"?, "source"?, "suggestedTimeMinutes"? }] }` | `201 { "questions" }`; `404` if a `topicId` or `documentId` is not the caller's |
 
 `topicName` falls back to the caller's topic by name (creating it if needed). `topicId` must be owned.
 
@@ -202,6 +151,6 @@ Session-evidence fields (used by adaptive scheduling — a high-difficulty sessi
 
 `src/api.ts` installs a global `fetch` wrapper (imported once from `src/main.tsx`, zero component edits):
 
-1. Ensures a session (demand-login or restored from `localStorage`).
-2. Injects `Authorization: Bearer <token>` on every request.
-3. On a single `401`, clears the token, re-acquires the demo session, and retries exactly once.
+1. Restores an existing session from `localStorage` through `GET /api/auth/me`.
+2. Injects `Authorization: Bearer <token>` while a session is active.
+3. On a protected `401` for the current token, clears stale state and returns the user to login. There is no automatic demo authentication or retry.

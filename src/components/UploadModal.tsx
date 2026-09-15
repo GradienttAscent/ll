@@ -1,16 +1,14 @@
 import React, { useState } from 'react';
 import { X, FileUp, Sparkles, Loader2 } from 'lucide-react';
-import { PastPaper, PersistedTopic } from '../types';
 import { extractFileContent } from '../utils/pdfExtractor';
 
 interface UploadModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onPaperUploaded: (paper: PastPaper) => void;
-  onTopicsSaved: (topics: PersistedTopic[]) => void;
+  onAcademicUpdated: () => Promise<void>;
 }
 
-export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPaperUploaded, onTopicsSaved }) => {
+export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAcademicUpdated }) => {
   const [docName, setDocName] = useState('');
   const [docType, setDocType] = useState<'Past Paper' | 'Syllabus'>('Past Paper');
   const [content, setContent] = useState('');
@@ -28,45 +26,21 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPap
     setIsProcessing(true);
 
     try {
-      // Call Gemini API to extract key topics
-      const res = await fetch('/api/gemini/analyze-document', {
+      const res = await fetch('/api/academic-documents/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          documentName: docName,
-          documentType: docType,
-          content: content || `Extracted text from ${docName}`,
+          title: docName,
+          docType,
+          content,
         }),
       });
 
       const json = await res.json();
-      if (!res.ok || !json.success) throw new Error(json.error || 'Failed to analyze document.');
-      const topicsResponse = await fetch('/api/topics/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topics: json.data?.topics || [] }),
-      });
-      const savedTopics = await topicsResponse.json();
-      if (!topicsResponse.ok) throw new Error(savedTopics.error || 'Unable to save extracted topics.');
-      onTopicsSaved(savedTopics.topics);
-      const extractedCount = json.data?.extractedQuestions?.length || 5;
-
-      const newPaper: PastPaper = {
-        id: `paper-${Date.now()}`,
-        title: docName.endsWith('.txt') ? docName : `${docName}.txt`,
-        courseCode: 'CS301',
-        semester: 'Spring 2026',
-        year: '2026',
-        fileSize: '1.5 MB',
-        uploadDate: 'Just now',
-        topicsCount: json.data?.topics?.length || 4,
-        extractedQuestionsCount: extractedCount,
-        parsedContent: content || `Extracted text for ${docName}`,
-      };
-
-      onPaperUploaded(newPaper);
+      if (!res.ok) throw new Error(json.error || 'Failed to save academic document.');
+      await onAcademicUpdated();
       onClose();
-      alert(`Topics extracted and saved. ${extractedCount} practice questions were identified.`);
+      alert(`Document saved. ${json.analysis.createdQuestionCount} new questions were identified.`);
     } catch (err) {
       console.error('Error uploading paper:', err);
       alert('Failed to process document.');
@@ -135,31 +109,22 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onPap
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Upload PDF / TXT File or Paste Content</label>
-            <div className="relative border border-dashed border-black bg-[#F8F7F2] hover:bg-black/5 p-3 text-center transition-colors cursor-pointer mb-2">
-              <input
-                type="file"
-                accept=".pdf,.txt,.text,text/plain,application/pdf"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    setDocName(file.name);
-                    const { content: fileText } = await extractFileContent(file);
-                    setContent(fileText);
-                  }
-                }}
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              />
-              <div className="text-[10px] font-bold uppercase tracking-wider text-black flex items-center justify-center gap-2">
-                <FileUp className="w-3.5 h-3.5" />
-                <span>Choose PDF or TXT File</span>
-              </div>
+            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Content / Text Outline</label>
+            <div className="relative border border-dashed border-black bg-[#F8F7F2] p-3 text-center">
+              <input type="file" accept=".pdf,.txt,.text,text/plain,application/pdf" onChange={async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                setDocName(file.name);
+                const extracted = await extractFileContent(file);
+                setContent(extracted.content);
+              }} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+              <span className="text-[10px] font-bold uppercase tracking-wider">Choose PDF or TXT file</span>
             </div>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              placeholder="Or paste questions / syllabus chapters here..."
-              rows={3}
+              placeholder="Paste questions or syllabus chapters here..."
+              rows={4}
               className="w-full bg-[#F8F7F2] border border-black/30 p-3 text-xs text-black focus:outline-none focus:border-black font-mono"
             />
           </div>

@@ -1,5 +1,7 @@
 import { it, describe, before, after } from 'node:test';
 import assert from 'node:assert';
+import { closeDatabase, getDatabase, initDatabase } from '../db';
+import { setDb } from '../services';
 import { createTestServer, Api, TestServer, removeTempDir } from './helpers';
 
 describe('auth', () => {
@@ -34,6 +36,9 @@ describe('auth', () => {
     assert.strictEqual(json.user.email, 'alice@example.com');
     assert.strictEqual(json.user.displayName, 'Alice');
     assert.ok(json.user.id);
+    assert.ok(!('password' in json));
+    assert.ok(!('passwordHash' in json));
+    assert.ok(!('password_hash' in json.user));
   });
 
   it('rejects duplicate registration with 409', async () => {
@@ -74,17 +79,35 @@ describe('auth', () => {
     assert.strictEqual(bad.status, 401);
   });
 
-  it('me returns the session user and protected routes require auth', async () => {
+  it('restores an existing credential through me and rejects invalid credentials on protected routes', async () => {
     const alice = new Api(server.baseUrl);
     await alice.signInAs('alice@example.com', 'secret123');
 
     const me = await alice.request('/api/auth/me');
     assert.strictEqual(me.status, 200);
     assert.strictEqual(me.json.user.email, 'alice@example.com');
+    assert.ok(!('passwordHash' in me.json.user));
 
     const anonymous = new Api(server.baseUrl);
     const topics = await anonymous.request('/api/topics');
     assert.strictEqual(topics.status, 401);
+
+    anonymous.token = 'not-a-valid-session-token';
+    const invalid = await anonymous.request('/api/auth/me', { method: 'GET' });
+    assert.strictEqual(invalid.status, 401);
+  });
+
+  it('keeps a valid persisted session usable after a database restart', async () => {
+    const alice = new Api(server.baseUrl);
+    const { token } = await alice.login('alice@example.com', 'secret123');
+    alice.token = token;
+    closeDatabase();
+    await initDatabase();
+    setDb(await getDatabase());
+
+    const restored = await alice.request('/api/auth/me');
+    assert.strictEqual(restored.status, 200);
+    assert.strictEqual(restored.json.user.email, 'alice@example.com');
   });
 
   it('logout invalidates the session token', async () => {

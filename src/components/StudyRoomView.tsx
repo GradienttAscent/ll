@@ -1,221 +1,134 @@
-import React, { useState } from 'react';
-import { PeerUser, StudyRoomMessage } from '../types';
-import { Users, ThumbsUp, Send, Share2 } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Send, Users, Play, Pause, LogOut, Plus, RefreshCw } from 'lucide-react';
+import { StudyRoom, StudyRoomMember, StudyRoomMessage, StudyRoomSession } from '../types';
 
-interface StudyRoomViewProps {
-  peers: PeerUser[];
-  messages: StudyRoomMessage[];
-  onSendMessage: (msg: StudyRoomMessage) => void;
-}
+type RoomMessage = StudyRoomMessage & { senderId: string; createdAt: string };
+type RoomDetails = { room: StudyRoom; members: StudyRoomMember[]; messages: RoomMessage[]; session: StudyRoomSession | null };
 
-export const StudyRoomView: React.FC<StudyRoomViewProps> = ({ peers, messages, onSendMessage }) => {
-  const [inputText, setInputText] = useState('');
-  const [selectedTopicTag, setSelectedTopicTag] = useState('Graph Algorithms');
-  const [isAskingQuestion, setIsAskingQuestion] = useState(false);
+export const StudyRoomView: React.FC = () => {
+  const [rooms, setRooms] = useState<StudyRoom[]>([]);
+  const [selectedRoomId, setSelectedRoomId] = useState('');
+  const [details, setDetails] = useState<RoomDetails | null>(null);
+  const [roomName, setRoomName] = useState('');
+  const [roomTopic, setRoomTopic] = useState('Algorithms');
+  const [message, setMessage] = useState('');
+  const [isQuestion, setIsQuestion] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [sessionSeconds, setSessionSeconds] = useState(0);
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputText.trim()) return;
-
-    const newMsg: StudyRoomMessage = {
-      id: `msg-${Date.now()}`,
-      senderName: 'Alex (You)',
-      senderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
-      timestamp: 'Just now',
-      text: inputText,
-      isQuestion: isAskingQuestion,
-      topicTag: selectedTopicTag,
-      upvotes: 0,
-    };
-
-    onSendMessage(newMsg);
-    setInputText('');
+  const loadRooms = async () => {
+    const response = await fetch('/api/study-rooms');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to load study rooms.');
+    setRooms(data.rooms || []);
   };
 
-  return (
-    <div className="max-w-6xl mx-auto py-10 px-6 sm:px-8 space-y-10 animate-fade-in">
-      
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-black pb-8">
-        <div>
-          <div className="inline-flex items-center space-x-2 border border-black px-3 py-1 text-[9px] uppercase tracking-[0.2em] font-bold text-black mb-2">
-            <Users className="w-3.5 h-3.5" />
-            <span>Collaborative Peer Sanctuary</span>
-          </div>
-          <h1 className="font-serif text-4xl sm:text-5xl italic font-normal text-black">
-            CS301 Group Study Room
-          </h1>
-          <p className="text-xs text-black/70 mt-2 max-w-xl font-sans">
-            Connect with classmates, share practice solutions, solve conceptual bottlenecks, and run synchronized group focus timers.
-          </p>
-        </div>
+  const loadDetails = async (roomId: string) => {
+    if (!roomId) return;
+    const response = await fetch(`/api/study-rooms/${roomId}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to load room.');
+    setDetails(data);
+  };
 
-        <button 
-          onClick={() => alert('Study Room Invite Link copied: https://lazylift.ai/room/cs301-algorithms')}
-          className="border border-black bg-black text-white hover:bg-white hover:text-black px-5 py-3 text-[10px] font-bold uppercase tracking-[0.2em] transition-colors self-start md:self-auto flex items-center space-x-2"
-        >
-          <Share2 className="w-3.5 h-3.5 text-white group-hover:text-black" />
-          <span>Invite Classmate</span>
-        </button>
-      </div>
+  useEffect(() => {
+    void loadRooms().catch((loadError: any) => setError(loadError.message));
+  }, []);
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        
-        {/* Active Peers Sidebar (4 cols) */}
-        <div className="lg:col-span-4 space-y-6">
-          
-          {/* Active Room Members */}
-          <div className="bg-[#F8F7F2] border border-black p-6 space-y-5">
-            <div className="flex items-center justify-between border-b border-black pb-3">
-              <h3 className="font-serif text-2xl italic font-normal text-black">
-                Active Peers ({peers.length})
-              </h3>
-              <span className="w-2.5 h-2.5 bg-black"></span>
-            </div>
+  useEffect(() => {
+    if (!selectedRoomId) return undefined;
+    void loadDetails(selectedRoomId).catch((loadError: any) => setError(loadError.message));
+    const interval = window.setInterval(() => { void loadDetails(selectedRoomId).catch(() => undefined); }, 3000);
+    return () => window.clearInterval(interval);
+  }, [selectedRoomId]);
 
-            <div className="space-y-3">
-              {peers.map((p) => (
-                <div key={p.id} className="bg-white border border-black p-4 flex items-center space-x-3">
-                  <img
-                    src={p.avatarUrl}
-                    alt={p.name}
-                    className="w-10 h-10 border border-black object-cover"
-                  />
-                  <div className="flex-1 overflow-hidden">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-serif italic text-black truncate">{p.name}</span>
-                      <span className="text-[8px] font-bold uppercase tracking-widest border border-black px-1.5 py-0.5 text-black">
-                        {p.status}
-                      </span>
-                    </div>
-                    <div className="text-[10px] uppercase tracking-wider text-black/60 truncate">{p.currentTopic}</div>
-                    <div className="text-[9px] text-black/40 font-mono mt-0.5">{p.focusDurationMin}m deep streak</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+  useEffect(() => {
+    const session = details?.session;
+    const update = () => {
+      if (!session || session.status !== 'active') return;
+      const elapsed = Math.floor((Date.now() - Date.parse(session.startedAt)) / 1000);
+      setSessionSeconds(Math.max(0, Math.min(session.durationMinutes * 60, elapsed)));
+    };
+    update();
+    const interval = window.setInterval(update, 1000);
+    return () => window.clearInterval(interval);
+  }, [details?.session]);
 
-          {/* Shared Synchronized Group Focus Timer */}
-          <div className="bg-black text-white border border-black p-8 text-center space-y-3">
-            <div className="text-[9px] uppercase tracking-[0.2em] text-white/70 font-bold">
-              Shared Group Pomodoro
-            </div>
-            <div className="font-serif text-5xl italic font-normal tracking-tight text-white">
-              25:00
-            </div>
-            <p className="text-[10px] text-white/60 font-mono pt-1">
-              4 peers currently focusing together
-            </p>
-          </div>
-        </div>
+  const selectedRoom = useMemo(() => rooms.find((room) => room.id === selectedRoomId), [rooms, selectedRoomId]);
+  const run = (operation: () => Promise<void>) => void operation().catch((operationError: any) => setError(operationError.message));
+  const minutes = Math.floor(sessionSeconds / 60);
+  const seconds = sessionSeconds % 60;
 
-        {/* Discussion Board & Answer Feed (8 cols) */}
-        <div className="lg:col-span-8 space-y-6">
-          
-          {/* Messages list */}
-          <div className="bg-[#F8F7F2] border border-black p-6 space-y-6">
-            <h3 className="font-serif text-3xl italic font-normal text-black border-b border-black pb-4">
-              Peer Discussion &amp; Query Board
-            </h3>
+  const createRoom = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    try {
+      const response = await fetch('/api/study-rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: roomName, topic: roomTopic }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to create room.');
+      setRoomName('');
+      await loadRooms();
+      setSelectedRoomId(data.room.id);
+    } catch (createError: any) { setError(createError.message); } finally { setLoading(false); }
+  };
 
-            <div className="space-y-4 max-h-[500px] overflow-y-auto pr-1">
-              {messages.map((m) => (
-                <div
-                  key={m.id}
-                  className={`p-5 border space-y-3 transition-all ${
-                    m.isQuestion
-                      ? 'bg-black text-white border-black'
-                      : 'bg-white text-black border-black/40'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <img
-                        src={m.senderAvatar}
-                        alt={m.senderName}
-                        className="w-8 h-8 object-cover border border-current"
-                      />
-                      <div>
-                        <span className="text-xs font-serif italic font-normal">{m.senderName}</span>
-                        <span className="text-[9px] opacity-60 ml-2 font-mono uppercase tracking-widest">{m.timestamp}</span>
-                      </div>
-                    </div>
+  const joinRoom = async (roomId: string) => {
+    const response = await fetch(`/api/study-rooms/${roomId}/join`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to join room.');
+    await loadRooms();
+    setSelectedRoomId(roomId);
+  };
 
-                    {m.topicTag && (
-                      <span className={`text-[8px] font-bold uppercase tracking-widest border px-2 py-0.5 ${
-                        m.isQuestion ? 'border-white text-white' : 'border-black text-black'
-                      }`}>
-                        {m.topicTag}
-                      </span>
-                    )}
-                  </div>
+  const leaveRoom = async () => {
+    if (!selectedRoomId) return;
+    const response = await fetch(`/api/study-rooms/${selectedRoomId}/leave`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to leave room.');
+    setSelectedRoomId('');
+    setDetails(null);
+    await loadRooms();
+  };
 
-                  <p className="text-xs leading-relaxed font-sans">
-                    {m.text}
-                  </p>
+  const updateSession = async (status: 'active' | 'paused' | 'stopped') => {
+    if (!selectedRoomId) return;
+    const response = await fetch(`/api/study-rooms/${selectedRoomId}/session`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, durationMinutes: 25 }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to update shared timer.');
+    setDetails((current) => current ? { ...current, session: data.session } : current);
+  };
 
-                  <div className="flex items-center justify-between pt-1 border-t border-current/20">
-                    <button
-                      onClick={() => alert(`Upvoted discussion response from ${m.senderName}`)}
-                      className="inline-flex items-center space-x-1.5 text-[10px] font-bold uppercase tracking-widest opacity-80 hover:opacity-100 transition-opacity"
-                    >
-                      <ThumbsUp className="w-3.5 h-3.5" />
-                      <span>{m.upvotes || 0} Upvotes</span>
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
+  const sendMessage = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedRoomId || !message.trim()) return;
+    const response = await fetch(`/api/study-rooms/${selectedRoomId}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: message, isQuestion, topicTag: roomTopic }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to send message.');
+    setMessage('');
+    setIsQuestion(false);
+    await loadDetails(selectedRoomId);
+  };
 
-            {/* Post message/query form */}
-            <form onSubmit={handleSend} className="space-y-4 pt-4 border-t border-black">
-              <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-                <label className="flex items-center space-x-2 cursor-pointer text-[10px] font-bold uppercase tracking-[0.2em] text-black">
-                  <input
-                    type="checkbox"
-                    checked={isAskingQuestion}
-                    onChange={(e) => setIsAskingQuestion(e.target.checked)}
-                    className="accent-black"
-                  />
-                  <span>Mark as Question / Need Help</span>
-                </label>
-
-                <select
-                  value={selectedTopicTag}
-                  onChange={(e) => setSelectedTopicTag(e.target.value)}
-                  className="bg-white border border-black/40 px-3 py-1.5 text-xs text-black font-sans focus:outline-none focus:border-black"
-                >
-                  <option value="Graph Algorithms">Graph Algorithms</option>
-                  <option value="Dynamic Programming">Dynamic Programming</option>
-                  <option value="Big O Analysis">Big O Analysis</option>
-                  <option value="Heap Operations">Heap Operations</option>
-                </select>
-              </div>
-
-              <div className="flex items-center space-x-2">
-                <input
-                  type="text"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder="Share a solution, ask a question, or discuss a past paper problem..."
-                  className="flex-1 bg-white border border-black/30 px-4 py-3 text-xs text-black focus:outline-none focus:border-black font-sans"
-                />
-                <button
-                  type="submit"
-                  className="bg-black text-white hover:bg-white hover:text-black border border-black px-6 py-3 font-bold text-[10px] uppercase tracking-[0.2em] flex items-center space-x-2 transition-colors"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>Post</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-
-      </div>
-
+  return <div className="max-w-6xl mx-auto py-10 px-6 sm:px-8 space-y-8 animate-fade-in">
+    <div className="border-b border-black pb-8 flex flex-col md:flex-row md:items-end justify-between gap-6">
+      <div><div className="inline-flex items-center gap-2 border border-black px-3 py-1 text-[9px] uppercase tracking-[0.2em] font-bold"><Users className="w-3.5 h-3.5" /> Persistent Study Room</div><h1 className="font-serif text-5xl italic mt-3">Study together, for real.</h1><p className="text-xs text-black/60 mt-2">Rooms, membership, chat, and shared focus state are saved to your account.</p></div>
+      <button onClick={() => run(loadRooms)} className="border border-black p-3 hover:bg-black hover:text-white" aria-label="Refresh rooms"><RefreshCw className="w-4 h-4" /></button>
     </div>
-  );
+    {error && <div className="border border-red-400 bg-red-50 p-4 text-xs text-red-800">{error}</div>}
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <section className="border border-black p-5 space-y-5">
+        <h2 className="font-serif text-2xl italic">Create a room</h2>
+        <form onSubmit={createRoom} className="space-y-3"><input required value={roomName} onChange={(event) => setRoomName(event.target.value)} placeholder="Room name" className="w-full border border-black p-3 text-xs" /><input value={roomTopic} onChange={(event) => setRoomTopic(event.target.value)} placeholder="Topic" className="w-full border border-black p-3 text-xs" /><button disabled={loading} className="w-full bg-black text-white p-3 text-[10px] font-bold uppercase tracking-widest"><Plus className="inline w-4 h-4 mr-2" />Create room</button></form>
+        <div className="border-t border-black pt-5 space-y-3"><h2 className="font-serif text-2xl italic">Browse rooms</h2>{rooms.length === 0 && <p className="text-xs text-black/50">No rooms yet.</p>}{rooms.map((room) => <div key={room.id} className="border border-black p-3 space-y-2"><div className="flex justify-between gap-3"><strong className="text-xs">{room.name}</strong><span className="text-[10px]">{room.memberCount} member{room.memberCount === 1 ? '' : 's'}</span></div><p className="text-[10px] text-black/60">{room.topic} · hosted by {room.ownerName}</p>{room.joined ? <button onClick={() => setSelectedRoomId(room.id)} className="w-full border border-black p-2 text-[10px] font-bold uppercase">Enter room</button> : <button onClick={() => run(() => joinRoom(room.id))} className="w-full bg-black text-white p-2 text-[10px] font-bold uppercase">Join room</button>}</div>)}</div>
+      </section>
+      <section className="lg:col-span-2 border border-black p-5 space-y-5">
+        {!selectedRoom || !details ? <div className="py-20 text-center text-xs text-black/50">Create or join a room to begin.</div> : <>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-black pb-4"><div><h2 className="font-serif text-3xl italic">{selectedRoom.name}</h2><p className="text-xs text-black/60">{selectedRoom.topic} · {details.members.length} participant{details.members.length === 1 ? '' : 's'}</p></div><button onClick={() => run(leaveRoom)} className="border border-black px-3 py-2 text-[10px] font-bold uppercase"><LogOut className="inline w-3.5 h-3.5 mr-1" />Leave</button></div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4"><div className="border border-black bg-[#F8F7F2] p-4"><div className="text-[10px] font-bold uppercase tracking-widest">Participants</div><div className="mt-3 space-y-2">{details.members.map((member) => <div key={member.id} className="text-xs flex justify-between"><span>{member.displayName || member.email}</span><span className="text-black/40">{member.id === selectedRoom.ownerId ? 'Host' : 'Member'}</span></div>)}</div></div><div className="border border-black bg-black text-white p-4"><div className="text-[10px] font-bold uppercase tracking-widest text-white/60">Shared focus timer</div><div className="font-mono text-4xl mt-3">{String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}</div><div className="flex gap-2 mt-3">{details.session?.status === 'active' ? <button onClick={() => run(() => updateSession('paused'))} className="border border-white px-3 py-2 text-[10px] uppercase"><Pause className="inline w-3 h-3 mr-1" />Pause</button> : <button onClick={() => run(() => updateSession('active'))} className="border border-white px-3 py-2 text-[10px] uppercase"><Play className="inline w-3 h-3 mr-1" />Start</button>}<button onClick={() => run(() => updateSession('stopped'))} className="border border-white/50 px-3 py-2 text-[10px] uppercase">Stop</button></div></div></div>
+          <div className="border border-black p-4"><div className="space-y-3 max-h-80 overflow-y-auto">{details.messages.map((item) => <div key={item.id} className="border-b border-black/10 pb-3"><div className="flex justify-between text-[10px] font-bold"><span>{item.senderName}</span><span className="text-black/40">{new Date(item.createdAt).toLocaleTimeString()}</span></div><p className="text-xs mt-1">{item.isQuestion && <strong className="mr-2">Question</strong>}{item.text}</p></div>)}{details.messages.length === 0 && <p className="text-xs text-black/50">No messages yet.</p>}</div><form onSubmit={sendMessage} className="border-t border-black mt-4 pt-4 space-y-3"><label className="text-[10px] font-bold uppercase tracking-widest"><input type="checkbox" checked={isQuestion} onChange={(event) => setIsQuestion(event.target.checked)} className="mr-2" />Mark as question</label><div className="flex gap-2"><input required value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Send a room message" className="flex-1 border border-black p-3 text-xs" /><button className="bg-black text-white px-4" aria-label="Send message"><Send className="w-4 h-4" /></button></div></form></div>
+        </>}
+      </section>
+    </div>
+  </div>;
 };
-
