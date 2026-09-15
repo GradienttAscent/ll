@@ -55,7 +55,110 @@ Upsert key is `(user_id, course_id, name)` — two users can use the same topic 
 | --- | --- | --- | --- |
 | GET | `/api/schedule-changes` | `blockId?` | `{ "scheduleChanges" }` |
 
-A change is recorded with `field` = `created` (on block create), `rescheduled` (on title/date/time/duration/topic change), or `completed`. `?blockId=` on another user's block → `404`.
+A change is recorded with `field` = `created` (on block create), `rescheduled` (on title/date/time/duration/topic change), or `completed`. `?blockId=` on another user's block → `404`. An optional `reason` string is stored on each change (e.g. `manual` for manual PATCH reschedules, `adaptive-missed` for accepted adaptive proposals).
+
+### Schedule lifecycle rules
+
+**Overlap detection (genuine time-range):** schedule blocks are compared on `(<date>, <startTime>, <startTime> + durationMinutes)`. Two blocks on the same date conflict when `startA < endB AND endA > startB`. This rejects partial overlap, contained/containing intervals and identical intervals; exact boundaries (`10:00–11:00` then `11:00–12:00`) and fully non-overlapping intervals are allowed. All checks are scoped to the caller's own blocks.
+
+Errors: `409` if a single POST, a bulk POST, or a PATCH that changes `date`/`startTime`/`durationMinutes`/`topicId` would overlap an existing block.
+
+**Completed-block protection:** `PATCH /api/schedule-blocks/:id` on a completed block that changes any scheduling field (`date`, `startTime`, `durationMinutes`, `topicId`) → `409`. Toggling `completed` or editing `title` remains allowed. Adaptive proposal/accept flows reject completed source blocks with `409`.
+
+### Analytics
+| Method | Path | Returns |
+| --- | --- | --- |
+| GET | `/api/analytics` | `{ "analytics" }` |
+
+Computed from the caller's persisted schedule data (never simulated). `today` is the server's local `YYYY-MM-DD`.
+
+```json
+{
+  "analytics": {
+    "plannedMinutes": 240,
+    "completedMinutes": 120,
+    "completedCount": 2,
+    "missedCount": 1,
+    "completionRate": 0.666,
+    "upcomingWorkloadMinutes": 180,
+    "topicProgress": [
+      { "topicId": "topic-…", "topicName": "Graphs", "totalBlocks": 3, "completedBlocks": 2, "completionRate": 0.666 }
+    ],
+    "today": "2026-09-15"
+  }
+}
+```
+
+Definitions:
+- `plannedMinutes` — Σ `duration_minutes` over all of the caller's blocks.
+- `completedMinutes` — Σ duration of blocks with `completed = true`.
+- `completedCount` — number of completed blocks.
+- `missedCount` — number of non-completed blocks with `date < today`.
+- `completionRate` — `completedCount / (completedCount + missedCount)` (0 when there are no due blocks).
+- `upcomingWorkloadMinutes` — Σ duration of non-completed blocks with `date >= today`.
+- `topicProgress` — per-topic totals and completion ratio for topics that have schedule blocks (sorted by `totalBlocks` desc).
+
+Errors: `401` unauthenticated; a caller only ever sees their own data.
+
+### Adaptive scheduling (proposal → accept / reject; never auto-applied)
+The backend never modifies the schedule on its own. Gowri's client consumes these three endpoints.
+
+**`POST /api/adaptive/proposals`** — suggest a shorter revision block after a missed / abandoned / high-difficulty session.
+- Auth: required.
+- Request:
+```json
+{ "scheduleBlockId": "block-…", "reason": "missed" }
+```
+`reason` ∈ `missed | abandoned | high-difficulty`.
+- Response `200` (pure computation, no writes; the slot is the next free interval the caller has, searched forward from today):
+```json
+{
+  "proposal": {
+    "sourceBlockId": "block-…",
+    "reason": "missed",
+    "topicId": "topic-…",
+    "topicName": "Graphs",
+    "title": "Revision: Study Graphs",
+    "date": "2026-09-16",
+    "startTime": "09:00",
+    "durationMinutes": 30
+  }
+}
+```
+- Errors: `400` missing/invalid payload; `404` block not owned; `409` completed source block, or no free slot in the next 14 days.
+
+**`POST /api/adaptive/proposals/accept`** — apply a validated change.
+- Auth: required.
+- Request (the client returns the final block it wants, adjusting the proposal if desired):
+```json
+{
+  "sourceBlockId": "block-…",
+  "reason": "missed",
+  "topicId": "topic-…",
+  "title": "Revision: Study Graphs",
+  "date": "2026-09-16",
+  "startTime": "09:00",
+  "durationMinutes": 30
+}
+```
+- Response `201`:
+```json
+{ "scheduleBlocks": [ … ] }
+```
+- Behaviour on accept: re-validates topic ownership (`404`), refuses completed source blocks (`409`), re-checks real time-range overlap (`409`), persists the new block, and writes a `created` schedule-change history entry with `reason` = `adaptive-<reason>`.
+- Errors: `400`, `404`, `409` as above.
+
+**`POST /api/adaptive/proposals/reject`** — decline a proposal.
+- Auth: required.
+- Request:
+```json
+{ "sourceBlockId": "block-…", "reason": "missed" }
+```
+- Response `200`:
+```json
+{ "ok": true }
+```
+- The schedule is left completely unchanged (no block creation, no history row).
 
 ### Study sessions
 | Method | Path | Body | Returns |
@@ -85,10 +188,12 @@ A change is recorded with `field` = `created` (on block create), `rescheduled` (
 ### Feedback
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
-| POST | `/api/feedback` | `{ "questionId"?, "score", "maxMarks", "source"?, "strengths"?, "improvements"?, "feedbackText"?, "modelAnswerSnippet"? }` | `201 { "feedback" }`; `404` if `questionId` is not the caller's |
+| POST | `/api/feedback` | `{ "questionId"?, "sessionId"?, "score", "maxMarks", "source"?, "strengths"?, "improvements"?, "feedbackText"?, "modelAnswerSnippet"?, "focus"?, "difficulty"?, "perceivedProgress"?, "notes"? }` | `201 { "feedback" }`; `404` if `questionId` or `sessionId` is not the caller's |
 | GET | `/api/feedback` | — | `{ "feedback" }` |
 
 Validation: `score` ≥ 0, `maxMarks` > 0, `score ≤ maxMarks`, `source` ∈ `gemini | simulated | local-fallback | manual`. `strengths`/`improvements` are sent as arrays and stored as JSON text.
+
+Session-evidence fields (used by adaptive scheduling — a high-difficulty session triggers revision proposals): `sessionId` links to a study session (`404` if not owned), `difficulty` ∈ `easy | medium | hard`, `focus` ∈ [0, 100], `perceivedProgress` ∈ [0, 100], `notes` is free text. All optional.
 
 ### Gemini
 `POST /api/gemini/analyze-document`, `POST /api/gemini/evaluate-answer`, `POST /api/gemini/generate-plan` — all require auth; unchanged behavior otherwise (`generate-plan` is intentionally not wired into the UI).
