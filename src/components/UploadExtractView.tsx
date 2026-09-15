@@ -40,7 +40,8 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     const nameToAnalyze = docName || selectedPaper?.title || 'Academic Paper';
 
     try {
-      const res = await fetch('/api/gemini/analyze-document', {
+      // Use the new deterministic academic analysis endpoint
+      const res = await fetch('/api/analyze-academic', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -51,34 +52,37 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
       });
 
       const json = await res.json();
-      if (json.success && json.data) {
-        setAnalysisResult(json.data);
+      if (!res.ok) throw new Error(json.error || 'Analysis failed.');
 
-        // Convert extracted questions to QuestionItem format
-        if (json.data.extractedQuestions && json.data.extractedQuestions.length > 0) {
-          const newQuestions: QuestionItem[] = json.data.extractedQuestions.map((q: any, i: number) => ({
-            id: `ext-${Date.now()}-${i}`,
+      if (json.success) {
+        setAnalysisResult({
+          title: nameToAnalyze,
+          summary: `Extracted ${json.summary?.topicsExtracted || 0} topics and ${json.summary?.questionsExtracted || 0} questions. ${json.summary?.unmatchedQuestions || 0} unmatched.`,
+          topics: json.topics || [],
+          priorities: json.priorities || [],
+          extractedQuestions: json.questions || [],
+        });
+
+        // Update parent state with persisted topics
+        if (json.topics?.length > 0) {
+          onTopicsSaved(json.topics);
+        }
+
+        // Update parent state with questions
+        if (json.questions?.length > 0) {
+          const newQuestions: QuestionItem[] = json.questions.map((q: any) => ({
+            id: q.id,
             subject: 'Algorithms (CS301)',
-            topic: q.topic || 'General Algorithms',
-            questionText: q.question || 'Extracted question from paper',
+            topic: q.topicName || 'Unmatched',
+            questionText: q.questionText,
             marks: q.marks || 10,
             year: nameToAnalyze,
-            type: (q.type as any) || 'Subjective',
+            type: (q.questionType as any) || 'Subjective',
             suggestedTimeMinutes: q.suggestedTimeMinutes || 15,
             modelAnswer: 'See practice view for AI step-by-step guidance.',
           }));
-
-          const extractedTopics = json.data.topics || [];
-          const saveResponse = await fetch('/api/topics/bulk', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ topics: extractedTopics }),
-          });
-          const savedJson = await saveResponse.json();
-          if (!saveResponse.ok) throw new Error(savedJson.error || 'Unable to save extracted topics.');
-          onTopicsSaved(savedJson.topics);
-          const newTopics: ExtractedTopic[] = extractedTopics.map((topic: any, index: number) => ({
-            id: `analysis-${Date.now()}-${index}`,
+          const newTopics: ExtractedTopic[] = (json.topics || []).map((topic: any, index: number) => ({
+            id: topic.id || `analysis-${Date.now()}-${index}`,
             name: topic.name,
             weightage: topic.weightage || 10,
             frequencyCount: topic.priority || 5,
@@ -86,12 +90,45 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
             highYield: topic.priority >= 8,
           }));
           onQuestionsExtracted(newQuestions, newTopics);
-          alert(`Topics extracted and saved (${savedJson.topics.length} stored topics).`);
         }
+
+        const msg = [
+          `${json.summary?.topicsExtracted || 0} topics saved`,
+          `${json.summary?.questionsExtracted || 0} questions extracted`,
+          json.summary?.unmatchedQuestions > 0 ? `${json.summary.unmatchedQuestions} unmatched` : null,
+        ].filter(Boolean).join(', ');
+        alert(`Analysis complete: ${msg}.`);
       }
     } catch (err) {
-      console.error('Failed to run AI document analysis:', err);
-      alert('Error analyzing document. Please try again.');
+      console.error('Failed to run academic analysis:', err);
+      // Fallback to the Gemini/local endpoint
+      try {
+        const fallbackRes = await fetch('/api/gemini/analyze-document', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            documentName: nameToAnalyze,
+            documentType: docType,
+            content: contentToAnalyze,
+          }),
+        });
+        const fallbackJson = await fallbackRes.json();
+        if (fallbackJson.success && fallbackJson.data) {
+          setAnalysisResult(fallbackJson.data);
+          if (fallbackJson.data.topics?.length > 0) {
+            const topicsRes = await fetch('/api/topics/bulk', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ topics: fallbackJson.data.topics }),
+            });
+            const savedJson = await topicsRes.json();
+            if (topicsRes.ok) onTopicsSaved(savedJson.topics);
+          }
+        }
+      } catch (fallbackErr) {
+        console.error('Fallback analysis also failed:', fallbackErr);
+        alert('Error analyzing document. Please try again.');
+      }
     } finally {
       setIsAnalyzing(false);
     }
@@ -334,6 +371,13 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
                       }}
                     ></div>
                   </div>
+                  
+                  {/* Priority Evidence */}
+                  {analysisResult?.priorities?.find((p: any) => p.topicName === t.name)?.evidence && (
+                    <div className="pt-2 text-[10px] italic text-black/60 font-serif">
+                      Evidence: {analysisResult.priorities.find((p: any) => p.topicName === t.name)?.evidence}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

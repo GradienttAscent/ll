@@ -402,6 +402,138 @@ ${content ? content.substring(0, 4000) : 'Sample university past question paper 
   }
 });
 
+// ---- Full Academic Document Processing (Member 2) ----
+// Creates document record, extracts topics/questions, maps, deduplicates, persists, calculates priorities.
+import {
+  parseSyllabus,
+  extractTopicNames,
+  extractQuestions,
+  deduplicateQuestions,
+  mapQuestionToTopic,
+  normalizeQuestionText,
+  calculateTopicPriorities,
+} from './academic';
+
+app.post('/api/analyze-academic', (req, res) => {
+  try {
+    const userId = userIdOf(req);
+    const { documentName, documentType, content } = req.body as {
+      documentName?: string;
+      documentType?: string;
+      content?: string;
+    };
+    const text = String(content || '').trim();
+    const docName = String(documentName || 'Academic Document').trim();
+    const docType = String(documentType || 'Past Paper').trim();
+
+    if (!text) return sendError(res, 400, 'Document content is required.');
+
+    // 1. Create/persist a document record
+    const document = services.createDocument(userId, {
+      title: docName,
+      docType,
+      content: text,
+      fileSize: `${(new TextEncoder().encode(text).length / 1024).toFixed(1)} KB`,
+    });
+
+    // 2. Parse syllabus structure and/or extract topic names
+    let topicNames: string[] = [];
+    const isSyllabus = /syllabus/i.test(docType);
+
+    if (isSyllabus) {
+      const units = parseSyllabus(text);
+      topicNames = extractTopicNames(units);
+    }
+
+    // 3. Also use local fallback for topic detection via keyword patterns
+    const localResult = localAcademicAnalysis(text, docName);
+    const localTopicNames = localResult.topics.map((t: any) => t.name);
+
+    // Merge: syllabus topics first, then local detected topics (dedup)
+    const seenLower = new Set(topicNames.map((n) => n.toLowerCase()));
+    for (const lt of localTopicNames) {
+      if (!seenLower.has(lt.toLowerCase())) {
+        seenLower.add(lt.toLowerCase());
+        topicNames.push(lt);
+      }
+    }
+
+    // 4. Save all topics (even those with zero questions)
+    const topicInputs = topicNames.map((name) => ({
+      name,
+      priority: 5,
+      weightage: 10,
+      source: isSyllabus ? 'syllabus' : 'extracted',
+    }));
+    const savedTopics = topicInputs.length > 0
+      ? services.saveTopics(userId, topicInputs)
+      : services.topicRows(userId);
+
+    // 5. Extract PYQ questions
+    let extracted = extractQuestions(text, docName);
+
+    // 6. Deduplicate
+    extracted = deduplicateQuestions(extracted);
+
+    // 7. Map each question to best topic (or leave unmatched)
+    const allTopicNames = savedTopics.map((t) => t.name);
+    const mappedQuestions = extracted.map((q) => {
+      const mapping = mapQuestionToTopic(q.questionText, allTopicNames);
+      return {
+        questionText: q.questionText,
+        marks: q.marks,
+        year: q.year,
+        questionType: q.questionType,
+        source: q.source || docName,
+        topicName: mapping.topicName,   // null if unmatched
+        documentId: document.id,
+        suggestedTimeMinutes: q.marks ? Math.max(5, Math.round(q.marks * 1.5)) : 15,
+      };
+    });
+
+    // 8. Persist questions
+    const allQuestions = mappedQuestions.length > 0
+      ? services.createQuestionsWithMeta(userId, mappedQuestions)
+      : services.questionRows(userId);
+
+    // 9. Recalculate topic priorities
+    const priorities = services.recalculateAndSavePriorities(userId);
+
+    // 10. Build response
+    const unmatchedCount = mappedQuestions.filter((q) => !q.topicName).length;
+    const refreshedTopics = services.topicRows(userId);
+
+    return res.status(201).json({
+      success: true,
+      source: 'deterministic',
+      document,
+      topics: refreshedTopics,
+      questions: allQuestions,
+      priorities,
+      summary: {
+        topicsExtracted: topicNames.length,
+        questionsExtracted: extracted.length,
+        questionsPersisted: mappedQuestions.length,
+        unmatchedQuestions: unmatchedCount,
+        documentId: document.id,
+      },
+    });
+  } catch (err: any) {
+    console.error('Academic analysis error:', err);
+    return sendError(res, 500, err.message || 'Failed to process academic document.');
+  }
+});
+
+// ---- Topic Priorities ----
+app.get('/api/topic-priorities', (req, res) => {
+  res.json({ priorities: services.topicPriorityRows(userIdOf(req)) });
+});
+
+app.post('/api/topic-priorities/recalculate', (req, res) => {
+  const priorities = services.recalculateAndSavePriorities(userIdOf(req));
+  res.json({ priorities });
+});
+
 // ---- AI Evaluation of Practice Answers ----
 app.post('/api/gemini/evaluate-answer', async (req, res) => {
   try {

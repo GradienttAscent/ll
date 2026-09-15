@@ -1,6 +1,7 @@
 import { DatabaseWrapper, DEFAULT_COURSE_ID } from './db';
 import { createId, now } from './utils';
 import { HttpError } from './validation';
+import { calculateTopicPriorities, type PriorityInput } from './academic';
 
 let dbInstance: DatabaseWrapper | null = null;
 
@@ -419,4 +420,182 @@ export function feedbackRows(userId: string): FeedbackRow[] {
     strengths: parseJsonList(row.strengths),
     improvements: parseJsonList(row.improvements),
   }));
+}
+
+// ─── Academic question persistence with metadata ────────────────────────────────
+
+export function createQuestionsWithMeta(
+  userId: string,
+  items: Array<{
+    questionText: string;
+    marks?: number | null;
+    year?: string | null;
+    questionType?: string;
+    source?: string;
+    topicId?: string | null;
+    topicName?: string | null;
+    documentId?: string | null;
+    suggestedTimeMinutes?: number;
+  }>,
+): QuestionRow[] {
+  for (const item of items) {
+    if (!item.questionText?.trim()) continue;
+
+    const id = createId('question');
+    let topicId: string | null = item.topicId || null;
+
+    // Resolve by name if no topicId but topicName provided
+    if (!topicId && item.topicName?.trim()) {
+      const owned = findOwnedTopicByName(userId, item.topicName.trim());
+      topicId = owned?.id ?? null;
+    }
+
+    getDb().prepare(`INSERT INTO questions
+      (id, user_id, topic_id, question_text, marks, question_type, source, suggested_time_minutes, created_at, document_id, year)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        id,
+        userId,
+        topicId,
+        item.questionText.trim(),
+        Math.max(1, Number(item.marks) || 10),
+        String(item.questionType || 'Subjective'),
+        String(item.source || 'extracted'),
+        Math.max(1, Number(item.suggestedTimeMinutes) || 15),
+        now(),
+        item.documentId || null,
+        item.year || null,
+      );
+  }
+  return questionRows(userId);
+}
+
+// ─── Topic Priority Persistence ─────────────────────────────────────────────────
+
+export interface TopicPriorityRow {
+  id: string;
+  topicId: string;
+  topicName: string;
+  priorityScore: number;
+  frequencyCount: number;
+  totalMarks: number;
+  avgMarks: number;
+  inSyllabus: boolean;
+  evidence: string;
+  createdAt: string;
+}
+
+export function topicPriorityRows(userId: string): TopicPriorityRow[] {
+  const rows = getDb().prepare(`
+    SELECT tp.id, tp.topic_id AS topicId, t.name AS topicName,
+      tp.priority_score AS priorityScore, tp.frequency_count AS frequencyCount,
+      tp.total_marks AS totalMarks, tp.avg_marks AS avgMarks,
+      CAST(tp.in_syllabus AS INTEGER) AS inSyllabus,
+      tp.evidence, tp.created_at AS createdAt
+    FROM topic_priorities tp
+    JOIN topics t ON t.id = tp.topic_id AND t.user_id = tp.user_id
+    WHERE tp.user_id = ?
+    ORDER BY tp.priority_score DESC, tp.frequency_count DESC
+  `).all(userId) as Array<Omit<TopicPriorityRow, 'inSyllabus'> & { inSyllabus: number }>;
+  return rows.map((r) => ({ ...r, inSyllabus: Boolean(r.inSyllabus) }));
+}
+
+export function saveTopicPriorities(
+  userId: string,
+  priorities: Array<{
+    topicId: string;
+    priorityScore: number;
+    frequencyCount: number;
+    totalMarks: number;
+    avgMarks: number;
+    inSyllabus: boolean;
+    evidence: string;
+  }>,
+): TopicPriorityRow[] {
+  for (const p of priorities) {
+    getDb().prepare(`INSERT INTO topic_priorities
+      (id, user_id, topic_id, priority_score, frequency_count, total_marks, avg_marks, in_syllabus, evidence, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, topic_id) DO UPDATE SET
+        priority_score = excluded.priority_score,
+        frequency_count = excluded.frequency_count,
+        total_marks = excluded.total_marks,
+        avg_marks = excluded.avg_marks,
+        in_syllabus = excluded.in_syllabus,
+        evidence = excluded.evidence,
+        created_at = excluded.created_at`)
+      .run(
+        createId('priority'),
+        userId,
+        p.topicId,
+        p.priorityScore,
+        p.frequencyCount,
+        p.totalMarks,
+        p.avgMarks,
+        p.inSyllabus ? 1 : 0,
+        p.evidence,
+        now(),
+      );
+  }
+  return topicPriorityRows(userId);
+}
+
+/**
+ * Recalculate priorities for all topics owned by a user, based on their actual
+ * persisted questions. Updates both the topics table and topic_priorities table.
+ */
+export function recalculateAndSavePriorities(userId: string): TopicPriorityRow[] {
+  const topics = topicRows(userId);
+  if (topics.length === 0) return [];
+
+  // Gather per-topic question stats
+  const stats = new Map<string, { count: number; totalMarks: number }>();
+  for (const topic of topics) {
+    stats.set(topic.id, { count: 0, totalMarks: 0 });
+  }
+
+  const allQuestions = getDb().prepare(
+    'SELECT topic_id, marks FROM questions WHERE user_id = ? AND topic_id IS NOT NULL',
+  ).all(userId) as Array<{ topic_id: string; marks: number }>;
+
+  for (const q of allQuestions) {
+    const s = stats.get(q.topic_id);
+    if (s) {
+      s.count++;
+      s.totalMarks += Number(q.marks) || 0;
+    }
+  }
+
+  const inputs: PriorityInput[] = topics.map((t) => {
+    const s = stats.get(t.id) || { count: 0, totalMarks: 0 };
+    return {
+      topicId: t.id,
+      topicName: t.name,
+      source: t.source,
+      questionCount: s.count,
+      totalMarks: s.totalMarks,
+    };
+  });
+
+  const priorities = calculateTopicPriorities(inputs);
+
+  // Update topics table priority column too
+  for (const p of priorities) {
+    getDb().prepare('UPDATE topics SET priority = ?, weightage = ? WHERE id = ? AND user_id = ?')
+      .run(p.priorityScore, p.frequencyCount > 0 ? Math.round(p.totalMarks / Math.max(1, p.frequencyCount)) : 10, p.topicId, userId);
+  }
+
+  // Persist to topic_priorities table
+  return saveTopicPriorities(
+    userId,
+    priorities.map((p) => ({
+      topicId: p.topicId,
+      priorityScore: p.priorityScore,
+      frequencyCount: p.frequencyCount,
+      totalMarks: p.totalMarks,
+      avgMarks: p.avgMarks,
+      inSyllabus: p.inSyllabus,
+      evidence: p.evidence,
+    })),
+  );
 }

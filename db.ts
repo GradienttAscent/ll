@@ -205,6 +205,35 @@ const MIGRATIONS: Migration[] = [
       ]);
     },
   },
+  {
+    version: 2,
+    name: 'academic-intelligence-columns',
+    up: (db) => {
+      // Add document_id and year to questions for PYQ metadata
+      const qCols = pragmaTableInfo(db, 'questions').map((c) => c.name);
+      if (!qCols.includes('document_id')) {
+        db.run("ALTER TABLE questions ADD COLUMN document_id TEXT REFERENCES documents(id) ON DELETE SET NULL;");
+      }
+      if (!qCols.includes('year')) {
+        db.run("ALTER TABLE questions ADD COLUMN year TEXT;");
+      }
+
+      // Topic priorities table for persisting evidence-based scores
+      db.run(`CREATE TABLE IF NOT EXISTS topic_priorities (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+        priority_score INTEGER NOT NULL,
+        frequency_count INTEGER NOT NULL DEFAULT 0,
+        total_marks INTEGER NOT NULL DEFAULT 0,
+        avg_marks REAL NOT NULL DEFAULT 0,
+        in_syllabus INTEGER NOT NULL DEFAULT 0,
+        evidence TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      );`);
+      db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_topic_priorities_user_topic ON topic_priorities(user_id, topic_id);');
+    },
+  },
 ];
 
 function getMeta(db: SqlJsDatabase, key: string): string | undefined {
