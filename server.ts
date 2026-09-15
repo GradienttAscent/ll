@@ -19,6 +19,9 @@ import {
   VALID_SESSION_STATUSES,
 } from './validation';
 
+const ADAPTIVE_REASONS = ['missed', 'abandoned', 'high-difficulty'];
+const SCHEDULING_FIELDS = ['date', 'startTime', 'durationMinutes', 'topicId'];
+
 dotenv.config({ path: fs.existsSync('.env.local') ? '.env.local' : '.env' });
 
 const app = express();
@@ -128,6 +131,9 @@ app.post('/api/schedule-blocks', (req, res) => {
   if (!services.findOwnedTopic(userIdOf(req), block.topicId)) {
     return sendError(res, 404, 'The selected topic does not exist.');
   }
+  if (services.findOverlappingBlock(userIdOf(req), block.date, block.startTime, block.durationMinutes)) {
+    return sendError(res, 409, 'This block overlaps an existing schedule block.');
+  }
   const created = services.createScheduleBlock(userIdOf(req), block);
   services.recordScheduleChange(userIdOf(req), created.id, 'created', null, JSON.stringify({
     title: created.title, date: created.date, startTime: created.startTime, durationMinutes: created.durationMinutes,
@@ -207,6 +213,22 @@ app.patch('/api/schedule-blocks/:id', (req, res) => {
     return sendError(res, 400, 'At least one updatable field is required.');
   }
 
+  const mergedDate = updates.date !== undefined ? updates.date : existing.date;
+  const mergedStartTime = updates.startTime !== undefined ? updates.startTime : existing.startTime;
+  const mergedDuration = updates.durationMinutes !== undefined ? updates.durationMinutes : Number(existing.durationMinutes);
+  const schedulingChanged = SCHEDULING_FIELDS.some((field) => {
+    if (updates[field as keyof typeof updates] === undefined) return false;
+    if (field === 'durationMinutes') return Number(updates.durationMinutes) !== Number(existing.durationMinutes);
+    return updates[field as keyof typeof updates] !== existing[field as keyof typeof existing];
+  });
+  if (Boolean(existing.completed) && schedulingChanged) {
+    return sendError(res, 409, 'Completed schedule blocks cannot be rescheduled.');
+  }
+  if (schedulingChanged) {
+    const overlapping = services.findOverlappingBlock(userIdOf(req), mergedDate, mergedStartTime, mergedDuration, req.params.id);
+    if (overlapping) return sendError(res, 409, `This change overlaps "${overlapping.title}".`);
+  }
+
   services.updateScheduleBlock(userIdOf(req), req.params.id, updates);
 
   if (summaryChanges.completed && summaryChanges.completed.oldValue !== summaryChanges.completed.newValue) {
@@ -223,7 +245,7 @@ app.patch('/api/schedule-blocks/:id', (req, res) => {
     if (updates.startTime !== undefined) newSummary.startTime = updates.startTime;
     if (updates.durationMinutes !== undefined) newSummary.durationMinutes = String(updates.durationMinutes);
     if (updates.topicId !== undefined) newSummary.topicId = updates.topicId;
-    services.recordScheduleChange(userIdOf(req), req.params.id, 'rescheduled', JSON.stringify(oldSummary), JSON.stringify(newSummary));
+    services.recordScheduleChange(userIdOf(req), req.params.id, 'rescheduled', JSON.stringify(oldSummary), JSON.stringify(newSummary), 'manual');
   }
 
   return res.json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
@@ -235,6 +257,90 @@ app.get('/api/schedule-changes', (req, res) => {
     return sendError(res, 404, 'Schedule block not found.');
   }
   return res.json({ scheduleChanges: services.getScheduleChanges(userIdOf(req), blockId) });
+});
+
+// ---- Analytics (user-scoped, computed from persisted data) ----
+app.get('/api/analytics', (req, res) => {
+  res.json({ analytics: services.computeAnalytics(userIdOf(req)) });
+});
+
+// ---- Adaptive scheduling (proposal only — never auto-applied) ----
+function parseAdaptiveReason(reason: unknown): string | null {
+  return typeof reason === 'string' && ADAPTIVE_REASONS.includes(reason) ? reason : null;
+}
+
+app.post('/api/adaptive/proposals', (req, res) => {
+  const { scheduleBlockId, reason } = (req.body || {}) as { scheduleBlockId?: unknown; reason?: unknown };
+  if (typeof scheduleBlockId !== 'string' || !scheduleBlockId) {
+    return sendError(res, 400, 'scheduleBlockId is required.');
+  }
+  if (!parseAdaptiveReason(reason)) {
+    return sendError(res, 400, `reason must be one of: ${ADAPTIVE_REASONS.join(', ')}.`);
+  }
+  const block = services.findOwnedScheduleBlock(userIdOf(req), scheduleBlockId);
+  if (!block) return sendError(res, 404, 'Schedule block not found.');
+  if (block.completed) return sendError(res, 409, 'Completed schedule blocks cannot be revised.');
+
+  const durationMinutes = Math.max(15, Math.min(30, Math.floor(Number(block.durationMinutes) / 2)));
+  const slot = services.findNextAvailableSlot(userIdOf(req), durationMinutes);
+  if (!slot) return sendError(res, 409, 'No available slot for a revision block was found in the next 14 days.');
+
+  const topic = services.findOwnedTopic(userIdOf(req), block.topicId);
+  res.json({
+    proposal: {
+      sourceBlockId: block.id,
+      reason,
+      topicId: block.topicId,
+      topicName: topic?.name || '',
+      title: `Revision: ${block.title}`,
+      date: slot.date,
+      startTime: slot.startTime,
+      durationMinutes,
+    },
+  });
+});
+
+app.post('/api/adaptive/proposals/accept', (req, res) => {
+  const body = req.body || {};
+  const sourceBlockId = body.sourceBlockId as unknown;
+  const reason = parseAdaptiveReason(body.reason);
+  if (typeof sourceBlockId !== 'string' || !sourceBlockId) {
+    return sendError(res, 400, 'sourceBlockId is required.');
+  }
+  if (!reason) return sendError(res, 400, `reason must be one of: ${ADAPTIVE_REASONS.join(', ')}.`);
+
+  const source = services.findOwnedScheduleBlock(userIdOf(req), sourceBlockId);
+  if (!source) return sendError(res, 404, 'Schedule block not found.');
+  if (source.completed) return sendError(res, 409, 'Completed schedule blocks cannot be revised.');
+
+  const blockInput = { topicId: body.topicId, title: body.title, date: body.date, startTime: body.startTime, durationMinutes: body.durationMinutes };
+  const validationError = validateBlockInput(blockInput);
+  if (validationError) return sendError(res, 400, validationError);
+  if (!services.findOwnedTopic(userIdOf(req), blockInput.topicId)) {
+    return sendError(res, 404, 'The selected topic does not exist.');
+  }
+  if (services.findOverlappingBlock(userIdOf(req), blockInput.date, blockInput.startTime, blockInput.durationMinutes)) {
+    return sendError(res, 409, 'The proposal overlaps an existing schedule block.');
+  }
+
+  const created = services.createScheduleBlock(userIdOf(req), blockInput);
+  services.recordScheduleChange(userIdOf(req), created.id, 'created', null, JSON.stringify({
+    title: created.title, date: created.date, startTime: created.startTime, durationMinutes: created.durationMinutes,
+  }), `adaptive-${reason}`);
+  return res.status(201).json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
+});
+
+app.post('/api/adaptive/proposals/reject', (req, res) => {
+  const { sourceBlockId, reason } = (req.body || {}) as { sourceBlockId?: unknown; reason?: unknown };
+  if (typeof sourceBlockId !== 'string' || !sourceBlockId) {
+    return sendError(res, 400, 'sourceBlockId is required.');
+  }
+  if (!parseAdaptiveReason(reason)) {
+    return sendError(res, 400, `reason must be one of: ${ADAPTIVE_REASONS.join(', ')}.`);
+  }
+  const source = services.findOwnedScheduleBlock(userIdOf(req), sourceBlockId);
+  if (!source) return sendError(res, 404, 'Schedule block not found.');
+  return res.json({ ok: true });
 });
 
 // ---- Study sessions ----
@@ -319,6 +425,11 @@ app.post('/api/feedback', (req, res) => {
   if (body.questionId) {
     if (!services.findOwnedQuestion(userIdOf(req), body.questionId)) {
       return sendError(res, 404, 'Question not found.');
+    }
+  }
+  if (body.sessionId) {
+    if (!services.findOwnedStudySession(userIdOf(req), body.sessionId)) {
+      return sendError(res, 404, 'Study session not found.');
     }
   }
   const feedback = services.createFeedback(userIdOf(req), body);
