@@ -519,6 +519,12 @@ app.get('/api/analytics/dashboard', (req, res) => {
   res.json({ analytics: services.getDashboardAnalytics(userIdOf(req)) });
 });
 
+app.get('/api/study-streak', (req, res) => {
+  const offset = Number(req.query.tzOffsetMinutes);
+  const tzOffsetMinutes = Number.isFinite(offset) ? offset : new Date().getTimezoneOffset();
+  res.json({ streak: services.computeStudyStreak(userIdOf(req), tzOffsetMinutes) });
+});
+
 // ---- Adaptive revisions ----
 app.post('/api/adaptive-proposals', (req, res) => {
   const studySessionId = req.body?.studySessionId;
@@ -930,6 +936,8 @@ export async function createApp() {
 
 async function startServer() {
   await createApp();
+
+  app.use('/api', (_req, res) => sendError(res, 404, 'API route not found.'));
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
