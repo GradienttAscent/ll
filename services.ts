@@ -955,6 +955,56 @@ export function computeAnalytics(userId: string): AnalyticsSnapshot {
   };
 }
 
+export interface StudyStreak {
+  current: number;
+  longest: number;
+}
+
+function localDateKey(utcIso: string, tzOffsetMinutes: number): string {
+  const date = new Date(utcIso);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Date(date.getTime() - tzOffsetMinutes * 60_000).toISOString().slice(0, 10);
+}
+
+function currentLocalDateKey(tzOffsetMinutes: number): string {
+  return new Date(Date.now() - tzOffsetMinutes * 60_000).toISOString().slice(0, 10);
+}
+
+export function computeStudyStreak(userId: string, tzOffsetMinutes: number): StudyStreak {
+  const rows = getDb().prepare(`
+    SELECT ended_at AS endedAt, started_at AS startedAt
+    FROM study_sessions
+    WHERE user_id = ? AND status = 'completed'
+  `).all(userId) as Array<{ endedAt: string | null; startedAt: string }>;
+
+  const studiedDays = new Set<string>();
+  for (const row of rows) {
+    const day = localDateKey(row.endedAt || row.startedAt, tzOffsetMinutes);
+    if (day) studiedDays.add(day);
+  }
+
+  const sorted = [...studiedDays].sort();
+  let longest = 0;
+  let run = 0;
+  let previous: string | null = null;
+  for (const day of sorted) {
+    run = previous !== null && addDaysKey(previous, 1) === day ? run + 1 : 1;
+    if (run > longest) longest = run;
+    previous = day;
+  }
+
+  const today = currentLocalDateKey(tzOffsetMinutes);
+  const anchor = studiedDays.has(today) ? today : addDaysKey(today, -1);
+  let current = 0;
+  let cursor = anchor;
+  while (studiedDays.has(cursor)) {
+    current += 1;
+    cursor = addDaysKey(cursor, -1);
+  }
+
+  return { current, longest };
+}
+
 export interface AvailableSlot {
   date: string;
   startTime: string;
