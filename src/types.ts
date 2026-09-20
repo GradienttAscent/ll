@@ -320,6 +320,13 @@ export interface AnalyticsSnapshot {
   today: string;
 }
 
+// --- Study streak (matches GET /api/study-streak response) ---
+
+export interface StudyStreak {
+  current: number;
+  longest: number;
+}
+
 // --- Adaptive proposals (matches POST /api/adaptive/proposals response) ---
 
 export interface AdaptiveProposal {
