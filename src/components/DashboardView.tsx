@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, Calendar, Clock3, CircleCheck } from 'lucide-react';
-import { ActiveTab, DashboardAnalytics } from '../types';
+import { ActiveTab, DashboardAnalytics, StudyStreak } from '../types';
 
 interface DashboardViewProps {
   setActiveTab: (tab: ActiveTab) => void;
@@ -19,6 +19,7 @@ function formatMinutes(minutes: number): string {
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, refreshKey }) => {
   const [analytics, setAnalytics] = useState<DashboardAnalytics | null>(null);
+  const [streak, setStreak] = useState<StudyStreak | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -26,10 +27,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, refr
     const loadAnalytics = async () => {
       setError('');
       try {
-        const response = await fetch('/api/analytics/dashboard');
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Unable to load dashboard analytics.');
-        if (!cancelled) setAnalytics(data.analytics);
+        const [dashRes, streakRes] = await Promise.all([
+          fetch('/api/analytics/dashboard'),
+          fetch(`/api/study-streak?tzOffsetMinutes=${new Date().getTimezoneOffset()}`),
+        ]);
+        const [dashData, streakData] = await Promise.all([dashRes.json(), streakRes.json()]);
+        if (!dashRes.ok) throw new Error(dashData.error || 'Unable to load dashboard analytics.');
+        if (!cancelled) {
+          setAnalytics(dashData.analytics);
+          setStreak(streakRes.ok && streakData.streak ? streakData.streak : null);
+        }
       } catch (loadError: any) {
         if (!cancelled) setError(loadError.message || 'Unable to load dashboard analytics.');
       }
@@ -56,7 +63,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, refr
       <button onClick={() => setActiveTab('planner')} className="inline-flex items-center gap-2 bg-black text-white border border-black px-4 py-3 text-[10px] font-bold uppercase tracking-[0.16em] hover:bg-white hover:text-black transition-colors">Open planner <ArrowRight className="w-3.5 h-3.5" /></button>
     </div>
 
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">{cards.map((card) => <div key={card.label} className="border border-black bg-[#F8F7F2] p-5"><div className="text-[9px] font-bold uppercase tracking-[0.18em] text-black/55">{card.label}</div><div className="font-serif text-3xl italic mt-3">{card.value}</div><div className="text-[10px] text-black/60 mt-2">{card.note}</div></div>)}</div>
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">{cards.map((card) => <div key={card.label} className="border border-black bg-[#F8F7F2] p-5"><div className="text-[9px] font-bold uppercase tracking-[0.18em] text-black/55">{card.label}</div><div className="font-serif text-3xl italic mt-3">{card.value}</div><div className="text-[10px] text-black/60 mt-2">{card.note}</div></div>)}
+      <div className="border border-black bg-[#F8F7F2] p-5">
+        <div className="text-[9px] font-bold uppercase tracking-[0.18em] text-black/55">Study streak</div>
+        <div className="font-serif text-3xl italic mt-3">{streak ? `🔥 ${streak.current} ${streak.current === 1 ? 'day' : 'days'}` : '—'}</div>
+        <div className="text-[10px] text-black/60 mt-2">Longest: {streak ? `${streak.longest} ${streak.longest === 1 ? 'day' : 'days'}` : '—'}</div>
+      </div>
+    </div>
 
     {!hasSessionEvidence && <div className="border border-dashed border-black/50 p-5 text-sm">Complete a study session to start seeing your progress.</div>}
 

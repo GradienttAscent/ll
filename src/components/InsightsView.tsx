@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ScheduleBlock, AnalyticsSnapshot, AdaptiveProposal, ScheduleChange } from '../types';
+import { ScheduleBlock, AnalyticsSnapshot, AdaptiveProposal, ScheduleChange, StudyStreak } from '../types';
 import { safeNumber, formatDateStr } from '../utils/formatters';
 import { Sparkles, Brain, CheckCircle2, XCircle, Clock, RefreshCw, AlertTriangle, BellOff, ShieldAlert } from 'lucide-react';
 
@@ -11,6 +11,7 @@ interface InsightsViewProps {
 export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRefreshSchedule }) => {
   const [analytics, setAnalytics] = useState<AnalyticsSnapshot | null>(null);
   const [scheduleChanges, setScheduleChanges] = useState<ScheduleChange[]>([]);
+  const [streak, setStreak] = useState<StudyStreak | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,19 +26,23 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
     setLoading(true);
     setError(null);
     try {
-      const [analyticsRes, changesRes] = await Promise.all([
+      const [analyticsRes, changesRes, streakRes] = await Promise.all([
         fetch('/api/analytics'),
-        fetch('/api/schedule-changes')
+        fetch('/api/schedule-changes'),
+        fetch(`/api/study-streak?tzOffsetMinutes=${new Date().getTimezoneOffset()}`)
       ]);
 
       if (!analyticsRes.ok) throw new Error('Failed to fetch analytics');
       if (!changesRes.ok) throw new Error('Failed to fetch schedule changes');
+      if (!streakRes.ok) throw new Error('Failed to fetch study streak');
 
       const analyticsData = await analyticsRes.json();
       const changesData = await changesRes.json();
+      const streakData = await streakRes.json();
 
       setAnalytics(analyticsData.analytics || analyticsData);
       setScheduleChanges(changesData.scheduleChanges || []);
+      setStreak(streakData.streak || null);
     } catch (err: any) {
       setError(err.message || 'Error loading behavioral insights');
     } finally {
@@ -132,6 +137,30 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
         >
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
         </button>
+      </div>
+
+      {/* Study Streak Card */}
+      <div className="bg-[#FDFDFC] border border-black p-6 flex items-center justify-between gap-6">
+        <div className="space-y-1">
+          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-black/40">Study Streak</div>
+          <h2 className="font-serif text-3xl italic text-black flex items-center gap-2">
+            <span role="img" aria-label="flame">🔥</span>
+            <span>{streak ? `${streak.current} ${streak.current === 1 ? 'day' : 'days'}` : '—'}</span>
+          </h2>
+          <p className="text-xs text-black/60 font-sans">
+            {streak && streak.current > 0
+              ? streak.current === 1
+                ? 'One day strong — keep the chain alive.'
+                : 'Consecutive days with a completed study session.'
+              : 'No active streak yet — complete a session today to start one.'}
+          </p>
+        </div>
+        <div className="text-right border-l border-black/20 pl-6">
+          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-black/40 mb-1">Longest</div>
+          <div className="font-serif text-3xl italic text-black">
+            {streak ? `${streak.longest} ${streak.longest === 1 ? 'day' : 'days'}` : '—'}
+          </div>
+        </div>
       </div>
 
       {error && (
