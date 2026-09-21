@@ -156,6 +156,42 @@ Primary key: `(user_id, topic_id, document_id)`.
 | `notes` | TEXT | v2; optional free-text note |
 | `created_at` | TEXT | |
 
+### `mock_exams`
+Gemini-graded timed mock attempts, one row per exam submission.
+| column | type | notes |
+| --- | --- | --- |
+| `id` | TEXT | PK |
+| `user_id` | TEXT | FK → `users.id` (CASCADE); NOT NULL |
+| `exam_name` | TEXT | display name, defaults to `Timed Mock Examination` |
+| `started_at` | TEXT | ISO-8601 |
+| `ended_at` | TEXT | ISO-8601; submission time |
+| `duration_seconds` | INTEGER | agreed time limit for the attempt |
+| `total_score` | REAL | sum of per-question scores |
+| `total_max` | REAL | sum of question marks |
+| `percentage` | INTEGER | rounded `100 * total_score / total_max` |
+| `grade` | TEXT | `A` ≥ 85, `B` ≥ 70, `C` ≥ 50, else `D` |
+| `ai_advice` | TEXT | Gemini overall recommendation |
+| `question_count` | INTEGER | number of questions in the attempt |
+| `created_at` | TEXT | ISO-8601 |
+
+### `mock_exam_questions`
+Per-question breakdown for a mock exam attempt (v12).
+| column | type | notes |
+| --- | --- | --- |
+| `id` | TEXT | PK |
+| `mock_exam_id` | TEXT | FK → `mock_exams.id` (CASCADE); NOT NULL |
+| `user_id` | TEXT | FK → `users.id` (CASCADE); NOT NULL |
+| `position` | INTEGER | 1-based question order |
+| `question_text` | TEXT | submitted question |
+| `topic_name` | TEXT | topic label, defaults to `General` |
+| `answer` | TEXT | nullable; the submitted answer text |
+| `score` | REAL | clamped `0 ≤ score ≤ max_marks`; 0 for blank answers |
+| `max_marks` | REAL | marks for the question |
+| `strengths` | TEXT | JSON array string |
+| `improvements` | TEXT | JSON array string |
+| `feedback` | TEXT | per-question Gemini feedback |
+| `created_at` | TEXT | |
+
 ### `schedule_changes`
 History of every create / reschedule / complete event on a block.
 | column | type | notes |
@@ -181,3 +217,5 @@ If a pre-auth database exists:
 - v3-v4 add document-backed academic evidence, deterministic PYQ mapping, and topic-source associations.
 - v5 adds `topics.has_weightage` so ranking can present declared weightage truthfully.
 - v6 adds `study_sessions.active_since` and the dedicated `session_feedback` table.
+- v7-v11 add persistent study rooms, uploaded-document payload/extraction metadata, and schedule-block types.
+- v12 adds Gemini-graded mock exam persistence (`mock_exams`, `mock_exam_questions`). Practice evaluations persist into the existing `feedback` table with `source = 'gemini'`.

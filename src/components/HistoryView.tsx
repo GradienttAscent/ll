@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { StudySession, FeedbackEntry } from '../types';
+import { StudySession, FeedbackEntry, MockExamRecord } from '../types';
 import { safeNumber } from '../utils/formatters';
-import { History, Clock, Star, MessageSquare, RefreshCw, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
+import { History, Clock, Star, MessageSquare, RefreshCw, AlertTriangle, CheckCircle2, XCircle, Award } from 'lucide-react';
 
 export const HistoryView: React.FC = () => {
   const [sessions, setSessions] = useState<StudySession[]>([]);
   const [feedbackList, setFeedbackList] = useState<FeedbackEntry[]>([]);
+  const [mockExams, setMockExams] = useState<MockExamRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -13,19 +14,23 @@ export const HistoryView: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [sessionsRes, feedbackRes] = await Promise.all([
+      const [sessionsRes, feedbackRes, mockRes] = await Promise.all([
         fetch('/api/study-sessions'),
-        fetch('/api/feedback')
+        fetch('/api/feedback'),
+        fetch('/api/mock-exams')
       ]);
 
       if (!sessionsRes.ok) throw new Error('Failed to fetch study sessions');
       if (!feedbackRes.ok) throw new Error('Failed to fetch feedback history');
+      if (!mockRes.ok) throw new Error('Failed to fetch mock exam history');
 
       const sessionsData = await sessionsRes.json();
       const feedbackData = await feedbackRes.json();
+      const mockData = await mockRes.json();
 
       setSessions(sessionsData.studySessions || []);
       setFeedbackList(feedbackData.feedback || []);
+      setMockExams(mockData.mockExams || []);
     } catch (err: any) {
       setError(err.message || 'Error loading session history');
     } finally {
@@ -80,6 +85,56 @@ export const HistoryView: React.FC = () => {
         <div className="p-4 bg-red-50 border border-black text-red-800 text-xs font-mono flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0 text-red-600" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {/* Timed Mock Exams */}
+      {mockExams.length > 0 && (
+        <div className="bg-[#FDFDFC] border border-black p-6 space-y-4">
+          <div className="flex items-center justify-between border-b border-black pb-4">
+            <div className="flex items-center gap-3">
+              <Award className="w-6 h-6 text-black" />
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-black">Gemini-Graded Mock Exams</div>
+                <h2 className="font-serif text-2xl italic font-normal text-black">Timed Mock Exam Results</h2>
+              </div>
+            </div>
+            <span className="text-[9px] uppercase tracking-widest text-black/40 font-mono">
+              {mockExams.length} attempt{mockExams.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
+          <div className="space-y-3">
+            {mockExams.map((exam) => (
+              <div key={exam.id} className="border border-black bg-white p-5 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-serif italic text-black">{exam.examName}</div>
+                    <div className="text-[9px] uppercase tracking-widest text-black/40 mt-0.5 font-mono">
+                      Completed: {new Date(exam.endedAt).toLocaleString()}
+                    </div>
+                  </div>
+                  <span className="font-serif text-3xl italic font-normal text-black">
+                    {exam.percentage}% <span className="text-sm font-normal text-black/60">({exam.grade})</span>
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-3 bg-[#F8F7F2] border border-black/20 p-3 text-xs">
+                  <div>
+                    <span className="text-[9px] uppercase tracking-wider font-bold text-black/40 block mb-0.5">Score</span>
+                    <span className="font-mono font-bold text-black">{exam.totalScore}/{exam.totalMax}</span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] uppercase tracking-wider font-bold text-black/40 block mb-0.5">Questions</span>
+                    <span className="font-mono font-bold text-black">{exam.questionCount}</span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] uppercase tracking-wider font-bold text-black/40 block mb-0.5">Time Limit</span>
+                    <span className="font-mono font-bold text-black">{Math.round(exam.durationSeconds / 60)} min</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

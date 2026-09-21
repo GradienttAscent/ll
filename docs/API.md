@@ -81,7 +81,7 @@ Blocks use genuine time-range overlap checks and bulk writes are atomic. Complet
 | POST | `/api/scheduling-assistant/confirm` | `{ "message", "changes", "selectedBlockId"? }` | `{ "scheduleBlocks" }`; atomically revalidates and applies current changes |
 | POST | `/api/scheduling-assistant/cancel` | — | `{ "ok": true }`; performs no writes |
 
-Assistant previews are deterministic and never persisted. Confirmation rejects completed/stale/conflicting blocks.
+Assistant previews are deterministic and never persisted. Confirmation rejects completed/stale/conflicting blocks. Supported operations: `move`/`shorten`, `cancel` (deletes the block), `swap` (exchanges two sessions), and `shift` (moves a whole day). Preview may return `matches` when clarification is needed; re-send with `selectedBlockId`. Queries (`query_schedule`, `query_range`) answer without changes. Constraints — `beforeTime`, `excludedWeekdays` (0=Sunday), `maxDailyMinutes` — are honored when picking replacement slots.
 
 ### Study sessions
 | Method | Path | Body | Returns |
@@ -124,7 +124,7 @@ Proposal generation is stateless and never writes a schedule block. A stopped se
 | POST | `/api/academic-documents/upload` | `{ "title", "docType": "Syllabus" | "Past Paper", "base64", "mimeType"? }` | `201 { "analysis" }`; extracts the uploaded PDF on the server |
 | GET | `/api/academic-evidence` | — | `{ "academic": { "documents", "questions", "ranking" } }` |
 
-Academic ingestion persists the source document and, for binary uploads, stores the original payload with its MIME type and extraction method. Syllabus topics are stored even if the source has no questions and are linked to their originating document. Numbered past-paper questions are normalized and deduplicated per persisted source document; marks are read from each original question section. Mapping uses validated AI classifications when configured, otherwise matching syllabus/topic tokens, with standalone papers receiving only conservative topic labels derived from explicit technical terms. Questions without sufficient evidence remain `unmatched` with no topic id. Ranking is persisted to `topics.priority` and returns its score, mapped-question count, calculated marks weightage, syllabus presence, source document ids, and a human-readable reason. Repeating the same title/content does not create duplicate document questions.
+Academic ingestion persists the source document and, for binary uploads, stores the original payload with its MIME type and extraction method. Syllabus topics are stored even if the source has no questions and are linked to their originating document. Numbered past-paper questions and their sub-parts (`(a)`, `(b)`, `i)`, …) are normalized and deduplicated per persisted source document; each sub-part becomes its own question and marks are read from each original question section. When a syllabus exists, mapping targets only syllabus topics — AI classifications are aligned to syllabus names when possible and never create new topics. Matching requires at least one distinctive (non-generic) keyword; matches based solely on words like `management`, `while`, `PM`, `system`, or `process` are rejected and the question stays `unmatched`. Questions without sufficient evidence remain `unmatched` with no topic id; an unmapped sub-part can inherit the topic of a mapped sibling sub-part within the same question. Ranking is persisted to `topics.priority` and returns its score, mapped-question count, calculated marks weightage, syllabus presence, source document ids, and a human-readable reason. Repeating the same title/content does not create duplicate document questions. The upload response also reports `analysis.aiStatus` describing whether AI classification ran and why it might have been skipped or failed.
 
 ### Questions
 | Method | Path | Body | Returns |
@@ -146,7 +146,24 @@ Validation: `score` ≥ 0, `maxMarks` > 0, `score ≤ maxMarks`, `source` ∈ `g
 Session-evidence fields (used by adaptive scheduling — a high-difficulty session triggers revision proposals): `sessionId` links to a study session (`404` if not owned), `difficulty` ∈ `easy | medium | hard`, `focus` ∈ [0, 100], `perceivedProgress` ∈ [0, 100], `notes` is free text. All optional.
 
 ### Gemini
-`POST /api/gemini/analyze-document`, `POST /api/gemini/evaluate-answer`, `POST /api/gemini/generate-plan` — all require auth; unchanged behavior otherwise (`generate-plan` is intentionally not wired into the UI).
+`POST /api/gemini/analyze-document`, `POST /api/gemini/evaluate-answer`, `POST /api/gemini/generate-plan` — all require auth; unchanged behavior otherwise (`generate-plan` is intentionally not wired into the UI). All Gemini outbound calls use the `GEMINI_MODEL` model constant (`gemini-3.6-flash` by default).
+
+### AI practice mode
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| POST | `/api/practice/evaluate` | `{ "question", "studentAnswer", "maxMarks"? }` | `{ "success", "source": "gemini", "data": { "score", "maxMarks", "strengths", "improvements", "feedbackText", "modelAnswerSnippet" }, "persisted": true, "feedbackId" }` |
+| POST | `/api/practice/hint` | `{ "question", "maxMarks"? }` | `{ "success", "source": "gemini", "data": { "hint" } }` |
+
+Requires auth. `question` and a non-empty `studentAnswer` are mandatory (answers capped at 20,000 characters). `maxMarks` is clamped to [1, 100] (default 10). Without a configured `GEMINI_API_KEY` both routes return `503` with a readable message. Scores are clamped to `[0, maxMarks]` and the normalized evaluation is persisted into `feedback` with `source = 'gemini'`, so every practice submission appears in the study history and feedback analytics. `POST /api/practice/hint` returns a concise, question-specific concept hint (key idea, relevant concepts/formulas, edge cases) generated per question — it never returns the generic fallback sentence and never writes the full solution.
+
+### Timed mock exams
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| POST | `/api/mock-exams` | `{ "examName"?, "durationSeconds"?, "startedAt"?, "endedAt"?, "questions": [{ "questionText", "topicName"?, "marks"?, "answer"? }] }` | `201 { "mockExam" }` |
+| GET | `/api/mock-exams` | — | `{ "mockExams" }` (most recent first) |
+| GET | `/api/mock-exams/:id` | — | `{ "mockExam" }`; `404` if not the caller's |
+
+All require auth. At least one question is mandatory (max 25); each question needs `questionText`, and `marks` is clamped to [1, 100]. On submission, Gemini grades every question (1-based index) against its individual mark budget; blank answers always score 0. The report is recomputed server-side: per-question totals, overall percentage, grade (`A` ≥ 85, `B` ≥ 70, `C` ≥ 50, else `D`), per-topic breakdown, and overall advice. The attempt is persisted (`mock_exams` + `mock_exam_questions`) so results survive in History. Without `GEMINI_API_KEY` the route returns `503`.
 
 ## Frontend fetch wrapper
 

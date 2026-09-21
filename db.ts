@@ -363,7 +363,69 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 12,
+    name: 'practice-and-mock-exam-results',
+    up: (db) => createMockExamTables(db),
+  },
+  {
+    version: 13,
+    name: 'repair-mock-exam-schema',
+    up: (db) => {
+      replaceLegacyMockExamTables(db);
+      createMockExamTables(db);
+    },
+  },
 ];
+
+function createMockExamTables(db: SqlJsDatabase) {
+  db.run(`CREATE TABLE IF NOT EXISTS mock_exams (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    exam_name TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    total_score REAL NOT NULL DEFAULT 0,
+    total_max REAL NOT NULL DEFAULT 0,
+    percentage INTEGER NOT NULL DEFAULT 0,
+    grade TEXT NOT NULL DEFAULT 'F',
+    ai_advice TEXT,
+    question_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS mock_exam_questions (
+    id TEXT PRIMARY KEY,
+    mock_exam_id TEXT NOT NULL REFERENCES mock_exams(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    question_text TEXT NOT NULL,
+    topic_name TEXT NOT NULL DEFAULT '',
+    answer TEXT,
+    score REAL NOT NULL DEFAULT 0,
+    max_marks REAL NOT NULL DEFAULT 0,
+    strengths TEXT NOT NULL DEFAULT '[]',
+    improvements TEXT NOT NULL DEFAULT '[]',
+    feedback TEXT,
+    created_at TEXT NOT NULL
+  );`);
+}
+
+// Some databases carry an older prototype `mock_exams` table (title/status/config
+// columns) that pre-dates the Gemini-graded schema. `CREATE TABLE IF NOT EXISTS`
+// cannot upgrade it, so it is preserved as `mock_exams_legacy` and recreated fresh.
+function isLegacyMockExams(db: SqlJsDatabase): boolean {
+  const columns = pragmaTableInfo(db, 'mock_exams').map((column) => column.name);
+  return columns.length > 0 && columns.includes('title') && !columns.includes('exam_name');
+}
+
+function replaceLegacyMockExamTables(db: SqlJsDatabase) {
+  if (!isLegacyMockExams(db)) return;
+  if (tableExists(db, 'mock_exam_questions')) {
+    db.run('ALTER TABLE mock_exam_questions RENAME TO mock_exam_questions_legacy;');
+  }
+  db.run('ALTER TABLE mock_exams RENAME TO mock_exams_legacy;');
+}
 
 // Audits the live schema after migrations. Some databases can record a schema version
 // without the matching columns (e.g. a copied file), so critical columns are verified
@@ -373,6 +435,8 @@ function repairSchema(db: SqlJsDatabase) {
   if (!columns.includes('block_type')) {
     db.run("ALTER TABLE schedule_blocks ADD COLUMN block_type TEXT NOT NULL DEFAULT 'study';");
   }
+  replaceLegacyMockExamTables(db);
+  createMockExamTables(db);
 }
 
 function getMeta(db: SqlJsDatabase, key: string): string | undefined {

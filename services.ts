@@ -321,6 +321,10 @@ export function updateScheduleBlock(userId: string, blockId: string, updates: {
     .run(...params);
 }
 
+export function deleteScheduleBlock(userId: string, blockId: string) {
+  getDb().prepare('DELETE FROM schedule_blocks WHERE user_id = ? AND id = ?').run(userId, blockId);
+}
+
 export function recordScheduleChange(userId: string, blockId: string, field: string, oldValue: string | null, newValue: string | null, reason?: string) {
   getDb().prepare(`INSERT INTO schedule_changes (id, user_id, block_id, field, old_value, new_value, reason, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -500,36 +504,200 @@ export function normalizeAcademicQuestion(value: string): string {
     .replace(/\s+/g, ' ').trim();
 }
 
+// Single-word overlaps that are so generic they must never, by themselves, justify a
+// question-to-topic mapping ("PM", "While", "management", "system", "process", ...).
+const GENERIC_TOPIC_TOKENS = new Set([
+  'management', 'while', 'pm', 'system', 'systems', 'process', 'processes', 'model', 'models',
+  'data', 'information', 'technology', 'design', 'method', 'methods', 'technique', 'techniques',
+  'concept', 'concepts', 'types', 'type', 'different', 'various', 'following', 'using', 'based',
+  'used', 'use', 'basic', 'common', 'important', 'features', 'state', 'explain', 'describe',
+  'discuss', 'justify', 'draw', 'define', 'list', 'write', 'identify', 'prepare', 'perform',
+  'suggest', 'mark', 'marks',
+]);
+
+// Course-neutral words that are still too generic to be the sole evidence when matching a
+// multi-word topic on a single token.
+const COMMON_ACADEMIC_TOKENS = new Set([
+  'software', 'requirements', 'specification', 'architecture', 'quality', 'attributes',
+  'metrics', 'function', 'functional', 'form', 'model', 'system', 'process', 'management',
+  'information', 'data', 'method', 'design',
+]);
+
+// Removes decorative runs, page markers ("1/2", "PTO"), and greeting noise that appear in
+// extracted question-paper text but carry no question content.
+function cleanPaperContent(content: string): string {
+  return content
+    .replace(/[*_=~]{3,}/g, ' ')
+    .replace(/\bPTO\b/gi, ' ')
+    .replace(/\bAII\s+the\s+Best\b/gi, ' ')
+    .replace(/\b\d+\s*\/\s*\d+\s*/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+// Progressive marker detection that works on single-line extractions (many PDFs produce one
+// physical line): question numbers ("1.", "Q1", "QUESTION 1 (12 Marks):") and sub-parts
+// ("a)", "(b)", "i)", "(ii)"). Decimals ("2.30"), page markers ("1/2") and marks parens
+// ("(5 Marks)") are deliberately NOT matched.
+const MARKS_TAIL = String.raw`(?:\s*[(\[]\s*\d+(?:\s*[+×x*]\s*\d+)*(?:\s*=\s*\d+)?\s*(?:marks?)?\s*[)\]])?`;
+const LINE_MARKER = new RegExp(
+  String.raw`(?:^|[\s(])(?:question|que(?:stion)?|q)\.?\s*(?:no\.?\s*)?(\d{1,3})\b` + MARKS_TAIL + String.raw`\s*(?::|[.):\-])?` +
+  String.raw`|(?<![\w(])(\d{1,3})\.(?!\d)` +
+  String.raw`|(?<![\w(])(\d{1,3})\)(?!\s*marks?\b)` +
+  String.raw`|(?<![\w])\(?([a-z]|[ivx]{1,3})\)(?=\s+[A-Z0-9(])`,
+  'gi',
+);
+const SECTION_HEADER = /^(?:section|part)\b/i;
+const BOILERPLATE = /^(?:time(?: allowed)?|max(?:imum)?\s*marks?|total\s*marks?|marks?(?:\s*allotted)?[:.]|instructions?[:.]|attempt\s+(?:all|any)|answer\s+(?:all|any)|roll\s*(?:no\.?|number)?|register\s*(?:no\.?|number)?|enroll(?:ment)?\s*(?:no\.?|number)?|semester[:.]|course\s*(?:code|name)?[:.]|subject\s*(?:code)?[:.]|paper\s*(?:code)?[:.]|branch[:.]|year[:.]|page[:.]|duration[:.]|note[s]?[:.]|general\s*instructions?)/i;
+
+function extractQuestionMarks(text: string): number | null {
+  const keyword = /(?:^|\s|\(|\[)(\d+(?:\.\d+)?)\s*(?:marks?|m)\b/i.exec(text);
+  if (keyword) return Math.max(1, Math.round(Number(keyword[1])));
+  const bracketed = /[(\[]\s*(\d+(?:\s*[+×x*]\s*\d+)*)\s*(?:=\s*(\d+))?\s*[)\]]/i.exec(text);
+  if (bracketed) {
+    if (bracketed[2] && Number(bracketed[2]) > 0) return Math.max(1, Math.round(Number(bracketed[2])));
+    const parts = bracketed[1].split(/\s*[+×x*]\s*/).map((part) => Number(part)).filter((part) => Number.isFinite(part));
+    if (parts.length === 1) {
+      return /\[/.test(bracketed[0]) ? Math.max(1, Math.round(parts[0])) : null;
+    }
+    const multiply = /[×x*]/.test(bracketed[1]);
+    const value = multiply ? parts.reduce((total, part) => total * part, 1) : parts.reduce((total, part) => total + part, 0);
+    return Math.max(1, Math.round(value));
+  }
+  return null;
+}
+
+interface QuestionRecord {
+  text: string;
+  marks: number;
+  group?: string;
+  subpart?: boolean;
+  lines?: string[];
+}
+
+interface MarkerSpan {
+  start: number;
+  end: number;
+  marks: number | null;
+  subpart: boolean;
+  label: string;
+}
+
+function allMarkerSpans(line: string): MarkerSpan[] {
+  const spans: MarkerSpan[] = [];
+  for (const match of line.matchAll(LINE_MARKER)) {
+    const raw = match[0];
+    const [, questionWord, dot, paren, subpart] = match;
+    const subpartMatch = subpart !== undefined;
+    const end = (match.index ?? 0) + raw.length;
+    spans.push({
+      start: match.index ?? 0,
+      end,
+      marks: extractQuestionMarks(raw),
+      subpart: subpartMatch,
+      label: subpartMatch ? subpart.toLowerCase() : (questionWord ?? dot ?? paren).toLowerCase(),
+    });
+  }
+  return spans;
+}
+
+// Splits a question paper into question records. Sub-parts ("a)", "(b)") become their own
+// records and inherit the numeric question's group (so they stay grouped for mark inheritance
+// and sibling-topic inheritance); the stem of a question with sub-parts is dropped because the
+// sub-parts are the actual questions. Unmarked sub-parts inherit the max mark already seen in
+// their group — never a blanket 10.
+interface QuestionDraft {
+  lines: string[];
+  marks: number;
+  group?: string;
+  subpart?: boolean;
+}
+
+function splitQuestionSections(content: string): QuestionRecord[] {
+  const lines = cleanPaperContent(content).replace(/\r/g, '').split('\n');
+  const drafts: QuestionDraft[] = [];
+  let current: QuestionDraft | null = null;
+  let openGroup: string | null = null;
+
+  const commit = () => {
+    if (current && current.lines.length > 0) drafts.push(current);
+    current = null;
+  };
+  const append = (text: string) => {
+    const trimmed = text.trim();
+    if (!current || !trimmed) return;
+    current.lines.push(trimmed);
+    const marks = extractQuestionMarks(trimmed);
+    if (marks !== null && marks > current.marks) current.marks = marks;
+  };
+  const openDraft = (marks: number | null, subpart: boolean) => {
+    commit();
+    current = { lines: [], marks: marks || 0, subpart, group: openGroup ?? undefined };
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (BOILERPLATE.test(line) || SECTION_HEADER.test(line)) {
+      commit();
+      continue;
+    }
+
+    const spans = allMarkerSpans(line);
+    if (spans.length === 0) {
+      append(line);
+      continue;
+    }
+
+    let cursor = 0;
+    for (const span of spans) {
+      const pre = line.slice(cursor, span.start).replace(/^[\s(]+/, '').trim();
+      if (pre) append(pre);
+      if (span.subpart) {
+        if (openGroup) {
+          commit();
+          current = { lines: [], marks: span.marks || 0, subpart: true, group: openGroup };
+        }
+      } else {
+        openGroup = span.label;
+        openDraft(span.marks, false);
+      }
+      cursor = span.end;
+    }
+    const post = line.slice(cursor).trim();
+    if (post) append(post);
+  }
+  commit();
+
+  const groupsWithSubParts = new Set(drafts.filter((draft) => draft.subpart).map((draft) => draft.group));
+  const maxGroupMarks = drafts.reduce((map, draft) => {
+    if (draft.group && draft.marks > (map.get(draft.group) || 0)) map.set(draft.group, draft.marks);
+    return map;
+  }, new Map<string, number>());
+
+  return drafts
+    .filter((draft) => !(!draft.subpart && draft.group && groupsWithSubParts.has(draft.group)))
+    .filter((draft) => draft.lines.length > 0)
+    .map((draft) => {
+      const marks = draft.marks > 0 ? draft.marks : (draft.subpart && draft.group ? (maxGroupMarks.get(draft.group) || 10) : 10);
+      // The "(N Marks)" annotation is boilerplate - marks are stored in their own column and
+      // a leftover "Marks" token must never influence topic mapping.
+      const text = normalizeAcademicQuestion(draft.lines.join(' ')).replace(/\s*[(\[]\s*\d+(?:\.\d+)?\s*(?:marks?|m)\s*[)\]]/gi, '').replace(/\s+/g, ' ').trim();
+      return { text, marks, group: draft.group, subpart: draft.subpart };
+    });
+}
+
 export function extractNumberedQuestions(content: string): string[] {
-  const prefix = /^\s*(?:(?:question|q)\s*)?\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*/i;
-  const sections = content.replace(/\r/g, '').split(/(?=\s*(?:(?:question|q)\s*)\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*)/i);
-  const unique = new Map<string, string>();
-  for (const section of sections) {
-    if (!prefix.test(section)) continue;
-    const question = normalizeAcademicQuestion(section);
-    const normalized = question.toLowerCase();
-    if (question && !unique.has(normalized)) unique.set(normalized, question);
-  }
-  return [...unique.values()];
+  return splitQuestionSections(content).map((section) => section.text).filter(Boolean);
 }
 
-function extractNumberedQuestionRecords(content: string): Array<{ text: string; marks: number }> {
-  const prefix = /^\s*(?:(?:question|q)\s*)?\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*/i;
-  const sections = content.replace(/\r/g, '').split(/(?=\s*(?:(?:question|q)\s*)?\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*)/i);
-  const unique = new Map<string, { text: string; marks: number }>();
-  for (const section of sections) {
-    if (!prefix.test(section)) continue;
-    const text = normalizeAcademicQuestion(section);
-    if (!text) continue;
-    const normalized = text.toLowerCase();
-    if (!unique.has(normalized)) unique.set(normalized, { text, marks: questionMarks(section) });
+function extractNumberedQuestionRecords(content: string): QuestionRecord[] {
+  const unique = new Map<string, QuestionRecord>();
+  for (const section of splitQuestionSections(content)) {
+    if (!section.text) continue;
+    const normalized = section.text.toLowerCase();
+    if (!unique.has(normalized)) unique.set(normalized, section);
   }
   return [...unique.values()];
-}
-
-function questionMarks(questionText: string): number {
-  const match = /(?:\(|\[|\b)(\d+(?:\.\d+)?)\s*(?:marks?|m)\s*(?:\)|\])?/i.exec(questionText);
-  return match ? Math.max(1, Math.round(Number(match[1]))) : 10;
 }
 
 function questionSimilarity(left: string, right: string): number {
@@ -541,14 +709,31 @@ function questionSimilarity(left: string, right: string): number {
 }
 
 function inferQuestionTopic(questionText: string): string | null {
-  const ignored = new Set(['Explain', 'Describe', 'Discuss', 'Compare', 'Solve', 'Apply', 'Using', 'State', 'Find', 'Derive', 'Construct', 'Demonstrate']);
+  const ignored = new Set(['Explain', 'Describe', 'Discuss', 'Compare', 'Solve', 'Apply', 'Using', 'State', 'Find', 'Derive', 'Construct', 'Demonstrate', 'Draw', 'Define', 'List', 'Write', 'Justify', 'Identify', 'Prepare', 'Perform', 'Suggest', 'Develop', 'Design', 'What', 'How', 'Why', 'When', 'Where', 'Which', 'For', 'While', 'The', 'This', 'That', 'You', 'Your', 'I', 'A', 'An']);
+  const isSentenceStartWord = (text: string, word: string): boolean => {
+    const index = text.indexOf(word);
+    if (index < 0) return false;
+    const prefix = text.slice(0, index).trim();
+    return prefix === '' || /[?.:!]\s*$/.test(prefix);
+  };
   const titlePhrases = questionText.match(/\b[A-Z][A-Za-z0-9']+(?:\s+[A-Z][A-Za-z0-9']+){1,3}\b/g) || [];
-  const phrase = titlePhrases.find((candidate) => !ignored.has(candidate.split(/\s+/)[0]));
+  const phrase = titlePhrases.find((candidate) => {
+    const firstWord = candidate.split(/\s+/)[0];
+    if (ignored.has(firstWord)) return false;
+    const index = questionText.indexOf(candidate);
+    if (index > 0 && questionText[index - 1] === ':') return false;
+    return true;
+  });
   if (phrase) return phrase.trim();
   const acronym = questionText.match(/\b[A-Z]{2,}(?:[-/]\d+)?\b/);
   if (acronym) return acronym[0];
-  const firstTechnicalTerm = questionText.match(/\b[A-Z][A-Za-z0-9']+\b/);
-  return firstTechnicalTerm && !ignored.has(firstTechnicalTerm[0]) ? firstTechnicalTerm[0] : null;
+  const technicalTerm = questionText.match(/\b[A-Z][A-Za-z0-9']+\b/g) || [];
+  const first = technicalTerm.find((word) => {
+    if (ignored.has(word) || GENERIC_TOPIC_TOKENS.has(word.toLowerCase())) return false;
+    if (isSentenceStartWord(questionText, word)) return false;
+    return true;
+  });
+  return first ?? null;
 }
 
 function extractSyllabusTopics(content: string): Array<{ name: string; weightage?: number }> {
@@ -574,16 +759,25 @@ function mapQuestionToTopic(questionText: string, topics: TopicRow[]) {
   const questionTokens = new Set(academicTokens(questionText));
   let best: { topic: TopicRow; score: number; evidence: string[] } | null = null;
   for (const topic of topics) {
-    const matches = [...new Set(academicTokens(topic.name).filter((token) => questionTokens.has(token)))];
+    const topicTokens = [...new Set(academicTokens(topic.name))];
+    const distinctiveCount = topicTokens.filter((token) => !GENERIC_TOPIC_TOKENS.has(token)).length;
+    const matches = [...new Set(topicTokens.filter((token) => questionTokens.has(token)))];
     if (matches.length === 0) continue;
-    const topicTokenCount = Math.max(1, academicTokens(topic.name).length);
-    const score = matches.length / topicTokenCount;
+    // A topic matched purely through generic words ("management", "while", "PM", "system",
+    // "process", "model", ...) is not a real mapping - leave the question UNMATCHED instead.
+    const matchedDistinctive = matches.filter((token) => !GENERIC_TOPIC_TOKENS.has(token)).length;
+    if (matchedDistinctive === 0) continue;
+    // A single common academic token ("software" for "Software Architecture Patterns") is not
+    // enough when the topic has several distinctive words; prefer UNMATCHED over a guess.
+    if (matchedDistinctive === 1 && distinctiveCount >= 3 && COMMON_ACADEMIC_TOKENS.has(matches[0])) continue;
+    const topicTokenCount = Math.max(1, topicTokens.length);
+    const score = matchedDistinctive / topicTokenCount;
     const evidence = matches.map((token) => `matched keyword: ${token}`);
     if (!best || score > best.score || (score === best.score && matches.length > best.evidence.length)) {
       best = { topic, score, evidence };
     }
   }
-  return best && best.score >= 0.3 ? best : null;
+  return best ?? null;
 }
 
 export type AcademicQuestionRow = QuestionRow;
@@ -638,7 +832,7 @@ export function rankedTopicRows(userId: string, documentId?: string): RankedTopi
   return ranking.sort((left, right) => right.priorityScore - left.priorityScore || right.mappedQuestionCount - left.mappedQuestionCount || left.name.localeCompare(right.name));
 }
 
-export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string; fileData?: Uint8Array; mimeType?: string; extractionMethod?: string; topicMappings?: Array<{ questionText: string; topicName: string; confidence: number }> }) {
+export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string; fileData?: Uint8Array; mimeType?: string; extractionMethod?: string; topicMappings?: Array<{ questionText: string; topicName: string; confidence: number }>; aiQuestions?: Array<{ text: string; marks: number }> }) {
   const existingDocument = getDb().prepare(`SELECT id, title, doc_type AS docType, content, file_size AS fileSize, created_at AS createdAt
     FROM documents WHERE user_id = ? AND title = ? AND content = ?`).get(userId, input.title.trim(), input.content) as DocumentRow | undefined;
   const document = existingDocument || createDocument(userId, input);
@@ -661,9 +855,22 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
     });
     associateAll(syllabusTopics);
   }
-  if (syllabusTopics.length > 0) remapUnmatchedQuestions(userId, topicRows(userId));
-  const paperMappings = (input.topicMappings || []).filter((mapping) => mapping.topicName.trim() && mapping.confidence >= 0.6);
-  if (paperMappings.length > 0) {
+  const hasSyllabusTopics = topicRows(userId).some((topic) => topic.source === 'syllabus');
+  if (syllabusTopics.length > 0) {
+    remapUnmatchedQuestions(userId, hasSyllabusTopics
+      ? topicRows(userId).filter((topic) => topic.source === 'syllabus')
+      : topicRows(userId));
+  }
+  // AI topic classifications, aligned to the syllabus when one exists. When a syllabus is
+  // present the pipeline ONLY maps to syllabus topics - AI topics that cannot be resolved to
+  // a syllabus topic are dropped, and paper-derived topics are never created.
+  const paperMappings = (input.topicMappings || [])
+    .filter((mapping) => mapping.topicName.trim() && mapping.confidence >= 0.6)
+    .map((mapping) => hasSyllabusTopics
+      ? { ...mapping, topicName: resolveSyllabusTopicName(mapping.topicName, topicRows(userId).filter((topic) => topic.source === 'syllabus')) }
+      : mapping)
+    .filter((mapping): mapping is { questionText: string; topicName: string; confidence: number } => Boolean(mapping.topicName));
+  if (paperMappings.length > 0 && !hasSyllabusTopics) {
     saveTopics(userId, [...new Set(paperMappings.map((mapping) => mapping.topicName.trim().toLowerCase()))].map((key) => ({
       name: paperMappings.find((mapping) => mapping.topicName.trim().toLowerCase() === key)!.topicName.trim(),
       priority: 1,
@@ -672,8 +879,14 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
       source: 'paper-analysis',
     })));
   }
-  const extractedQuestions = input.docType.toLowerCase().includes('past') ? extractNumberedQuestionRecords(input.content) : [];
-  const hasSyllabusTopics = topicRows(userId).some((topic) => topic.source === 'syllabus');
+  const ruleExtractedQuestions = input.docType.toLowerCase().includes('past') ? extractNumberedQuestionRecords(input.content) : [];
+  const aiExtractedQuestions = (input.aiQuestions || [])
+    .map((question) => ({
+      text: normalizeAcademicQuestion(String(question.text || '')),
+      marks: Math.max(1, Math.round(Number(question.marks) || 10)),
+    }))
+    .filter((question) => Boolean(question.text));
+  const extractedQuestions = aiExtractedQuestions.length > 0 ? aiExtractedQuestions : ruleExtractedQuestions;
   if (!hasSyllabusTopics && paperMappings.length === 0) {
     const inferredTopics = extractedQuestions
       .map((question) => inferQuestionTopic(question.text))
@@ -688,34 +901,42 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
       })));
     }
   }
-  const availableTopics = topicRows(userId);
+  let availableTopics = topicRows(userId);
+  if (hasSyllabusTopics) availableTopics = availableTopics.filter((topic) => topic.source === 'syllabus');
   const existing = (getDb().prepare('SELECT normalized_text AS normalizedText FROM questions WHERE user_id = ? AND document_id = ?').all(userId, document.id) as any[]).map((row) => row.normalizedText);
   const insert = getDb().prepare(`INSERT INTO questions
     (id, user_id, document_id, topic_id, question_text, normalized_text, marks, question_type, source, suggested_time_minutes, mapping_score, mapping_evidence, mapping_status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, document_id, normalized_text) WHERE document_id IS NOT NULL DO NOTHING`);
   const createdQuestionIds: string[] = [];
-  const saveQuestions = getDb().transaction((items: Array<{ text: string; marks: number }>) => {
-    for (const item of items) {
+  // Decide each question's mapping up front so sibling sub-parts that match nothing can
+  // inherit the topic of a mapped sub-part in the same question group.
+  const mappingDecisions = extractedQuestions.map((question) => {
+    const normalizedForMapping = normalizeAcademicQuestion(question.text).toLowerCase();
+    const hinted = paperMappings.find((candidate) => {
+      const candidateText = normalizeAcademicQuestion(candidate.questionText).toLowerCase();
+      return candidateText === normalizedForMapping || candidateText.includes(normalizedForMapping) || normalizedForMapping.includes(candidateText);
+    });
+    if (hinted) {
+      const hintedTopic = findOwnedTopicByName(userId, hinted.topicName);
+      if (hintedTopic) return { topic: hintedTopic, score: hinted.confidence, evidence: ['AI topic classification from uploaded paper'] };
+    }
+    return mapQuestionToTopic(question.text, availableTopics);
+  });
+  applyQuestionGroupInheritance(extractedQuestions, mappingDecisions);
+  const saveQuestions = getDb().transaction((items: Array<QuestionRecord>) => {
+    items.forEach((item, index) => {
       const questionText = item.text;
       const normalizedText = questionText.toLowerCase();
-      if (existing.some((stored) => stored === normalizedText || questionSimilarity(stored, normalizedText) >= 0.88)) continue;
-      const normalizedForMapping = normalizeAcademicQuestion(questionText).toLowerCase();
-      const hinted = paperMappings.find((candidate) => {
-        const candidateText = normalizeAcademicQuestion(candidate.questionText).toLowerCase();
-        return candidateText === normalizedForMapping || candidateText.includes(normalizedForMapping) || normalizedForMapping.includes(candidateText);
-      });
-      const hintedTopic = hinted ? findOwnedTopicByName(userId, hinted.topicName) : undefined;
-      const mapping = hintedTopic
-        ? { topic: hintedTopic, score: hinted!.confidence, evidence: ['AI topic classification from uploaded paper'] }
-        : mapQuestionToTopic(questionText, availableTopics);
+      if (existing.some((stored) => stored === normalizedText || questionSimilarity(stored, normalizedText) >= 0.88)) return;
+      const mapping = mappingDecisions[index];
       const id = createId('question');
       const marks = item.marks;
       insert.run(id, userId, document.id, mapping?.topic.id || null, questionText, normalizedText, marks, 'Subjective', 'pyq', Math.max(5, marks * 2),
         mapping?.score || null, JSON.stringify(mapping?.evidence || []), mapping ? 'mapped' : 'unmatched', now());
       createdQuestionIds.push(id);
       existing.push(normalizedText);
-    }
+    });
   });
   saveQuestions(extractedQuestions);
   const ranking = rankedTopicRows(userId);
@@ -727,6 +948,37 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
     questions: questionRows(userId).filter((question) => createdQuestionIds.includes(question.id)),
     ranking,
   };
+}
+
+// Maps an AI-classified topic name to an exact syllabus topic name, or to the closest one via
+// the same strict matcher used for questions. Returns null when it cannot be trusted.
+function resolveSyllabusTopicName(topicName: string, syllabusTopics: TopicRow[]): string | null {
+  const exact = syllabusTopics.find((topic) => topic.name.trim().toLowerCase() === topicName.trim().toLowerCase());
+  if (exact) return exact.name;
+  const mapped = mapQuestionToTopic(topicName, syllabusTopics);
+  return mapped?.topic.name ?? null;
+}
+
+function applyQuestionGroupInheritance(records: QuestionRecord[], decisions: Array<{ topic: TopicRow; score: number; evidence: string[] } | null>): void {
+  const groupBest = new Map<string, number>();
+  records.forEach((record, index) => {
+    if (!record.group || !decisions[index]) return;
+    const bestIndex = groupBest.get(record.group);
+    if (bestIndex === undefined || (decisions[index]!.score ?? 0) > (decisions[bestIndex]!.score ?? 0)) {
+      groupBest.set(record.group, index);
+    }
+  });
+  records.forEach((record, index) => {
+    if (!record.group || !record.subpart || decisions[index]) return;
+    const bestIndex = groupBest.get(record.group);
+    if (bestIndex !== undefined && decisions[bestIndex]) {
+      decisions[index] = {
+        topic: decisions[bestIndex]!.topic,
+        score: decisions[bestIndex]!.score,
+        evidence: [`Inherited from sibling sub-part in question ${record.group}`],
+      };
+    }
+  });
 }
 
 function remapUnmatchedQuestions(userId: string, topics: TopicRow[]) {
@@ -855,6 +1107,243 @@ export function findOwnedFeedback(userId: string, feedbackId: string): FeedbackR
     ...row,
     strengths: parseJsonList(row.strengths),
     improvements: parseJsonList(row.improvements),
+  };
+}
+
+function toStringValue(value: any, fallback = ''): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+}
+
+function toStringList(value: any): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => toStringValue(item, '').trim()).filter((item) => item.length > 0);
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return value.slice(0, maxLength).trimEnd() + '...';
+}
+
+function clampScore(value: number, maxMarks: number): number {
+  return Math.min(maxMarks, Math.max(0, Math.round(Number(value) || 0)));
+}
+
+export interface PracticeEvaluationResult {
+  score: number;
+  maxMarks: number;
+  strengths: string[];
+  improvements: string[];
+  feedbackText: string;
+  modelAnswerSnippet: string;
+}
+
+export function normalizePracticeEvaluation(raw: any, maxMarks: number): PracticeEvaluationResult {
+  const marks = Math.max(1, Math.min(100, Math.round(Number(maxMarks) || 0)));
+  return {
+    score: clampScore(raw?.score, marks),
+    maxMarks: marks,
+    strengths: toStringList(raw?.strengths).slice(0, 6),
+    improvements: toStringList(raw?.improvements).slice(0, 6),
+    feedbackText: truncateText(toStringValue(raw?.feedbackText), 4000),
+    modelAnswerSnippet: truncateText(toStringValue(raw?.modelAnswerSnippet), 4000),
+  };
+}
+
+export function savePracticeEvaluation(userId: string, input: any): FeedbackRow {
+  const id = createId('feedback');
+  const strengths = JSON.stringify(Array.isArray(input.strengths) ? input.strengths.map(String) : []);
+  const improvements = JSON.stringify(Array.isArray(input.improvements) ? input.improvements.map(String) : []);
+  getDb().prepare(`INSERT INTO feedback
+    (id, user_id, question_id, session_id, score, max_marks, source, strengths, improvements,
+     feedback_text, model_answer_snippet, focus, difficulty, perceived_progress, notes, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, userId, null, null, Number(input.score), Number(input.maxMarks),
+      'gemini', strengths, improvements,
+      input.feedbackText || null, input.modelAnswerSnippet || null,
+      null, null, null, input.notes || null, now());
+  return findOwnedFeedback(userId, id)!;
+}
+
+export interface MockExamReportQuestion {
+  position: number;
+  questionText: string;
+  topicName: string;
+  answer: string;
+  score: number;
+  maxMarks: number;
+  strengths: string[];
+  improvements: string[];
+  feedback: string;
+}
+
+export interface MockExamTopicScore {
+  topic: string;
+  score: number;
+  maxMarks: number;
+  mastery: string;
+}
+
+export interface MockExamReport {
+  perQuestion: MockExamReportQuestion[];
+  topicBreakdown: MockExamTopicScore[];
+  answeredCount: number;
+  totalScore: number;
+  totalMax: number;
+  percentage: number;
+  grade: string;
+  advice: string;
+}
+
+export function normalizeMockExamReport(raw: any, questions: any[]): MockExamReport {
+  const rawPerQuestion = Array.isArray(raw?.perQuestion) ? raw.perQuestion : [];
+  const perQuestion: MockExamReportQuestion[] = questions.map((question: any, index: number) => {
+    const position = index + 1;
+    const maxMarks = Math.max(1, Math.round(Number(question.marks) || 1));
+    const answer = toStringValue(question.answer).trim();
+    const item =
+      rawPerQuestion.find((candidate: any) => Number(candidate?.index) === position) ||
+      rawPerQuestion.find((candidate: any) => Number(candidate?.index) === index);
+    return {
+      position,
+      questionText: toStringValue(question.questionText),
+      topicName: toStringValue(question.topicName, 'General'),
+      answer,
+      score: answer === '' ? 0 : clampScore(item?.score, maxMarks),
+      maxMarks,
+      strengths: toStringList(item?.strengths).slice(0, 6),
+      improvements: toStringList(item?.improvements).slice(0, 6),
+      feedback: truncateText(toStringValue(item?.feedback), 2000),
+    };
+  });
+  const answeredCount = perQuestion.filter((q) => q.answer.length > 0).length;
+  const totalScore = perQuestion.reduce((sum, q) => sum + q.score, 0);
+  const totalMax = perQuestion.reduce((sum, q) => sum + q.maxMarks, 0);
+  const percentage = totalMax > 0 ? Math.round((100 * totalScore) / totalMax) : 0;
+  const grade = percentage >= 85 ? 'A' : percentage >= 70 ? 'B' : percentage >= 50 ? 'C' : 'D';
+  const advice = truncateText(toStringValue(raw?.overall?.advice || raw?.advice), 3000);
+  const topicMap = new Map<string, { score: number; maxMarks: number }>();
+  for (const question of perQuestion) {
+    const topic = question.topicName || 'General';
+    const current = topicMap.get(topic) || { score: 0, maxMarks: 0 };
+    current.score += question.score;
+    current.maxMarks += question.maxMarks;
+    topicMap.set(topic, current);
+  }
+  const rawBreakdown = Array.isArray(raw?.topicBreakdown) ? raw.topicBreakdown : [];
+  const topicBreakdown: MockExamTopicScore[] = [...topicMap.entries()].map(([topic, totals]) => {
+    const mastery = percentageFor(totals.score, totals.maxMarks);
+    const supplied = rawBreakdown.find((entry: any) => toStringValue(entry?.topic) === topic);
+    const label =
+      mastery >= 85 ? 'Strong' : mastery >= 50 ? 'Developing' : 'Needs Work';
+    return {
+      topic,
+      score: totals.score,
+      maxMarks: totals.maxMarks,
+      mastery: toStringValue(supplied?.mastery, label).slice(0, 80),
+    };
+  });
+  return {
+    perQuestion,
+    topicBreakdown,
+    answeredCount,
+    totalScore,
+    totalMax,
+    percentage,
+    grade,
+    advice,
+  };
+}
+
+function percentageFor(score: number, maxMarks: number): number {
+  return maxMarks > 0 ? Math.round((100 * score) / maxMarks) : 0;
+}
+
+export function createMockExam(userId: string, input: any): any {
+  const examId = createId('mock-exam');
+  const createdAt = now();
+  const report = input.report;
+  getDb().prepare(`INSERT INTO mock_exams
+    (id, user_id, exam_name, started_at, ended_at, duration_seconds,
+     total_score, total_max, percentage, grade, ai_advice, question_count, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(examId, userId, toStringValue(input.examName, 'Timed Mock Exam'),
+      input.startedAt || createdAt, input.endedAt || createdAt, Math.max(1, Math.round(Number(input.durationSeconds) || 1)),
+      report.totalScore, report.totalMax, report.percentage, report.grade,
+      report.advice || null, report.perQuestion.length, createdAt);
+  for (const question of report.perQuestion) {
+    getDb().prepare(`INSERT INTO mock_exam_questions
+      (id, mock_exam_id, user_id, position, question_text, topic_name, answer,
+       score, max_marks, strengths, improvements, feedback, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(createId('mock-question'), examId, userId, question.position,
+        question.questionText, question.topicName, question.answer || null,
+        question.score, question.maxMarks,
+        JSON.stringify(question.strengths || []), JSON.stringify(question.improvements || []),
+        question.feedback || null, createdAt);
+  }
+  return getMockExam(userId, examId);
+}
+
+export function mockExamList(userId: string): any[] {
+  return getDb().prepare(`
+    SELECT id, exam_name AS examName, started_at AS startedAt, ended_at AS endedAt,
+      duration_seconds AS durationSeconds, total_score AS totalScore, total_max AS totalMax,
+      percentage, grade, question_count AS questionCount, created_at AS createdAt
+    FROM mock_exams
+    WHERE user_id = ?
+    ORDER BY ended_at DESC
+  `).all(userId) as any[];
+}
+
+export function getMockExam(userId: string, examId: string): any | undefined {
+  const exam = getDb().prepare(`
+    SELECT id, user_id AS userId, exam_name AS examName, started_at AS startedAt, ended_at AS endedAt,
+      duration_seconds AS durationSeconds, total_score AS totalScore, total_max AS totalMax,
+      percentage, grade, ai_advice AS advice, question_count AS questionCount, created_at AS createdAt
+    FROM mock_exams
+    WHERE id = ? AND user_id = ?
+  `).get(examId, userId) as any;
+  if (!exam) return undefined;
+  const questions = getDb().prepare(`
+    SELECT id, position, question_text AS questionText, topic_name AS topicName,
+      answer, score, max_marks AS maxMarks, strengths, improvements, feedback, created_at AS createdAt
+    FROM mock_exam_questions
+    WHERE mock_exam_id = ? AND user_id = ?
+    ORDER BY position ASC
+  `).all(examId, userId) as any[];
+  const perQuestion = questions.map((question: any) => ({
+    ...question,
+    strengths: parseJsonList(question.strengths),
+    improvements: parseJsonList(question.improvements),
+  }));
+  const answeredCount = perQuestion.filter((question: any) => Boolean(question.answer)).length;
+  const topicMap = new Map<string, { score: number; maxMarks: number }>();
+  for (const question of perQuestion) {
+    const topic = question.topicName || 'General';
+    const current = topicMap.get(topic) || { score: 0, maxMarks: 0 };
+    current.score += question.score;
+    current.maxMarks += question.maxMarks;
+    topicMap.set(topic, current);
+  }
+  const topicBreakdown = [...topicMap.entries()].map(([topic, totals]) => ({
+    topic,
+    score: totals.score,
+    maxMarks: totals.maxMarks,
+    mastery: totals.maxMarks > 0
+      ? percentageFor(totals.score, totals.maxMarks) >= 85
+        ? 'Strong'
+        : percentageFor(totals.score, totals.maxMarks) >= 50
+        ? 'Developing'
+        : 'Needs Work'
+      : 'Needs Work',
+  }));
+  return {
+    ...exam,
+    perQuestion,
+    answeredCount,
+    topicBreakdown,
   };
 }
 
@@ -1589,6 +2078,7 @@ export type SchedulingAssistantChange = {
   topicName: string;
   original: Pick<ScheduleBlockRow, 'title' | 'date' | 'startTime' | 'durationMinutes'>;
   proposed: Pick<ScheduleBlockInput, 'date' | 'startTime' | 'durationMinutes'>;
+  operation?: 'move' | 'shorten' | 'cancel' | 'swap' | 'shift';
 };
 
 export type SchedulingAssistantPreview = {
@@ -1613,42 +2103,76 @@ function periodMinutes(period?: AssistantPeriod): [number, number] {
   return [8 * 60, 18 * 60];
 }
 
-function assistantSlot(
+type AssistantSlotOptions = {
+  period?: AssistantPeriod;
+  targetTime?: string;
+  targetTimeMode?: 'exact' | 'after';
+  beforeTime?: string;
+  afterTime?: string;
+  excludedWeekdays?: number[];
+  maxDailyMinutes?: number;
+  searchDays?: number;
+};
+
+function scheduleLoadMinutes(userId: string, date: string, proposed: ScheduleBlockInput[]): number {
+  const stored = scheduleBlockRows(userId)
+    .filter((block) => block.date === date)
+    .reduce((total, block) => total + block.durationMinutes, 0);
+  const added = proposed
+    .filter((block) => block.date === date)
+    .reduce((total, block) => total + block.durationMinutes, 0);
+  return stored + added;
+}
+
+function scoredAssistantSlot(
   userId: string,
   topicId: string,
   title: string,
   durationMinutes: number,
   startDate: string,
-  period: AssistantPeriod | undefined,
+  options: AssistantSlotOptions,
   excludedIds: string[],
   proposed: ScheduleBlockInput[],
   currentTime: Date,
-  targetTime?: string,
-  targetTimeMode: 'exact' | 'after' = 'exact',
-  searchDays = 1,
   avoidBlock?: Pick<ScheduleBlockInput, 'date' | 'startTime' | 'durationMinutes'>,
 ): ScheduleBlockInput | null {
+  const searchDays = Math.max(1, Math.floor(Number(options.searchDays) || 1));
+  const beforeTimeMinutes = options.beforeTime ? scheduleStartMinutes(options.beforeTime) : null;
+  const afterTimeMinutes = options.afterTime ? scheduleStartMinutes(options.afterTime) : null;
+  const excluded = new Set(options.excludedWeekdays || []);
+  let best: { slot: ScheduleBlockInput; score: number } | null = null;
+
   for (let dayOffset = 0; dayOffset < searchDays; dayOffset += 1) {
     const date = dateAfter(startDate, dayOffset);
-    const [windowStart, windowEnd] = targetTime
-      ? targetTimeMode === 'after'
-        ? [scheduleStartMinutes(targetTime)!, periodMinutes('evening')[1]]
-        : [scheduleStartMinutes(targetTime)!, scheduleStartMinutes(targetTime)! + durationMinutes]
-      : periodMinutes(period);
-    for (let minutes = windowStart; minutes + durationMinutes <= windowEnd; minutes += targetTime && targetTimeMode === 'exact' ? windowEnd : ADAPTIVE_SLOT_INCREMENT_MINUTES) {
+    if (excluded.has(new Date(Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10)))).getUTCDay())) continue;
+    const [baseStart, baseEnd] = options.targetTime
+      ? options.targetTimeMode === 'after'
+        ? [scheduleStartMinutes(options.targetTime)!, periodMinutes('evening')[1]]
+        : [scheduleStartMinutes(options.targetTime)!, scheduleStartMinutes(options.targetTime)! + durationMinutes]
+      : periodMinutes(options.period);
+    let windowStart = Math.max(baseStart, afterTimeMinutes ?? 0);
+    let windowEnd = beforeTimeMinutes === null ? baseEnd : Math.min(baseEnd, beforeTimeMinutes);
+    if (windowStart + durationMinutes > windowEnd) windowStart = windowEnd - durationMinutes;
+    const dailyLoad = options.maxDailyMinutes === undefined ? 0 : scheduleLoadMinutes(userId, date, proposed);
+    const step = options.targetTime && options.targetTimeMode === 'exact' ? Math.max(15, windowEnd - windowStart) : ADAPTIVE_SLOT_INCREMENT_MINUTES;
+    for (let minutes = windowStart; minutes + durationMinutes <= windowEnd; minutes += step) {
       const candidate: ScheduleBlockInput = { topicId, title, date, startTime: timeFromMinutes(minutes), durationMinutes, completed: false };
       if (dateTimeValue(candidate.date, candidate.startTime) <= currentTime.getTime()) continue;
       if (avoidBlock && candidate.date === avoidBlock.date && candidate.startTime === avoidBlock.startTime && candidate.durationMinutes === avoidBlock.durationMinutes) continue;
+      if (options.maxDailyMinutes !== undefined && dailyLoad + durationMinutes > options.maxDailyMinutes) continue;
+      if (beforeTimeMinutes !== null && minutes + durationMinutes > beforeTimeMinutes) continue;
+      if (afterTimeMinutes !== null && minutes < afterTimeMinutes) continue;
       try {
         assertScheduleBlocksAreValid(userId, [...proposed, candidate], excludedIds);
-        return candidate;
       } catch (error) {
         if (error instanceof HttpError && error.status === 409) continue;
         throw error;
       }
+      const score = dayOffset * 1440 + minutes + (options.maxDailyMinutes === undefined ? 0 : dailyLoad);
+      if (!best || score < best.score) best = { slot: candidate, score };
     }
   }
-  return null;
+  return best?.slot || null;
 }
 
 function topicMatches(block: ScheduleBlockRow, query: string | undefined): boolean {
@@ -1687,6 +2211,137 @@ function querySchedulingAssistant(userId: string, intent: SchedulingAssistantInt
     : { intent, changes: [], assistantMessage: 'You do not have any upcoming study sessions scheduled.' };
 }
 
+function queryRangeAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
+  const rows = scheduleBlockRows(userId)
+    .filter((block) => !block.completed && block.date >= intent.sourceDate && block.date <= intent.rangeEndDate && dateTimeValue(block.date, block.startTime) > currentTime.getTime());
+  if (rows.length === 0) return { intent, changes: [], assistantMessage: `You have no unfinished sessions between ${intent.sourceDate} and ${intent.rangeEndDate}.` };
+  const byDate = new Map<string, { count: number; minutes: number; names: string[] }>();
+  for (const block of rows) {
+    const entry = byDate.get(block.date) || { count: 0, minutes: 0, names: [] };
+    entry.count += 1;
+    entry.minutes += block.durationMinutes;
+    if (!entry.names.includes(block.topicName)) entry.names.push(block.topicName);
+    byDate.set(block.date, entry);
+  }
+  const summary = [...byDate.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([date, entry]) => `${date}: ${entry.count} session${entry.count === 1 ? '' : 's'} totaling ${entry.minutes} minutes (${entry.names.join(', ')})`);
+  return { intent, changes: [], assistantMessage: `Between ${intent.sourceDate} and ${intent.rangeEndDate} you have:\n${summary.join('\n')}` };
+}
+
+function previewCancelAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date, selectedBlockId?: string): SchedulingAssistantPreview {
+  const futureBlocks = futureUncompletedBlocks(userId, currentTime);
+  let matches = matchingBlocks(futureBlocks, intent);
+  if (selectedBlockId) matches = matches.filter((block) => block.id === selectedBlockId);
+  if (matches.length === 0) return { intent, changes: [], assistantMessage: 'I could not find an unfinished future session matching that request.' };
+  if (matches.length > 1 && !intent.allMatches) {
+    return {
+      intent,
+      changes: [],
+      assistantMessage: `I found ${matches.length} matching sessions. Please be more specific about the date or time.`,
+      matches: matches.map(({ id, topicName, title, date, startTime, durationMinutes }) => ({ blockId: id, topicName, title, date, startTime, durationMinutes })),
+    };
+  }
+  const changes = matches.map((block) => ({
+    blockId: block.id,
+    topicId: block.topicId,
+    topicName: block.topicName,
+    original: { title: block.title, date: block.date, startTime: block.startTime, durationMinutes: block.durationMinutes },
+    proposed: { date: block.date, startTime: block.startTime, durationMinutes: block.durationMinutes },
+    operation: 'cancel' as const,
+  }));
+  const sessions = changes.map((change) => `${change.topicName} at ${change.original.startTime} on ${change.original.date}`).join(', ');
+  return { intent, changes, assistantMessage: `I can cancel ${changes.length} session${changes.length === 1 ? '' : 's'}: ${sessions}. Confirm to remove ${changes.length === 1 ? 'it' : 'them'} from your calendar.` };
+}
+
+function previewSwapAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date, selectedBlockId?: string): SchedulingAssistantPreview {
+  const futureBlocks = futureUncompletedBlocks(userId, currentTime);
+  const aBlock = futureBlocks.find((block) => topicMatches(block, intent.topicQuery));
+  const bBlocks = intent.otherTopicQuery ? futureBlocks.filter((block) => topicMatches(block, intent.otherTopicQuery)) : [];
+  if (!aBlock || bBlocks.length === 0) return { intent, changes: [], assistantMessage: 'I could not find both topics in your upcoming schedule.' };
+  const allMatches = [...(bBlocks.some((b) => b.id === aBlock.id) ? [] : [aBlock]), ...bBlocks];
+  let blockA = aBlock;
+  let blockB = bBlocks[0];
+  if (selectedBlockId) {
+    const selected = allMatches.find((block) => block.id === selectedBlockId);
+    if (!selected) return { intent, changes: [], assistantMessage: 'I could not find a matching session for that selection.' };
+    if (topicMatches(selected, intent.topicQuery)) {
+      blockA = selected;
+      blockB = bBlocks.find((b) => b.id !== selected.id) || bBlocks[0];
+    } else {
+      blockA = aBlock;
+      blockB = selected;
+    }
+  } else if (bBlocks.length > 1) {
+    return {
+      intent,
+      changes: [],
+      assistantMessage: `I found ${bBlocks.length} sessions for the second topic. Please pick which one to swap.`,
+      matches: allMatches.map(({ id, topicName, title, date, startTime, durationMinutes }) => ({ blockId: id, topicName, title, date, startTime, durationMinutes })),
+    };
+  }
+  const candidates = [
+    { topicId: blockB.topicId, title: blockB.title, date: blockB.date, startTime: blockB.startTime, durationMinutes: blockA.durationMinutes, completed: false },
+    { topicId: blockA.topicId, title: blockA.title, date: blockA.date, startTime: blockA.startTime, durationMinutes: blockB.durationMinutes, completed: false },
+  ];
+  try {
+    assertScheduleBlocksAreValid(userId, candidates, [blockA.id, blockB.id]);
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 409) return { intent, changes: [], assistantMessage: 'That swap would overlap another session, so I cannot suggest it safely.' };
+    throw error;
+  }
+  const changes: SchedulingAssistantChange[] = [
+    {
+      blockId: blockA.id,
+      topicId: blockA.topicId,
+      topicName: blockA.topicName,
+      original: { title: blockA.title, date: blockA.date, startTime: blockA.startTime, durationMinutes: blockA.durationMinutes },
+      proposed: { date: blockB.date, startTime: blockB.startTime, durationMinutes: blockA.durationMinutes },
+      operation: 'swap',
+    },
+    {
+      blockId: blockB.id,
+      topicId: blockB.topicId,
+      topicName: blockB.topicName,
+      original: { title: blockB.title, date: blockB.date, startTime: blockB.startTime, durationMinutes: blockB.durationMinutes },
+      proposed: { date: blockA.date, startTime: blockA.startTime, durationMinutes: blockB.durationMinutes },
+      operation: 'swap',
+    },
+  ];
+  return { intent, changes, assistantMessage: `I can swap ${blockA.topicName} (${blockA.date} at ${blockA.startTime}) with ${blockB.topicName} (${blockB.date} at ${blockB.startTime}). Confirm to update your calendar.` };
+}
+
+function previewDayShiftAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
+  const moving = futureUncompletedBlocks(userId, currentTime).filter((block) => block.date === intent.sourceDate);
+  if (moving.length === 0) return { intent, changes: [], assistantMessage: `I could not find any unfinished future sessions on ${intent.sourceDate}.` };
+  const targetDate = dateAfter(intent.sourceDate, intent.shiftDays || 0);
+  if (targetDate === intent.sourceDate) return { intent, changes: [], assistantMessage: 'Moving those sessions to the same day would not change anything.' };
+  const candidates = moving.map((block) => ({
+    topicId: block.topicId,
+    title: block.title,
+    date: targetDate,
+    startTime: block.startTime,
+    durationMinutes: block.durationMinutes,
+    completed: false,
+  }));
+  try {
+    assertScheduleBlocksAreValid(userId, candidates, moving.map((block) => block.id));
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 409) return { intent, changes: [], assistantMessage: `${targetDate} already has sessions that overlap, so I cannot move these without conflicts.` };
+    throw error;
+  }
+  const changes = moving.map((block) => ({
+    blockId: block.id,
+    topicId: block.topicId,
+    topicName: block.topicName,
+    original: { title: block.title, date: block.date, startTime: block.startTime, durationMinutes: block.durationMinutes },
+    proposed: { date: targetDate, startTime: block.startTime, durationMinutes: block.durationMinutes },
+    operation: 'shift' as const,
+  }));
+  const sessions = changes.map((change) => change.topicName).join(', ');
+  return { intent, changes, assistantMessage: `I can move ${changes.length} session${changes.length === 1 ? '' : 's'} (${sessions}) from ${intent.sourceDate} to ${targetDate}. Confirm to update your calendar.` };
+}
+
 export function previewSchedulingAssistant(
   userId: string,
   intent: SchedulingAssistantIntent,
@@ -1694,8 +2349,12 @@ export function previewSchedulingAssistant(
   selectedBlockId?: string,
 ): SchedulingAssistantPreview {
   if (intent.type === 'query_schedule') return querySchedulingAssistant(userId, intent, currentTime);
+  if (intent.type === 'query_range') return queryRangeAssistant(userId, intent, currentTime);
+  if (intent.type === 'cancel_topic') return previewCancelAssistant(userId, intent, currentTime, selectedBlockId);
+  if (intent.type === 'swap_sessions') return previewSwapAssistant(userId, intent, currentTime, selectedBlockId);
+  if (intent.type === 'reschedule_day') return previewDayShiftAssistant(userId, intent, currentTime);
   if (intent.type === 'unsupported') {
-    return { intent, changes: [], assistantMessage: 'I can answer schedule questions, move a topic, shorten a session, or help when you are unavailable.' };
+    return { intent, changes: [], assistantMessage: 'I can answer schedule questions, move a topic, shorten a session, swap or cancel sessions, shift a whole day, or help when you are unavailable.' };
   }
 
   const futureBlocks = futureUncompletedBlocks(userId, currentTime);
@@ -1730,19 +2389,24 @@ export function previewSchedulingAssistant(
       : intent.targetDate || block.date;
     const slot = intent.type === 'shorten_topic'
       ? { topicId: block.topicId, title: block.title, date: block.date, startTime: block.startTime, durationMinutes: shortened, completed: false }
-      : assistantSlot(
+      : scoredAssistantSlot(
         userId,
         block.topicId,
         block.title,
         shortened,
         startDate,
-        intent.type === 'unavailable_period' ? 'morning' : intent.period,
+        {
+          period: intent.type === 'unavailable_period' ? 'morning' : intent.period,
+          targetTime: intent.targetTime,
+          targetTimeMode: intent.targetTimeMode,
+          beforeTime: intent.beforeTime,
+          excludedWeekdays: intent.excludedWeekdays,
+          maxDailyMinutes: intent.maxDailyMinutes,
+          searchDays: intent.type === 'unavailable_period' ? ADAPTIVE_SEARCH_DAYS : 1,
+        },
         excludedIds,
         proposed,
         currentTime,
-        intent.targetTime,
-        intent.targetTimeMode,
-        intent.type === 'unavailable_period' ? ADAPTIVE_SEARCH_DAYS : 1,
         block,
       );
     if (!slot) return { intent, changes: [], assistantMessage: `I could not find a safe replacement slot for ${block.title}.` };
@@ -1800,21 +2464,27 @@ export function confirmSchedulingAssistant(
   const sourceBlocks = preview.changes.map((change) => {
     const block = findOwnedScheduleBlock(userId, change.blockId);
     if (!block) throw new HttpError(404, 'Schedule block not found.');
-    if (block.completed) throw new HttpError(409, 'Completed schedule blocks cannot be moved.');
+    if (block.completed) throw new HttpError(409, 'Completed schedule blocks cannot be changed.');
     return block;
   });
-  const candidates = preview.changes.map((change, index) => ({
-    topicId: sourceBlocks[index].topicId,
-    title: sourceBlocks[index].title,
-    date: change.proposed.date,
-    startTime: change.proposed.startTime,
-    durationMinutes: change.proposed.durationMinutes,
-    completed: false,
-  }));
-  assertScheduleBlocksAreValid(userId, candidates, blockIds);
+  const candidates = preview.changes
+    .filter((change) => change.operation !== 'cancel')
+    .map((change, index) => ({
+      topicId: sourceBlocks.filter((_, i) => preview.changes[i].operation !== 'cancel')[index].topicId,
+      title: sourceBlocks.filter((_, i) => preview.changes[i].operation !== 'cancel')[index].title,
+      date: change.proposed.date,
+      startTime: change.proposed.startTime,
+      durationMinutes: change.proposed.durationMinutes,
+      completed: false,
+    }));
+  if (candidates.length > 0) assertScheduleBlocksAreValid(userId, candidates, blockIds);
 
   const applyAll = getDb().transaction(() => {
     preview.changes.forEach((change, index) => {
+      if (change.operation === 'cancel') {
+        deleteScheduleBlock(userId, change.blockId);
+        return;
+      }
       updateScheduleBlock(userId, change.blockId, {
         date: change.proposed.date,
         startTime: change.proposed.startTime,
@@ -1822,6 +2492,8 @@ export function confirmSchedulingAssistant(
       });
       recordScheduleChange(userId, change.blockId, 'conversational_reschedule', JSON.stringify(change.original), JSON.stringify({
         ...change.proposed,
+        operation: change.operation,
+        swapIndex: change.operation === 'swap' ? index : undefined,
         intent: preview.intent,
         confirmed: true,
       }));
