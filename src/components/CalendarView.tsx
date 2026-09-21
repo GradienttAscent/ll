@@ -108,6 +108,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onStartStudy, refres
   const blockColor = (block: ScheduleBlock) => {
     if (block.completed) return 'bg-black/10 border-black/20 text-black/60';
     if (block.date < todayStr) return 'bg-red-50 border-red-300 text-red-800'; // missed
+    if (block.blockType === 'revision') return 'bg-[#F8F7F2] border-2 border-black text-black hover:bg-black hover:text-white';
     return 'bg-[#F8F7F2] border-black text-black hover:bg-black hover:text-white';
   };
 
@@ -207,6 +208,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onStartStudy, refres
                       aria-label={`${block.title} at ${block.startTime}, ${block.durationMinutes} minutes${block.completed ? ', completed' : ''}`}
                     >
                       <div className="text-[10px] font-bold truncate leading-tight">{block.title}</div>
+                      {block.blockType === 'revision' && <div className="text-[8px] uppercase tracking-wider font-bold">↻ Memory refresh</div>}
                       {block.durationMinutes >= 30 && (
                         <div className="text-[9px] opacity-70 truncate">{block.startTime} · {block.durationMinutes}m</div>
                       )}
@@ -260,10 +262,11 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onStartStudy, refres
                 <span className="text-black/60">Time</span>
                 <span className="font-bold font-mono">{selectedBlock.startTime}</span>
               </div>
-              <div className="flex justify-between border-b border-black/10 pb-2">
-                <span className="text-black/60">Planned Duration</span>
-                <span className="font-bold">{selectedBlock.durationMinutes} minutes</span>
-              </div>
+               <div className="flex justify-between border-b border-black/10 pb-2">
+                 <span className="text-black/60">Planned Duration</span>
+                 <span className="font-bold">{selectedBlock.durationMinutes} minutes</span>
+               </div>
+               {selectedBlock.blockType === 'revision' && <div className="flex justify-between border-b border-black/10 pb-2"><span className="text-black/60">Purpose</span><span className="font-bold uppercase text-[10px] tracking-wider">↻ Memory refresh</span></div>}
               <div className="flex justify-between">
                 <span className="text-black/60">Status</span>
                 <span className={`font-bold uppercase text-[10px] tracking-wider px-2 py-1 ${selectedBlock.completed ? 'bg-black text-white' : selectedBlock.date < todayStr ? 'bg-red-100 text-red-800 border border-red-300' : 'border border-black'}`}>

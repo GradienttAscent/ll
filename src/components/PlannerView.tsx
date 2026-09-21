@@ -13,7 +13,7 @@ interface PlannerViewProps {
   onReconsiderAdaptiveProposal: (studySessionId: string) => Promise<void>;
 }
 
-type PlannedBlock = Omit<ScheduleBlock, 'id' | 'topicName' | 'createdAt'>;
+type PlannedBlock = Omit<ScheduleBlock, 'id' | 'topicName' | 'createdAt' | 'blockType'>;
 type OccupiedBlock = Pick<ScheduleBlock, 'date' | 'startTime' | 'durationMinutes'>;
 type ChatMessage = { id: number; role: 'user' | 'assistant'; text: string; preview?: SchedulingAssistantPreview; sourceMessage?: string; selectedBlockId?: string };
 type ActiveChatPreview = { message: string; preview: SchedulingAssistantPreview; selectedBlockId?: string };

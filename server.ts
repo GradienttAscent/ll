@@ -348,6 +348,14 @@ function parseAdaptiveReason(reason: unknown): string | null {
 }
 
 app.post('/api/adaptive/proposals', (req, res) => {
+  if (typeof req.body?.studySessionId === 'string' && req.body.studySessionId) {
+    try {
+      return res.json(services.buildAdaptiveProposal(userIdOf(req), req.body.studySessionId));
+    } catch (error) {
+      if (error instanceof HttpError) return sendError(res, error.status, error.message);
+      return sendError(res, 400, error instanceof Error ? error.message : 'Unable to generate adaptive proposal.');
+    }
+  }
   const { scheduleBlockId, reason } = (req.body || {}) as { scheduleBlockId?: unknown; reason?: unknown };
   if (typeof scheduleBlockId !== 'string' || !scheduleBlockId) {
     return sendError(res, 400, 'scheduleBlockId is required.');
@@ -380,6 +388,27 @@ app.post('/api/adaptive/proposals', (req, res) => {
 
 app.post('/api/adaptive/proposals/accept', (req, res) => {
   const body = req.body || {};
+  if (typeof body.studySessionId === 'string' && body.studySessionId) {
+    const proposedDurationMinutes = Number(body.proposedDurationMinutes);
+    if (typeof body.proposedDate !== 'string' || typeof body.proposedStartTime !== 'string') {
+      return sendError(res, 400, 'proposedDate and proposedStartTime are required.');
+    }
+    if (!Number.isInteger(proposedDurationMinutes) || proposedDurationMinutes < 1) {
+      return sendError(res, 400, 'proposedDurationMinutes must be a positive integer.');
+    }
+    try {
+      const scheduleBlock = services.acceptAdaptiveProposal(userIdOf(req), {
+        studySessionId: body.studySessionId,
+        proposedDate: body.proposedDate,
+        proposedStartTime: body.proposedStartTime,
+        proposedDurationMinutes,
+      });
+      return res.status(201).json({ scheduleBlock, scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
+    } catch (error) {
+      if (error instanceof HttpError) return sendError(res, error.status, error.message);
+      return sendError(res, 400, error instanceof Error ? error.message : 'Unable to accept adaptive proposal.');
+    }
+  }
   const sourceBlockId = body.sourceBlockId as unknown;
   const reason = parseAdaptiveReason(body.reason);
   if (typeof sourceBlockId !== 'string' || !sourceBlockId) {
@@ -409,6 +438,12 @@ app.post('/api/adaptive/proposals/accept', (req, res) => {
 });
 
 app.post('/api/adaptive/proposals/reject', (req, res) => {
+  if (typeof req.body?.studySessionId === 'string' && req.body.studySessionId) {
+    if (!services.findOwnedStudySession(userIdOf(req), req.body.studySessionId)) {
+      return sendError(res, 404, 'Study session not found.');
+    }
+    return res.json({ ok: true });
+  }
   const { sourceBlockId, reason } = (req.body || {}) as { sourceBlockId?: unknown; reason?: unknown };
   if (typeof sourceBlockId !== 'string' || !sourceBlockId) {
     return sendError(res, 400, 'sourceBlockId is required.');
@@ -525,12 +560,10 @@ app.get('/api/study-streak', (req, res) => {
   res.json({ streak: services.computeStudyStreak(userIdOf(req), tzOffsetMinutes) });
 });
 
-// ---- Adaptive revisions ----
+// ---- Session-derived adaptive revisions ----
 app.post('/api/adaptive-proposals', (req, res) => {
   const studySessionId = req.body?.studySessionId;
-  if (typeof studySessionId !== 'string' || !studySessionId) {
-    return sendError(res, 400, 'studySessionId is required.');
-  }
+  if (typeof studySessionId !== 'string' || !studySessionId) return sendError(res, 400, 'studySessionId is required.');
   try {
     return res.json(services.buildAdaptiveProposal(userIdOf(req), studySessionId));
   } catch (error) {
@@ -541,22 +574,13 @@ app.post('/api/adaptive-proposals', (req, res) => {
 
 app.post('/api/adaptive-proposals/accept', (req, res) => {
   const body = req.body || {};
-  if (typeof body.studySessionId !== 'string' || !body.studySessionId) {
-    return sendError(res, 400, 'studySessionId is required.');
-  }
-  if (typeof body.proposedDate !== 'string' || typeof body.proposedStartTime !== 'string') {
-    return sendError(res, 400, 'proposedDate and proposedStartTime are required.');
-  }
+  if (typeof body.studySessionId !== 'string' || !body.studySessionId) return sendError(res, 400, 'studySessionId is required.');
+  if (typeof body.proposedDate !== 'string' || typeof body.proposedStartTime !== 'string') return sendError(res, 400, 'proposedDate and proposedStartTime are required.');
   const proposedDurationMinutes = Number(body.proposedDurationMinutes);
-  if (!Number.isInteger(proposedDurationMinutes) || proposedDurationMinutes < 1) {
-    return sendError(res, 400, 'proposedDurationMinutes must be a positive integer.');
-  }
+  if (!Number.isInteger(proposedDurationMinutes) || proposedDurationMinutes < 1) return sendError(res, 400, 'proposedDurationMinutes must be a positive integer.');
   try {
     const scheduleBlock = services.acceptAdaptiveProposal(userIdOf(req), {
-      studySessionId: body.studySessionId,
-      proposedDate: body.proposedDate,
-      proposedStartTime: body.proposedStartTime,
-      proposedDurationMinutes,
+      studySessionId: body.studySessionId, proposedDate: body.proposedDate, proposedStartTime: body.proposedStartTime, proposedDurationMinutes,
     });
     return res.status(201).json({ scheduleBlock, scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
   } catch (error) {
@@ -567,13 +591,41 @@ app.post('/api/adaptive-proposals/accept', (req, res) => {
 
 app.post('/api/adaptive-proposals/reject', (req, res) => {
   const studySessionId = req.body?.studySessionId;
-  if (typeof studySessionId !== 'string' || !studySessionId) {
-    return sendError(res, 400, 'studySessionId is required.');
-  }
-  if (!services.findOwnedStudySession(userIdOf(req), studySessionId)) {
-    return sendError(res, 404, 'Study session not found.');
-  }
+  if (typeof studySessionId !== 'string' || !studySessionId) return sendError(res, 400, 'studySessionId is required.');
+  if (!services.findOwnedStudySession(userIdOf(req), studySessionId)) return sendError(res, 404, 'Study session not found.');
   return res.json({ ok: true });
+});
+
+// ---- Memory Atlas ----
+app.get('/api/memory/topics', (req, res) => {
+  const rawForecast = req.query.forecastDays;
+  if (rawForecast !== undefined && (!/^\d+$/.test(String(rawForecast)) || Number(rawForecast) > 14)) {
+    return sendError(res, 400, 'forecastDays must be an integer from 0 to 14.');
+  }
+  return res.json({ memory: services.memoryAtlas(userIdOf(req), Number(rawForecast || 0)) });
+});
+
+app.post('/api/memory/refresh-plan', (req, res) => {
+  const topicId = req.body?.topicId;
+  if (topicId !== undefined && (typeof topicId !== 'string' || !topicId)) return sendError(res, 400, 'topicId must be a non-empty string.');
+  try {
+    return res.json({ refreshPlan: services.buildMemoryRefreshPlan(userIdOf(req), topicId) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to build a refresh plan.');
+  }
+});
+
+app.post('/api/memory/refresh-plan/accept', (req, res) => {
+  const topicId = req.body?.topicId;
+  if (topicId !== undefined && (typeof topicId !== 'string' || !topicId)) return sendError(res, 400, 'topicId must be a non-empty string.');
+  try {
+    const scheduleBlocks = services.acceptMemoryRefreshPlan(userIdOf(req), req.body?.items, topicId);
+    return res.status(201).json({ scheduleBlocks });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to add the refresh plan to your calendar.');
+  }
 });
 
 // ---- Documents ----
@@ -938,6 +990,13 @@ async function startServer() {
   await createApp();
 
   app.use('/api', (_req, res) => sendError(res, 404, 'API route not found.'));
+
+  // Keep API failures machine-readable instead of falling back to Express's HTML error page.
+  app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next(error);
+    console.error('Unhandled API error:', error);
+    return sendError(res, 500, 'An unexpected server error occurred.');
+  });
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

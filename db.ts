@@ -200,7 +200,7 @@ const MIGRATIONS: Migration[] = [
 
       db.run('INSERT OR IGNORE INTO courses (id, name, created_at) VALUES (?, ?, ?)', [
         DEFAULT_COURSE_ID,
-        'Demo Academic Course',
+        'Design and Analysis of Algorithms',
         new Date().toISOString(),
       ]);
     },
@@ -343,7 +343,37 @@ const MIGRATIONS: Migration[] = [
       if (!columns.includes('reason')) db.run('ALTER TABLE schedule_changes ADD COLUMN reason TEXT;');
     },
   },
+{
+    version: 10,
+    name: 'schedule-block-type',
+    up: (db) => {
+      const columns = pragmaTableInfo(db, 'schedule_blocks').map((column) => column.name);
+      if (!columns.includes('block_type')) {
+        db.run("ALTER TABLE schedule_blocks ADD COLUMN block_type TEXT NOT NULL DEFAULT 'study';");
+      }
+    },
+  },
+  {
+    version: 11,
+    name: 'schedule-block-type-repair',
+    up: (db) => {
+      const columns = pragmaTableInfo(db, 'schedule_blocks').map((column) => column.name);
+      if (!columns.includes('block_type')) {
+        db.run("ALTER TABLE schedule_blocks ADD COLUMN block_type TEXT NOT NULL DEFAULT 'study';");
+      }
+    },
+  },
 ];
+
+// Audits the live schema after migrations. Some databases can record a schema version
+// without the matching columns (e.g. a copied file), so critical columns are verified
+// unconditionally rather than trusting the recorded version.
+function repairSchema(db: SqlJsDatabase) {
+  const columns = pragmaTableInfo(db, 'schedule_blocks').map((column) => column.name);
+  if (!columns.includes('block_type')) {
+    db.run("ALTER TABLE schedule_blocks ADD COLUMN block_type TEXT NOT NULL DEFAULT 'study';");
+  }
+}
 
 function getMeta(db: SqlJsDatabase, key: string): string | undefined {
   const row = queryOne(db, 'SELECT value FROM meta WHERE key = ?', [key]);
@@ -388,6 +418,7 @@ export async function initDatabase() {
 
   database.run('PRAGMA foreign_keys = OFF;');
   runMigrations(database);
+  repairSchema(database);
   database.run('PRAGMA foreign_keys = ON;');
   saveDatabase();
 

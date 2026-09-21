@@ -43,8 +43,16 @@ export type ScheduleBlockRow = {
   startTime: string;
   durationMinutes: number;
   completed: boolean;
+  blockType: 'study' | 'revision';
   createdAt: string;
 };
+
+export const MIN_MEANINGFUL_STUDY_SECONDS = 60;
+export const DEFAULT_MEMORY_STRENGTH_DAYS = 7;
+export const MEMORY_STRENGTH_EXPOSURE_CAP = 6;
+export const MEMORY_STRENGTH_EXPOSURE_BONUS = 0.35;
+export const MEMORY_STABLE_THRESHOLD = 0.7;
+export const MEMORY_DUE_THRESHOLD = 0.5;
 
 export type QuestionRow = {
   id: string;
@@ -147,19 +155,20 @@ export function scheduleBlockRows(userId: string): ScheduleBlockRow[] {
   const rows = getDb().prepare(`
     SELECT b.id, b.topic_id AS topicId, t.name AS topicName, b.title, b.date,
       b.start_time AS startTime, b.duration_minutes AS durationMinutes,
-      CAST(b.completed AS INTEGER) AS completed, b.created_at AS createdAt
+      CAST(b.completed AS INTEGER) AS completed, b.block_type AS blockType, b.created_at AS createdAt
     FROM schedule_blocks b
     JOIN topics t ON t.id = b.topic_id AND t.user_id = b.user_id
     WHERE b.user_id = ?
     ORDER BY b.date ASC, b.start_time ASC
   `).all(userId) as Array<Omit<ScheduleBlockRow, 'completed'> & { completed: number }>;
-  return rows.map((row) => ({ ...row, completed: Boolean(row.completed) }));
+  return rows.map((row) => ({ ...row, completed: Boolean(row.completed), blockType: row.blockType === 'revision' ? 'revision' : 'study' }));
 }
 
 export function findOwnedScheduleBlock(userId: string, blockId: string) {
   return getDb().prepare(`
     SELECT b.id, b.topic_id AS topicId, b.title, b.date, b.start_time AS startTime,
       b.duration_minutes AS durationMinutes, CAST(b.completed AS INTEGER) AS completed,
+      b.block_type AS blockType,
       b.created_at AS createdAt
     FROM schedule_blocks b
     WHERE b.id = ? AND b.user_id = ?
@@ -209,10 +218,11 @@ export function findOverlappingBlock(
 export function createScheduleBlock(userId: string, input: any) {
   const id = createId('block');
   getDb().prepare(`INSERT INTO schedule_blocks
-    (id, user_id, topic_id, title, date, start_time, duration_minutes, completed, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (id, user_id, topic_id, title, date, start_time, duration_minutes, completed, block_type, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, userId, input.topicId, input.title, input.date, input.startTime,
-      Math.max(1, Number(input.durationMinutes)), input.completed ? 1 : 0, now());
+      Math.max(1, Number(input.durationMinutes)), input.completed ? 1 : 0,
+      input.blockType === 'revision' ? 'revision' : 'study', now());
   return findOwnedScheduleBlock(userId, id);
 }
 
@@ -223,6 +233,7 @@ export type ScheduleBlockInput = {
   startTime: string;
   durationMinutes: number;
   completed?: boolean;
+  blockType?: 'study' | 'revision';
 };
 
 function blocksOverlap(existing: ScheduleBlockInput, candidate: ScheduleBlockInput): boolean {
@@ -242,6 +253,9 @@ export function assertScheduleBlocksAreValid(
   for (const candidate of candidates) {
     const validationError = validateBlockInput(candidate);
     if (validationError) throw new HttpError(400, validationError);
+    if (candidate.blockType !== undefined && candidate.blockType !== 'study' && candidate.blockType !== 'revision') {
+      throw new HttpError(400, 'blockType must be study or revision.');
+    }
     if (!findOwnedTopic(userId, candidate.topicId)) {
       throw new HttpError(404, `Topic ${candidate.topicId} does not exist or is not owned by this user.`);
     }
@@ -1159,6 +1173,238 @@ export function getDashboardAnalytics(userId: string, currentTime = new Date()):
     topics: [...topics.values()].filter((topic) => topic.plannedMinutes || topic.actualSeconds || topic.completedSessions || topic.stoppedSessions)
       .sort((left, right) => right.actualSeconds - left.actualSeconds || right.plannedMinutes - left.plannedMinutes || left.topicName.localeCompare(right.topicName)),
   };
+}
+
+export type MemoryStatus = 'stable' | 'fading' | 'due';
+
+export type MemoryTopicState = {
+  topicId: string;
+  topicName: string;
+  courseId: string;
+  courseName: string;
+  lastStudiedAt: string;
+  qualifyingSessionCount: number;
+  totalActualStudySeconds: number;
+  memoryStrengthDays: number;
+  predictedRetention: number;
+  status: MemoryStatus;
+  dueAt: string;
+  nextRevisionAt: string;
+  daysUntilDue: number;
+  priority: number;
+  weightage: number;
+  hasWeightage: boolean;
+};
+
+export type CourseMemorySummary = {
+  courseId: string;
+  courseName: string;
+  studiedTopicCount: number;
+  predictedRetention: number;
+  stableCount: number;
+  fadingCount: number;
+  dueCount: number;
+};
+
+export type MemoryAtlas = {
+  forecastDays: number;
+  evaluatedAt: string;
+  topics: MemoryTopicState[];
+  summary: {
+    studiedTopicCount: number;
+    stableCount: number;
+    fadingCount: number;
+    dueCount: number;
+    unexploredCount: number;
+  };
+  courses: CourseMemorySummary[];
+};
+
+export type RefreshPlanItem = {
+  topicId: string;
+  topicName: string;
+  courseName: string;
+  predictedRetention: number;
+  dueAt: string;
+  date: string;
+  startTime: string;
+  durationMinutes: number;
+  reason: string;
+};
+
+export type RefreshPlan = {
+  items: RefreshPlanItem[];
+  totalMinutes: number;
+  message?: string;
+};
+
+function retentionStatus(retention: number): MemoryStatus {
+  if (retention >= MEMORY_STABLE_THRESHOLD) return 'stable';
+  if (retention >= MEMORY_DUE_THRESHOLD) return 'fading';
+  return 'due';
+}
+
+function memoryStrengthDays(qualifyingSessionCount: number): number {
+  const previousSuccessfulExposures = Math.max(0, qualifyingSessionCount - 1);
+  return DEFAULT_MEMORY_STRENGTH_DAYS * (
+    1 + MEMORY_STRENGTH_EXPOSURE_BONUS * Math.min(previousSuccessfulExposures, MEMORY_STRENGTH_EXPOSURE_CAP)
+  );
+}
+
+// This is a scheduling estimate based on completed LazyLift sessions, not a measure of recall.
+function predictedRetentionAt(lastStudiedAt: string, strengthDays: number, evaluatedAt: Date): number {
+  const elapsedDays = Math.max(0, (evaluatedAt.getTime() - Date.parse(lastStudiedAt)) / 86_400_000);
+  return Math.max(0, Math.min(1, Math.exp(-elapsedDays / strengthDays)));
+}
+
+export function memoryAtlas(userId: string, forecastDays = 0, currentTime = new Date()): MemoryAtlas {
+  const safeForecastDays = Math.max(0, Math.min(14, Math.floor(Number(forecastDays) || 0)));
+  const evaluatedAt = new Date(currentTime.getTime() + safeForecastDays * 86_400_000);
+  const rows = getDb().prepare(`
+    SELECT t.id AS topicId, t.name AS topicName, t.course_id AS courseId, c.name AS courseName,
+      t.priority, t.weightage, CAST(t.has_weightage AS INTEGER) AS hasWeightage,
+      COUNT(s.id) AS qualifyingSessionCount,
+      SUM(s.actual_duration_seconds) AS totalActualStudySeconds,
+      MAX(COALESCE(s.ended_at, s.started_at)) AS lastStudiedAt
+    FROM topics t
+    JOIN courses c ON c.id = t.course_id
+    JOIN schedule_blocks b ON b.topic_id = t.id AND b.user_id = t.user_id
+    JOIN study_sessions s ON s.schedule_block_id = b.id AND s.user_id = b.user_id
+    WHERE t.user_id = ? AND s.status = 'completed' AND s.actual_duration_seconds >= ?
+    GROUP BY t.id, t.name, t.course_id, c.name, t.priority, t.weightage, t.has_weightage
+  `).all(userId, MIN_MEANINGFUL_STUDY_SECONDS) as any[];
+
+  const topics = rows.map((row) => {
+    const qualifyingSessionCount = Number(row.qualifyingSessionCount);
+    const strengthDays = memoryStrengthDays(qualifyingSessionCount);
+    const lastStudiedAt = String(row.lastStudiedAt);
+    const predictedRetention = predictedRetentionAt(lastStudiedAt, strengthDays, evaluatedAt);
+    const dueAt = new Date(Date.parse(lastStudiedAt) + strengthDays * Math.log(1 / MEMORY_DUE_THRESHOLD) * 86_400_000);
+    return {
+      topicId: String(row.topicId), topicName: String(row.topicName), courseId: String(row.courseId), courseName: String(row.courseName),
+      lastStudiedAt, qualifyingSessionCount, totalActualStudySeconds: Number(row.totalActualStudySeconds || 0),
+      memoryStrengthDays: Number(strengthDays.toFixed(2)), predictedRetention, status: retentionStatus(predictedRetention),
+      dueAt: dueAt.toISOString(), nextRevisionAt: dueAt.toISOString(),
+      daysUntilDue: Number(((dueAt.getTime() - evaluatedAt.getTime()) / 86_400_000).toFixed(2)),
+      priority: Number(row.priority), weightage: Number(row.weightage), hasWeightage: Boolean(row.hasWeightage),
+    } satisfies MemoryTopicState;
+  }).sort((left, right) => left.daysUntilDue - right.daysUntilDue || right.priority - left.priority || left.topicName.localeCompare(right.topicName));
+
+  const allTopics = Number((getDb().prepare('SELECT COUNT(*) AS count FROM topics WHERE user_id = ?').get(userId) as any)?.count || 0);
+  const summary = {
+    studiedTopicCount: topics.length,
+    stableCount: topics.filter((topic) => topic.status === 'stable').length,
+    fadingCount: topics.filter((topic) => topic.status === 'fading').length,
+    dueCount: topics.filter((topic) => topic.status === 'due').length,
+    unexploredCount: Math.max(0, allTopics - topics.length),
+  };
+  const byCourse = new Map<string, CourseMemorySummary>();
+  for (const topic of topics) {
+    const course = byCourse.get(topic.courseId) || {
+      courseId: topic.courseId, courseName: topic.courseName, studiedTopicCount: 0, predictedRetention: 0,
+      stableCount: 0, fadingCount: 0, dueCount: 0,
+    };
+    course.studiedTopicCount += 1;
+    course.predictedRetention += topic.predictedRetention;
+    if (topic.status === 'stable') course.stableCount += 1;
+    if (topic.status === 'fading') course.fadingCount += 1;
+    if (topic.status === 'due') course.dueCount += 1;
+    byCourse.set(topic.courseId, course);
+  }
+  const courses = [...byCourse.values()].map((course) => ({
+    ...course,
+    predictedRetention: course.studiedTopicCount ? course.predictedRetention / course.studiedTopicCount : 0,
+  })).sort((left, right) => left.courseName.localeCompare(right.courseName));
+  return { forecastDays: safeForecastDays, evaluatedAt: evaluatedAt.toISOString(), topics, summary, courses };
+}
+
+function refreshDuration(topic: MemoryTopicState): number {
+  return topic.status === 'due' && (topic.priority >= 7 || topic.weightage >= 20) ? 20 : topic.status === 'due' ? 15 : 10;
+}
+
+function refreshReason(topic: MemoryTopicState): string {
+  if (topic.status === 'due') return 'Revision due based on the current memory estimate.';
+  return 'Approaching the predicted revision threshold.';
+}
+
+function hasPendingRevision(userId: string, topicId: string, currentTime: Date): boolean {
+  return scheduleBlockRows(userId).some((block) => block.topicId === topicId && block.blockType === 'revision' && !block.completed
+    && Date.parse(`${block.date}T${block.startTime}:00.000Z`) >= currentTime.getTime());
+}
+
+function findRefreshSlot(userId: string, topicId: string, durationMinutes: number, proposed: ScheduleBlockInput[], currentTime: Date): ScheduleBlockInput | null {
+  const today = currentTime.toISOString().slice(0, 10);
+  const currentMinutes = currentTime.getUTCHours() * 60 + currentTime.getUTCMinutes();
+  for (let dayOffset = 0; dayOffset < 14; dayOffset += 1) {
+    const date = dateAfter(today, dayOffset);
+    for (let start = 8 * 60; start + durationMinutes <= 20 * 60; start += 30) {
+      if (dayOffset === 0 && start <= currentMinutes) continue;
+      const candidate: ScheduleBlockInput = {
+        topicId, title: 'Memory refresh', date, startTime: timeFromMinutes(start), durationMinutes, completed: false, blockType: 'revision',
+      };
+      try {
+        assertScheduleBlocksAreValid(userId, [...proposed, candidate]);
+        return candidate;
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 409) continue;
+        throw error;
+      }
+    }
+  }
+  return null;
+}
+
+export function buildMemoryRefreshPlan(userId: string, topicId?: string, currentTime = new Date()): RefreshPlan {
+  const atlas = memoryAtlas(userId, 0, currentTime);
+  const candidates = atlas.topics
+    .filter((topic) => !topicId || topic.topicId === topicId)
+    .filter((topic) => topic.status === 'due' || topic.daysUntilDue <= 7)
+    .filter((topic) => !hasPendingRevision(userId, topic.topicId, currentTime))
+    .sort((left, right) => {
+      const statusRank = (status: MemoryStatus) => status === 'due' ? 0 : status === 'fading' ? 1 : 2;
+      return statusRank(left.status) - statusRank(right.status)
+        || left.daysUntilDue - right.daysUntilDue
+        || right.priority - left.priority
+        || right.weightage - left.weightage;
+    }).slice(0, topicId ? 1 : 6);
+  if (topicId && candidates.length === 0) {
+    if (!atlas.topics.some((topic) => topic.topicId === topicId)) throw new HttpError(404, 'No qualifying completed study evidence exists for this topic.');
+    return { items: [], totalMinutes: 0, message: 'This topic does not currently need a refresh, or already has one scheduled.' };
+  }
+  const proposed: ScheduleBlockInput[] = [];
+  const items: RefreshPlanItem[] = [];
+  for (const topic of candidates) {
+    const durationMinutes = refreshDuration(topic);
+    const slot = findRefreshSlot(userId, topic.topicId, durationMinutes, proposed, currentTime);
+    if (!slot) continue;
+    proposed.push(slot);
+    items.push({ topicId: topic.topicId, topicName: topic.topicName, courseName: topic.courseName, predictedRetention: topic.predictedRetention,
+      dueAt: topic.dueAt, date: slot.date, startTime: slot.startTime, durationMinutes, reason: refreshReason(topic) });
+  }
+  return {
+    items,
+    totalMinutes: items.reduce((total, item) => total + item.durationMinutes, 0),
+    message: items.length ? undefined : 'LazyLift could not safely place a refresh session in the next 14 days.',
+  };
+}
+
+export function acceptMemoryRefreshPlan(userId: string, submittedItems: RefreshPlanItem[], topicId?: string, currentTime = new Date()) {
+  if (!Array.isArray(submittedItems) || submittedItems.length === 0) throw new HttpError(400, 'A non-empty refresh plan is required.');
+  const expected = buildMemoryRefreshPlan(userId, topicId, currentTime);
+  const matches = expected.items.length === submittedItems.length && expected.items.every((item, index) => {
+    const submitted = submittedItems[index];
+    return item.topicId === submitted?.topicId && item.date === submitted?.date && item.startTime === submitted?.startTime
+      && item.durationMinutes === Number(submitted?.durationMinutes);
+  });
+  if (!matches) throw new HttpError(409, 'This refresh plan is no longer current. Build a new plan before adding it to your calendar.');
+  const blocks = expected.items.map((item) => ({
+    topicId: item.topicId, title: `Memory refresh: ${item.topicName}`, date: item.date, startTime: item.startTime,
+    durationMinutes: item.durationMinutes, completed: false, blockType: 'revision' as const,
+  }));
+  return saveScheduleBlocks(userId, blocks, {
+    field: 'memory_refresh_plan', oldValue: null,
+    newValue: JSON.stringify({ source: 'memory-atlas', topicIds: expected.items.map((item) => item.topicId) }),
+  });
 }
 
 export type AdaptiveProposal = {

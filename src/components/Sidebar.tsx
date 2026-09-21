@@ -142,14 +142,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span>Planner &amp; Calendar</span>
           </button>
 
-          {(['calendar', 'insights', 'history'] as const).map((tab) => (
+          {(['calendar', 'memory', 'insights', 'history'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
               className={`w-full flex items-center space-x-3 px-3 py-2 text-[11px] font-bold uppercase tracking-wider transition-colors text-left ${activeTab === tab ? 'bg-black text-white' : 'text-black/70 hover:bg-black/5 hover:text-black'}`}
             >
               <Calendar className="w-3.5 h-3.5" />
-              <span>{tab}</span>
+              <span>{tab === 'memory' ? 'Memory Atlas' : tab}</span>
             </button>
           ))}
 

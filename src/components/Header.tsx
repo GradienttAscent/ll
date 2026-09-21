@@ -70,6 +70,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenU
             </button>
             <button onClick={() => setActiveTab('calendar')} className={`py-1 transition-colors border-b ${activeTab === 'calendar' ? 'text-black border-black font-bold' : 'border-transparent text-black/40 hover:text-black'}`}>Calendar</button>
             <button onClick={() => setActiveTab('insights')} className={`py-1 transition-colors border-b ${activeTab === 'insights' ? 'text-black border-black font-bold' : 'border-transparent text-black/40 hover:text-black'}`}>Insights</button>
+            <button onClick={() => setActiveTab('memory')} className={`py-1 transition-colors border-b ${activeTab === 'memory' ? 'text-black border-black font-bold' : 'border-transparent text-black/40 hover:text-black'}`}>Memory Atlas</button>
             <button onClick={() => setActiveTab('history')} className={`py-1 transition-colors border-b ${activeTab === 'history' ? 'text-black border-black font-bold' : 'border-transparent text-black/40 hover:text-black'}`}>History</button>
             <button
               onClick={() => setActiveTab('practice')}

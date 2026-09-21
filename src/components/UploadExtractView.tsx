@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { PastPaper, ExtractedTopic, QuestionItem } from '../types';
+import { ActiveTab, PastPaper, ExtractedTopic, QuestionItem } from '../types';
 import { FileUp, Sparkles, FileText, CheckCircle2, BarChart3, ArrowRight, BookOpen, Loader2 } from 'lucide-react';
 
 interface UploadExtractViewProps {
@@ -7,7 +7,7 @@ interface UploadExtractViewProps {
   topics: ExtractedTopic[];
   questions: QuestionItem[];
   onAcademicUpdated: () => Promise<void>;
-  setActiveTab: (tab: string) => void;
+  setActiveTab: (tab: ActiveTab) => void;
 }
 
 export const UploadExtractView: React.FC<UploadExtractViewProps> = ({

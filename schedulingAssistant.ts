@@ -108,9 +108,9 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
     const intent: SchedulingAssistantIntent = {
       type: 'move_topic',
       topicQuery: topicText(moveTopic[1]),
-      targetDate: target.date,
-      period: target.period,
     };
+    if (target.date) intent.targetDate = target.date;
+    if (target.period) intent.period = target.period;
     if (targetTime) {
       intent.targetTime = targetTime;
       intent.targetTimeMode = /\bafter\b/.test(moveTopic[2]) ? 'after' : 'exact';

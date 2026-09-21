@@ -81,10 +81,11 @@ describe('persistence across backend restart', () => {
       assert.strictEqual(topics.length, 1);
       assert.strictEqual(topics[0].name, 'Graphs');
 
-      const blocks = (await resumed.request('/api/schedule-blocks')).json.scheduleBlocks;
-      assert.strictEqual(blocks.length, 1);
-      assert.strictEqual(blocks[0].title, 'Survives Restart');
-      assert.strictEqual(blocks[0].startTime, '09:00');
+       const blocks = (await resumed.request('/api/schedule-blocks')).json.scheduleBlocks;
+       assert.strictEqual(blocks.length, 1);
+       assert.strictEqual(blocks[0].title, 'Survives Restart');
+       assert.strictEqual(blocks[0].startTime, '09:00');
+       assert.strictEqual(blocks[0].blockType, 'study');
 
       const sessions = (await resumed.request('/api/study-sessions')).json.studySessions;
       assert.strictEqual(sessions[0].status, 'completed');

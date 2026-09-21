@@ -52,6 +52,56 @@
   animation: pulse-soft 2s ease-in-out infinite;
 }
 
+/* Memory Atlas forgetting landscape */
+@keyframes ma-draw {
+  from { stroke-dashoffset: 1; }
+  to   { stroke-dashoffset: 0; }
+}
+
+@keyframes ma-rise {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ma-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.ma-curve {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: ma-draw 1s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.ma-rise {
+  animation: ma-rise 0.5s ease-out both;
+}
+
+.ma-fade {
+  animation: ma-fade 0.7s ease-out both;
+}
+
+.ma-transition {
+  transition: all 300ms ease;
+}
+
+.ma-index-row {
+  transition: background-color 200ms ease, opacity 200ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ma-curve, .ma-rise, .ma-fade {
+    animation: none !important;
+  }
+  .ma-curve {
+    stroke-dashoffset: 0;
+  }
+  .ma-transition, .ma-index-row {
+    transition: none !important;
+  }
+}
+
 /* Keyboard Accessibility Focus Rings */
 *:focus-visible {
   outline: 2px solid #6D28D9;
