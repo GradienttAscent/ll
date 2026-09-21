@@ -16,6 +16,7 @@ import { LMSIntegrationView } from './components/LMSIntegrationView';
 import { UploadModal } from './components/UploadModal';
 import { SessionFeedbackCard } from './components/SessionFeedbackCard';
 import { AuthScreen } from './components/AuthScreen';
+import { MemoryAtlasView } from './components/MemoryAtlasView';
 
 export default function App() {
   const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
@@ -492,6 +493,8 @@ export default function App() {
 
           {activeTab === 'history' && <HistoryView />}
 
+          {activeTab === 'memory' && <MemoryAtlasView onCalendarChanged={() => setScheduleRefreshKey((key) => key + 1)} />}
+
           {activeTab === 'session' && (
             <div className="max-w-3xl mx-auto py-16 px-6 text-center space-y-4">
               <h1 className="font-serif text-4xl italic">{activeStudyBlock ? activeStudyBlock.title : 'No Active Study Session'}</h1>
@@ -499,13 +502,7 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'room' && (
-            <StudyRoomView
-              peers={peers}
-              messages={messages}
-              onSendMessage={handleSendMessage}
-            />
-          )}
+          {activeTab === 'room' && <StudyRoomView />}
 
           {activeTab === 'lms' && (
             <LMSIntegrationView

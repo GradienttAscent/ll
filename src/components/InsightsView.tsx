@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ScheduleBlock, AnalyticsSnapshot, AdaptiveProposal, ScheduleChange, StudyStreak } from '../types';
+import { ScheduleBlock, AnalyticsSnapshot, LegacyAdaptiveProposal, ScheduleChange, StudyStreak } from '../types';
 import { safeNumber, formatDateStr } from '../utils/formatters';
 import { Sparkles, Brain, CheckCircle2, XCircle, Clock, RefreshCw, AlertTriangle, BellOff, ShieldAlert } from 'lucide-react';
 
@@ -18,7 +18,7 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
   // Proposal state
   const [selectedBlockId, setSelectedBlockId] = useState<string>('');
   const [reason, setReason] = useState<'low_focus' | 'low_score' | 'incomplete' | 'difficulty_hard'>('incomplete');
-  const [proposal, setProposal] = useState<AdaptiveProposal | null>(null);
+  const [proposal, setProposal] = useState<LegacyAdaptiveProposal | null>(null);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 

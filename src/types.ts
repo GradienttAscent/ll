@@ -1,4 +1,4 @@
-export type ActiveTab = 'dashboard' | 'upload' | 'practice' | 'mock' | 'planner' | 'room' | 'lms' | 'calendar' | 'session' | 'insights' | 'history';
+export type ActiveTab = 'dashboard' | 'upload' | 'practice' | 'mock' | 'planner' | 'room' | 'lms' | 'calendar' | 'session' | 'insights' | 'history' | 'memory';
 
 export interface ExtractedTopic {
   id: string;
@@ -84,6 +84,7 @@ export interface ScheduleBlock {
   startTime: string;
   durationMinutes: number;
   completed: boolean;
+  blockType: 'study' | 'revision';
   createdAt: string;
 }
 
@@ -329,7 +330,7 @@ export interface StudyStreak {
 
 // --- Adaptive proposals (matches POST /api/adaptive/proposals response) ---
 
-export interface AdaptiveProposal {
+export interface LegacyAdaptiveProposal {
   sourceBlockId: string;
   reason: string;
   topicId: string;
@@ -351,6 +352,71 @@ export interface SessionFeedbackPayload {
   focus: number;
   perceivedProgress: number;
   notes?: string;
+}
+
+export type MemoryStatus = 'stable' | 'fading' | 'due';
+
+export interface MemoryTopicState {
+  topicId: string;
+  topicName: string;
+  courseId: string;
+  courseName: string;
+  lastStudiedAt: string;
+  qualifyingSessionCount: number;
+  totalActualStudySeconds: number;
+  memoryStrengthDays: number;
+  predictedRetention: number;
+  status: MemoryStatus;
+  dueAt: string;
+  nextRevisionAt: string;
+  daysUntilDue: number;
+  priority: number;
+  weightage: number;
+  hasWeightage: boolean;
+}
+
+export interface MemorySummary {
+  studiedTopicCount: number;
+  stableCount: number;
+  fadingCount: number;
+  dueCount: number;
+  unexploredCount: number;
+}
+
+export interface CourseMemorySummary {
+  courseId: string;
+  courseName: string;
+  studiedTopicCount: number;
+  predictedRetention: number;
+  stableCount: number;
+  fadingCount: number;
+  dueCount: number;
+}
+
+export interface MemoryAtlasData {
+  forecastDays: number;
+  evaluatedAt: string;
+  topics: MemoryTopicState[];
+  summary: MemorySummary;
+  courses: CourseMemorySummary[];
+}
+
+export interface RefreshPlanItem {
+  topicId: string;
+  topicName: string;
+  courseName: string;
+  predictedRetention: number;
+  dueAt: string;
+  date: string;
+  startTime: string;
+  durationMinutes: number;
+  reason: string;
+}
+
+export interface RefreshPlan {
+  items: RefreshPlanItem[];
+  totalMinutes: number;
+  message?: string;
 }
 
 // --- Active study session state (frontend-only state machine) ---

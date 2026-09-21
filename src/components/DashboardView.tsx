@@ -17,6 +17,14 @@ function formatMinutes(minutes: number): string {
   return formatDuration(minutes * 60);
 }
 
+async function readApiJson(response: Response) {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('The API returned HTML instead of data. Start the app with "npm run dev" so API requests reach the server.');
+  }
+  return response.json();
+}
+
 export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, refreshKey }) => {
   const [analytics, setAnalytics] = useState<DashboardAnalytics | null>(null);
   const [streak, setStreak] = useState<StudyStreak | null>(null);
@@ -31,7 +39,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, refr
           fetch('/api/analytics/dashboard'),
           fetch(`/api/study-streak?tzOffsetMinutes=${new Date().getTimezoneOffset()}`),
         ]);
-        const [dashData, streakData] = await Promise.all([dashRes.json(), streakRes.json()]);
+        const [dashData, streakData] = await Promise.all([readApiJson(dashRes), readApiJson(streakRes)]);
         if (!dashRes.ok) throw new Error(dashData.error || 'Unable to load dashboard analytics.');
         if (!cancelled) {
           setAnalytics(dashData.analytics);
