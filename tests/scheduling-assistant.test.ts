@@ -16,6 +16,36 @@ describe('scheduling assistant parser', () => {
     assert.deepStrictEqual(parseSchedulingAssistantIntent('I cannot study Friday evening', currentTime), {
       type: 'unavailable_period', sourceDate: '2026-09-18', period: 'evening',
     });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Move all my DSA study sessions to before 9 AM on weekdays only', currentTime), {
+      type: 'move_topic', topicQuery: 'all dsa study sessions', beforeTime: '09:00', excludedWeekdays: [0, 6], allMatches: true,
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Move OS to before noon', currentTime), {
+      type: 'move_topic', topicQuery: 'os', beforeTime: '12:00',
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Cancel my DBMS sessions tomorrow', currentTime), {
+      type: 'cancel_topic', topicQuery: 'dbms', sourceDate: '2026-09-15',
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Swap DBMS with OS', currentTime), {
+      type: 'swap_sessions', topicQuery: 'dbms', otherTopicQuery: 'os',
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Move all my sessions from tomorrow to Friday', currentTime), {
+      type: 'reschedule_day', sourceDate: '2026-09-15', shiftDays: 3,
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('What do I have next week?', currentTime), {
+      type: 'query_range', sourceDate: '2026-09-21', rangeEndDate: '2026-09-27',
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('What do I have in the next 3 days?', currentTime), {
+      type: 'query_range', sourceDate: '2026-09-14', rangeEndDate: '2026-09-17',
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('I cannot study Monday and Wednesday afternoons', currentTime), {
+      type: 'unavailable_period', sourceDate: '2026-09-14', period: 'afternoon', excludedWeekdays: [1, 3],
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Move all my DBMS sessions keeping 90 minutes per day', currentTime), {
+      type: 'move_topic', topicQuery: 'all dbms sessions', maxDailyMinutes: 90, allMatches: true,
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Move DBMS to after 9 AM tomorrow', currentTime), {
+      type: 'move_topic', topicQuery: 'dbms', targetDate: '2026-09-15', targetTime: '09:00', targetTimeMode: 'after',
+    });
     assert.deepStrictEqual(parseSchedulingAssistantIntent('Move DBMS to tomorrow afternoon', currentTime), {
       type: 'move_topic', topicQuery: 'dbms', targetDate: '2026-09-15', period: 'afternoon',
     });
@@ -195,6 +225,75 @@ describe('scheduling assistant API', () => {
     assert.strictEqual(timeMove.status, 200);
     assert.strictEqual(timeMove.json.preview.changes[0].proposed.startTime, '21:00');
     assert.deepStrictEqual(await blocks(), before);
+  });
+
+  it('cancels, swaps, shifts a day, and answers range queries end to end', async () => {
+    const d0 = dateAfterToday(10);
+    const d3 = dateAfterToday(13);
+    const topics = await client.request('/api/topics/bulk', {
+      method: 'POST', body: { topics: [{ name: 'Alpha' }, { name: 'Beta' }, { name: 'Meetings' }] },
+    });
+    const topicIdFor = (name: string) => topics.json.topics.find((topic: any) => topic.name === name).id;
+    const created = await client.request('/api/schedule-blocks/bulk', {
+      method: 'POST', body: {
+        scheduleBlocks: [
+          { topicId: topicIdFor('Alpha'), title: 'Alpha morning', date: d0, startTime: '09:00', durationMinutes: 60 },
+          { topicId: topicIdFor('Alpha'), title: 'Alpha second', date: d0, startTime: '12:00', durationMinutes: 60 },
+          { topicId: topicIdFor('Beta'), title: 'Beta slot', date: d0, startTime: '15:00', durationMinutes: 60 },
+          { topicId: topicIdFor('Meetings'), title: 'Meetings session', date: d0, startTime: '06:00', durationMinutes: 60 },
+          { topicId: topicIdFor('Alpha'), title: 'Alpha next day', date: d3, startTime: '10:00', durationMinutes: 60 },
+        ]
+      },
+    });
+    assert.strictEqual(created.status, 201, `bulk create failed: ${JSON.stringify(created.json)}`);
+
+    const cancel = await client.request('/api/scheduling-assistant/preview', {
+      method: 'POST', body: { message: `Cancel my Meeting sessions in 10 days` },
+    });
+    assert.strictEqual(cancel.status, 200);
+    assert.strictEqual(cancel.json.preview.changes.length, 1);
+    assert.strictEqual(cancel.json.preview.changes[0].operation, 'cancel');
+    assert.strictEqual(cancel.json.preview.changes[0].topicName, 'Meetings');
+    const cancelledBlockId = cancel.json.preview.changes[0].blockId;
+    const cancelConfirm = await client.request('/api/scheduling-assistant/confirm', {
+      method: 'POST', body: { message: `Cancel my Meeting sessions in 10 days`, changes: cancel.json.preview.changes },
+    });
+    assert.strictEqual(cancelConfirm.status, 200);
+    assert.strictEqual(cancelConfirm.json.scheduleBlocks.find((block: any) => block.id === cancelledBlockId), undefined);
+
+    const swap = await client.request('/api/scheduling-assistant/preview', {
+      method: 'POST', body: { message: 'Swap Alpha with Beta' },
+    });
+    assert.strictEqual(swap.status, 200);
+    assert.strictEqual(swap.json.preview.changes.length, 2);
+    assert.ok(swap.json.preview.changes.every((change: any) => change.operation === 'swap'));
+    const swapConfirm = await client.request('/api/scheduling-assistant/confirm', {
+      method: 'POST', body: { message: 'Swap Alpha with Beta', changes: swap.json.preview.changes },
+    });
+    assert.strictEqual(swapConfirm.status, 200);
+    const alphaBlocksAfter = swapConfirm.json.scheduleBlocks.filter((block: any) => block.topicName === 'Alpha');
+    const betaBlockAfter = swapConfirm.json.scheduleBlocks.find((block: any) => block.topicName === 'Beta');
+    assert.ok(alphaBlocksAfter.some((block: any) => block.startTime === '15:00'));
+    assert.strictEqual(betaBlockAfter.startTime, '09:00');
+
+    const dayShift = await client.request('/api/scheduling-assistant/preview', {
+      method: 'POST', body: { message: 'Move all my sessions from in 10 days to in 11 days' },
+    });
+    assert.strictEqual(dayShift.status, 200);
+    assert.ok(dayShift.json.preview.changes.length >= 3);
+    assert.ok(dayShift.json.preview.changes.every((change: any) => change.operation === 'shift'));
+    const dayShiftConfirm = await client.request('/api/scheduling-assistant/confirm', {
+      method: 'POST', body: { message: 'Move all my sessions from in 10 days to in 11 days', changes: dayShift.json.preview.changes },
+    });
+    assert.strictEqual(dayShiftConfirm.status, 200);
+    assert.strictEqual(dayShiftConfirm.json.scheduleBlocks.filter((block: any) => block.date === d0 && !block.completed).length, 0);
+
+    const range = await client.request('/api/scheduling-assistant/preview', {
+      method: 'POST', body: { message: 'What do I have in the next 30 days?' },
+    });
+    assert.strictEqual(range.status, 200);
+    assert.strictEqual(range.json.preview.changes.length, 0);
+    assert.match(range.json.preview.assistantMessage, /\d+ sessions? totaling \d+ minutes/);
   });
 
   it('rejects a stale multi-block confirmation without applying a partial update', async () => {

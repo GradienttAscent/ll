@@ -118,7 +118,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
   const [isApplyingProposal, setIsApplyingProposal] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [chatInput, setChatInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([{ id: 1, role: 'assistant', text: 'Ask about your schedule, or ask me to move or shorten an unfinished future session.' }]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([{ id: 1, role: 'assistant', text: 'Ask about your schedule (\"What do I have next week?\"), or ask me to move, shorten, swap, cancel, or shift a whole day of future sessions. You can also add constraints like \"only on weekdays\" or \"keeping 90 minutes per day\".' }]);
   const [activeChatPreview, setActiveChatPreview] = useState<ActiveChatPreview | null>(null);
   const [isChatLoading, setIsChatLoading] = useState(false);
 

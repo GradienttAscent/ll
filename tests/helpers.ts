@@ -78,6 +78,9 @@ export async function createTestServer(): Promise<TestServer> {
   const dbDir = mkdtempSync(join(tmpdir(), 'lazylift-test-'));
   process.env.LAZYLIFT_DATA_DIR = dbDir;
   process.env.APP_PORT = '0';
+  // Keep the test suite hermetic: never reach a real Gemini API even if a .env key is present.
+  process.env.GEMINI_API_KEY = 'MY_GEMINI_API_KEY';
+  process.env.GEMINI_MODEL = 'test-model';
   const { app } = await createApp();
   const server: Server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));

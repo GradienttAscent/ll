@@ -53,6 +53,45 @@ export interface AnswerEvaluation {
   modelAnswerSnippet: string;
 }
 
+export interface MockExamQuestionResult {
+  id: string;
+  position: number;
+  questionText: string;
+  topicName: string;
+  answer: string;
+  score: number;
+  maxMarks: number;
+  strengths: string[];
+  improvements: string[];
+  feedback: string;
+  createdAt: string;
+}
+
+export interface MockExamTopicScore {
+  topic: string;
+  score: number;
+  maxMarks: number;
+  mastery: string;
+}
+
+export interface MockExamRecord {
+  id: string;
+  examName: string;
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  totalScore: number;
+  totalMax: number;
+  percentage: number;
+  grade: string;
+  advice: string | null;
+  questionCount: number;
+  createdAt: string;
+  perQuestion: MockExamQuestionResult[];
+  topicBreakdown: MockExamTopicScore[];
+  answeredCount: number;
+}
+
 export interface StudySessionItem {
   id: string;
   day: number;
@@ -292,6 +331,7 @@ export interface SchedulingAssistantChange {
   topicName: string;
   original: Pick<ScheduleBlock, 'title' | 'date' | 'startTime' | 'durationMinutes'>;
   proposed: Pick<ScheduleBlock, 'date' | 'startTime' | 'durationMinutes'>;
+  operation?: 'move' | 'shorten' | 'cancel' | 'swap' | 'shift';
 }
 
 export interface SchedulingAssistantPreview {
