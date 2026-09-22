@@ -1,0 +1,6 @@
+{
+  "name": "LazyLift",
+  "description": "AI-powered exam preparation platform with syllabus analysis, past paper extraction, study planner, mock exams, LMS sync, and collaborative study rooms.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
