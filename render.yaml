@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: lazylift-backend
+    runtime: node
+    repo: https://github.com/GradienttAscent/ll
+    branch: main
+    autoDeploy: true
+    plan: free
+    installCommand: npm install
+    buildCommand: npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LAZYLIFT_DATA_DIR
+        value: /tmp/lazylift-data
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: APP_URL
+        sync: false
