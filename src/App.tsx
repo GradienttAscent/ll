@@ -17,8 +17,11 @@ import { UploadModal } from './components/UploadModal';
 import { SessionFeedbackCard } from './components/SessionFeedbackCard';
 import { AuthScreen } from './components/AuthScreen';
 import { MemoryAtlasView } from './components/MemoryAtlasView';
+import { SplashScreen } from './components/SplashScreen';
+import { FocusModeModal, FocusModeConfig } from './components/FocusModeModal';
 
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
   const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
   const [user, setUser] = useState<UserAccount | null>(null);
   const [authMessage, setAuthMessage] = useState('');
@@ -38,6 +41,8 @@ export default function App() {
   const [adaptiveMessage, setAdaptiveMessage] = useState('');
   const [sessionMessage, setSessionMessage] = useState('');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
+  const [isFocusModalOpen, setIsFocusModalOpen] = useState<boolean>(false);
+  const [focusConfig, setFocusConfig] = useState<FocusModeConfig | null>(null);
 
   // App data state
   const [papers, setPapers] = useState<PastPaper[]>([]);
@@ -407,15 +412,21 @@ export default function App() {
   };
 
   if (authState === 'checking') {
-    return <main className="min-h-screen bg-[#FDFDFC] text-[#1A1A1A] flex items-center justify-center text-xs uppercase tracking-[0.2em] font-bold">Restoring your workspace...</main>;
+    return <SplashScreen onComplete={() => setShowSplash(false)} />;
   }
 
   if (authState === 'unauthenticated' || !user) {
-    return <AuthScreen initialMessage={authMessage} onAuthenticated={handleAuthenticated} />;
+    return (
+      <>
+        {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
+        <AuthScreen initialMessage={authMessage} onAuthenticated={handleAuthenticated} />
+      </>
+    );
   }
 
   return (
-    <div key={user.id} className="min-h-screen bg-[#FDFDFC] text-[#1A1A1A] flex flex-col font-sans selection:bg-black selection:text-white">
+    <div key={user.id} className="min-h-screen bg-[#FAF8FC] text-[#1C1B1F] flex flex-col font-sans selection:bg-[#5E35B1] selection:text-white">
+      {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
       
       {/* Top Header */}
       <Header
@@ -424,6 +435,11 @@ export default function App() {
         onOpenUpload={() => setIsUploadModalOpen(true)}
         user={user}
         onLogout={handleLogout}
+        onOpenFocusMode={() => setIsFocusModalOpen(true)}
+        activeFocusShieldCount={focusConfig ? focusConfig.blockedDistractions.length : 0}
+        scheduleBlocks={scheduleBlocks}
+        adaptiveProposal={adaptiveProposal}
+        activeStudyBlock={activeStudyBlock}
       />
 
       <div className="flex-1 flex max-w-[1600px] w-full mx-auto">
@@ -440,14 +456,19 @@ export default function App() {
           onCompleteStudy={() => void completeStudy()}
           onStopStudy={() => void stopStudy()}
           sessionMessage={sessionMessage}
+          onOpenFocusMode={() => setIsFocusModalOpen(true)}
+          activeFocusShieldCount={focusConfig ? focusConfig.blockedDistractions.length : 0}
         />
 
-        {/* Main Sanctuary Body View */}
+        {/* Main Workspace Body View */}
         <main className="flex-1 bg-[#FDFDFC] min-h-[calc(100vh-61px)] pb-12">
           {activeTab === 'dashboard' && (
             <DashboardView
               setActiveTab={setActiveTab}
               refreshKey={scheduleRefreshKey}
+              user={user}
+              onStartStudy={startStudy}
+              onOpenFocusMode={() => setIsFocusModalOpen(true)}
             />
           )}
 
@@ -519,6 +540,20 @@ export default function App() {
         onClose={() => setIsUploadModalOpen(false)}
         onAcademicUpdated={refreshAcademicData}
       />
+
+      {/* Focus Mode & Distraction Shield Modal */}
+      <FocusModeModal
+        isOpen={isFocusModalOpen}
+        onClose={() => setIsFocusModalOpen(false)}
+        taskTitle={activeStudyBlock ? activeStudyBlock.title : undefined}
+        initialMinutes={Math.max(5, Math.floor(focusTimerSeconds / 60)) || 50}
+        onStartFocus={(cfg) => {
+          setFocusConfig(cfg);
+          setFocusTimerSeconds(cfg.durationMinutes * 60);
+          setSessionMessage(`Focus Mode configured: ${cfg.blockedDistractions.length} distractions guarded for ${cfg.durationMinutes} min.`);
+        }}
+      />
+
       {feedbackSession && <SessionFeedbackCard key={feedbackSession.id} sessionId={feedbackSession.id} title={feedbackSession.title} onSave={saveSessionFeedback} />}
 
     </div>

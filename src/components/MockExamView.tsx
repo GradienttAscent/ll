@@ -115,10 +115,12 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
   if (questions.length === 0) {
     return (
       <div className="max-w-5xl mx-auto py-10 px-6 sm:px-8">
-        <div className="border border-black bg-[#F8F7F2] p-8">
-          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/50">Mock Exam</div>
-          <h1 className="font-serif text-4xl italic mt-2">No mock exam questions available yet</h1>
-          <p className="text-xs text-black/60 mt-3">Analyze previous papers before starting a mock exam.</p>
+        <div className="rounded-3xl border border-[#EDE7F3] bg-white p-8 sm:p-12 shadow-xs text-center">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[9px] uppercase tracking-[0.2em] font-bold text-[#461599] mb-3">
+            Mock Exam
+          </div>
+          <h1 className="font-serif text-4xl italic text-[#1C1B1F]">No mock exam questions available yet</h1>
+          <p className="text-xs text-[#7B7484] mt-3">Analyze previous papers in Upload &amp; Extract before starting a mock exam.</p>
         </div>
       </div>
     );
@@ -128,51 +130,51 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
   const answeredCount = Object.values(answers).filter((answer) => Boolean((answer as string).trim())).length;
 
   return (
-    <div className="max-w-5xl mx-auto py-10 px-6 sm:px-8 space-y-10 animate-fade-in">
+    <div className="max-w-5xl mx-auto py-10 px-6 sm:px-8 space-y-10 animate-fade-in pb-16">
 
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 border-b border-black pb-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 border-b border-[#EDE7F3] pb-8">
         <div>
-          <div className="inline-flex items-center space-x-2 border border-black px-3 py-1 text-[9px] uppercase tracking-[0.2em] font-bold text-black mb-2">
-            <Layers className="w-3.5 h-3.5" />
+          <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[9px] uppercase tracking-[0.2em] font-bold text-[#461599] mb-3">
+            <Layers className="w-3.5 h-3.5 text-[#5E35B1]" />
             <span>Gemini-Graded Timed Mode</span>
           </div>
-          <h1 className="font-serif text-4xl sm:text-5xl italic font-normal text-black">
+          <h1 className="font-serif text-4xl sm:text-5xl italic font-normal text-[#1C1B1F]">
             CS301 Timed Mock Examination
           </h1>
-          <p className="text-xs text-black/70 mt-2 max-w-xl font-sans">
+          <p className="text-xs text-[#7B7484] mt-2 max-w-xl font-sans">
             Simulate real exam pressure under timed conditions using extracted university past questions. Answers are graded by Gemini AI on submission.
           </p>
         </div>
 
         {examStarted && !examSubmitted && (
-          <div className="flex items-center space-x-2 bg-black text-white px-5 py-3 border border-black font-mono text-sm font-bold self-start sm:self-auto">
-            <Clock className={`w-4 h-4 text-white ${timerLow ? 'animate-pulse text-red-300' : ''}`} />
-            <span className={timerLow ? 'text-red-300' : ''}>{formatTimer(timeLeftSeconds)}</span>
+          <div className="flex items-center space-x-2.5 bg-[#461599] text-white px-5 py-3 rounded-xl border border-[#37107D] font-mono text-sm font-bold shadow-xs self-start sm:self-auto">
+            <Clock className={`w-4 h-4 ${timerLow ? 'animate-pulse text-amber-300' : 'text-[#CEB8FF]'}`} />
+            <span className={timerLow ? 'text-amber-300' : 'text-white'}>{formatTimer(timeLeftSeconds)}</span>
           </div>
         )}
       </div>
 
       {!examStarted ? (
         /* Exam Pre-Start Screen */
-        <div className="bg-[#F8F7F2] border border-black p-8 sm:p-12 text-center space-y-8 max-w-2xl mx-auto">
-          <div className="w-16 h-16 bg-black text-white border border-black flex items-center justify-center mx-auto">
+        <div className="bg-white rounded-3xl border border-[#EDE7F3] p-8 sm:p-12 text-center space-y-8 max-w-2xl mx-auto shadow-xs">
+          <div className="w-16 h-16 bg-[#EDE7F6] text-[#5E35B1] rounded-2xl flex items-center justify-center mx-auto shadow-2xs">
             <Award className="w-8 h-8" />
           </div>
 
           <div className="space-y-3">
-            <h2 className="font-serif text-3xl sm:text-4xl italic font-normal text-black">
+            <h2 className="font-serif text-3xl sm:text-4xl italic font-normal text-[#1C1B1F]">
               Ready for your Timed Mock Exam?
             </h2>
-            <p className="text-xs text-black/70 leading-relaxed font-sans max-w-md mx-auto">
+            <p className="text-xs text-[#7B7484] leading-relaxed font-sans max-w-md mx-auto">
               This mock exam consists of {questions.length} questions extracted from your analyzed papers
               (Total: {totalMax} Marks, Time Limit: {Math.round(totalDurationSeconds / 60)} Minutes).
             </p>
           </div>
 
-          <div className="bg-white border border-black p-6 text-left space-y-3 text-xs text-black font-sans">
-            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-black">Exam Instructions:</div>
-            <ul className="list-disc list-inside space-y-2 text-black/80">
+          <div className="bg-[#FAF8FC] rounded-2xl border border-[#EDE7F3] p-6 text-left space-y-3 text-xs text-[#1C1B1F] font-sans">
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5E35B1]">Exam Instructions:</div>
+            <ul className="list-disc list-inside space-y-2 text-[#55524E]">
               <li>Timer will start immediately upon clicking &ldquo;Begin Mock Exam&rdquo;.</li>
               <li>You can navigate back and forth between questions anytime.</li>
               <li>The exam auto-submits when the timer reaches 00:00.</li>
@@ -182,91 +184,91 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
 
           <button
             onClick={handleStartExam}
-            className="w-full bg-black hover:bg-white hover:text-black border border-black text-white py-4 font-bold text-[10px] uppercase tracking-[0.2em] transition-colors"
+            className="w-full bg-[#5E35B1] hover:bg-[#461599] text-white py-4 rounded-xl font-bold text-[10px] uppercase tracking-[0.2em] transition-all shadow-xs hover:shadow active:scale-98"
           >
             Begin Mock Exam Now
           </button>
         </div>
       ) : examSubmitted && examReport ? (
         /* Exam Results Report Screen */
-        <div className="bg-[#F8F7F2] border-2 border-black p-8 sm:p-10 space-y-8 animate-fade-in">
+        <div className="bg-white rounded-3xl border border-[#EDE7F3] p-8 sm:p-10 space-y-8 animate-fade-in shadow-xs">
 
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 border-b border-black pb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 border-b border-[#EDE7F3] pb-6">
             <div>
-              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">
                 Exam Results &amp; Grade Report
               </div>
-              <h2 className="font-serif text-3xl sm:text-4xl italic font-normal text-black">
+              <h2 className="font-serif text-3xl sm:text-4xl italic font-normal text-[#1C1B1F] mt-1">
                 Mock Exam Summary
               </h2>
-              <p className="text-[10px] uppercase tracking-widest text-black/50 mt-1">
+              <p className="text-[10px] uppercase tracking-widest text-[#7B7484] mt-1">
                 {examReport.answeredCount} of {questions.length} questions answered &bull; Evaluated by Gemini AI &bull; Saved to your History
               </p>
             </div>
 
-            <div className="flex items-center space-x-6 bg-white border border-black p-5">
+            <div className="flex items-center space-x-6 bg-[#FAF8FC] rounded-2xl border border-[#EDE7F3] p-5 shadow-2xs">
               <div className="text-center">
-                <span className="text-[9px] uppercase font-bold tracking-widest text-black/60 block">Score</span>
-                <span className="font-serif text-3xl italic font-normal text-black">{examReport.totalScore}/{examReport.totalMax}</span>
+                <span className="text-[9px] uppercase font-bold tracking-widest text-[#7B7484] block">Score</span>
+                <span className="font-serif text-3xl italic font-normal text-[#1C1B1F]">{examReport.totalScore}/{examReport.totalMax}</span>
               </div>
-              <div className="h-10 w-px bg-black"></div>
+              <div className="h-10 w-px bg-[#EDE7F3]"></div>
               <div className="text-center">
-                <span className="text-[9px] uppercase font-bold tracking-widest text-black/60 block">Percentage</span>
-                <span className="font-serif text-3xl italic font-normal text-black">{examReport.percentage}%</span>
+                <span className="text-[9px] uppercase font-bold tracking-widest text-[#7B7484] block">Percentage</span>
+                <span className="font-serif text-3xl italic font-normal text-[#5E35B1] font-bold">{examReport.percentage}%</span>
               </div>
-              <div className="h-10 w-px bg-black"></div>
+              <div className="h-10 w-px bg-[#EDE7F3]"></div>
               <div className="text-center">
-                <span className="text-[9px] uppercase font-bold tracking-widest text-black/60 block">Grade</span>
-                <span className="font-serif text-3xl italic font-normal text-black">{examReport.grade}</span>
+                <span className="text-[9px] uppercase font-bold tracking-widest text-[#7B7484] block">Grade</span>
+                <span className="font-serif text-3xl italic font-normal text-[#461599] font-bold">{examReport.grade}</span>
               </div>
             </div>
           </div>
 
           {/* AI Advice Box */}
-          <div className="bg-white border border-black p-6 space-y-3">
-            <div className="flex items-center space-x-2 text-xs font-bold uppercase tracking-wider text-black">
-              <Sparkles className="w-4 h-4" />
+          <div className="bg-[#FAF8FC] rounded-2xl border border-[#D8CCE8] p-6 space-y-3">
+            <div className="flex items-center space-x-2 text-xs font-bold uppercase tracking-wider text-[#461599]">
+              <Sparkles className="w-4 h-4 text-[#5E35B1]" />
               <span>Gemini AI Advice</span>
             </div>
-            <p className="text-xs text-black/80 leading-relaxed font-sans">
+            <p className="text-xs text-[#55524E] leading-relaxed font-sans">
               {examReport.advice || 'No overall feedback was generated for this exam.'}
             </p>
           </div>
 
           {/* Per-question Grading */}
           <div className="space-y-6">
-            <h3 className="font-serif text-2xl italic font-normal text-black">
+            <h3 className="font-serif text-2xl italic font-normal text-[#1C1B1F]">
               Question-by-Question Grading
             </h3>
             <div className="space-y-4">
               {examReport.perQuestion.map((item) => (
-                <div key={item.id} className="bg-white border border-black p-6 space-y-4">
-                  <div className="flex items-center justify-between gap-4 border-b border-black pb-3">
+                <div key={item.id} className="bg-white rounded-2xl border border-[#EDE7F3] p-6 space-y-4 shadow-2xs">
+                  <div className="flex items-center justify-between gap-4 border-b border-[#EDE7F3] pb-3">
                     <div>
-                      <span className="font-mono text-[10px] font-bold text-white bg-black px-2.5 py-0.5 mr-2">
+                      <span className="font-mono text-[10px] font-bold text-white bg-[#5E35B1] px-2.5 py-0.5 rounded mr-2">
                         Q{item.position}
                       </span>
-                      <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">{item.topicName}</span>
+                      <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">{item.topicName}</span>
                     </div>
-                    <span className="font-mono text-xs font-bold bg-[#F8F7F2] border border-black px-3 py-1">
+                    <span className="font-mono text-xs font-bold bg-[#EDE7F6] text-[#461599] border border-[#D8CCE8] px-3 py-1 rounded-lg">
                       {item.score}/{item.maxMarks} marks
                     </span>
                   </div>
-                  <p className="text-xs text-black/90 leading-relaxed font-sans">
-                    <span className="font-bold text-black">Question:</span> {item.questionText}
+                  <p className="text-xs text-[#1C1B1F] leading-relaxed font-sans">
+                    <span className="font-bold text-[#1C1B1F]">Question:</span> {item.questionText}
                   </p>
                   {item.feedback && (
-                    <p className="text-xs text-black/80 leading-relaxed font-sans border-l-2 border-black/20 pl-3">
+                    <p className="text-xs text-[#55524E] leading-relaxed font-sans border-l-2 border-[#5E35B1]/30 pl-3">
                       {item.feedback}
                     </p>
                   )}
                   {item.strengths.length > 0 && (
                     <div className="space-y-1">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Strengths</div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Strengths</div>
                       <ul className="space-y-1">
                         {item.strengths.map((strength, idx) => (
-                          <li key={idx} className="flex items-start space-x-2 text-xs text-black/80 font-sans">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-black/70 mt-0.5 shrink-0" />
+                          <li key={idx} className="flex items-start space-x-2 text-xs text-[#55524E] font-sans">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 mt-0.5 shrink-0" />
                             <span>{strength}</span>
                           </li>
                         ))}
@@ -275,11 +277,11 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
                   )}
                   {item.improvements.length > 0 && (
                     <div className="space-y-1">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Areas to Improve</div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Areas to Improve</div>
                       <ul className="space-y-1">
                         {item.improvements.map((improvement, idx) => (
-                          <li key={idx} className="flex items-start space-x-2 text-xs text-black/80 font-sans">
-                            <span className="w-3.5 h-3.5 text-black/70 mt-0.5 shrink-0 text-center text-[8px]">!</span>
+                          <li key={idx} className="flex items-start space-x-2 text-xs text-[#55524E] font-sans">
+                            <span className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0 text-center text-[10px] font-bold">!</span>
                             <span>{improvement}</span>
                           </li>
                         ))}
@@ -293,17 +295,17 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
 
           {/* Topic-wise Breakdown */}
           <div className="space-y-4">
-            <h3 className="font-serif text-2xl italic font-normal text-black">
+            <h3 className="font-serif text-2xl italic font-normal text-[#1C1B1F]">
               Topic-wise Breakdown
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {examReport.topicBreakdown?.map((tb, idx) => (
-                <div key={idx} className="bg-white border border-black p-5 flex items-center justify-between">
+                <div key={idx} className="bg-white rounded-2xl border border-[#EDE7F3] p-5 flex items-center justify-between shadow-2xs">
                   <div>
-                    <div className="text-xs font-serif italic text-black">{tb.topic}</div>
-                    <div className="text-[9px] uppercase tracking-widest text-black/50 mt-1">Mastery level: {tb.mastery}</div>
+                    <div className="text-xs font-serif italic text-[#1C1B1F] font-bold">{tb.topic}</div>
+                    <div className="text-[9px] uppercase tracking-widest text-[#7B7484] mt-1">Mastery level: {tb.mastery}</div>
                   </div>
-                  <span className="font-mono text-xs font-bold text-white bg-black border border-black px-3 py-1">
+                  <span className="font-mono text-xs font-bold text-[#461599] bg-[#EDE7F6] border border-[#D8CCE8] px-3 py-1 rounded-lg">
                     {tb.score}/{tb.maxMarks}
                   </span>
                 </div>
@@ -311,12 +313,12 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
             </div>
           </div>
 
-          <div className="pt-6 border-t border-black flex justify-between">
+          <div className="pt-6 border-t border-[#EDE7F3] flex justify-between">
             <button
               onClick={handleStartExam}
-              className="bg-black hover:bg-white hover:text-black text-white px-6 py-3 text-[10px] font-bold uppercase tracking-[0.2em] flex items-center space-x-2 border border-black transition-colors"
+              className="bg-[#5E35B1] hover:bg-[#461599] text-white px-6 py-3.5 rounded-xl text-[10px] font-bold uppercase tracking-[0.2em] flex items-center space-x-2 transition-all shadow-xs active:scale-98"
             >
-              <RotateCcw className="w-4 h-4" />
+              <RotateCcw className="w-4 h-4 text-[#CEB8FF]" />
               <span>Retake Mock Exam</span>
             </button>
           </div>
@@ -328,8 +330,8 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
 
           {/* Left: Question Navigation Matrix */}
           <div className="lg:col-span-3 space-y-4">
-            <div className="bg-[#F8F7F2] border border-black p-6 space-y-4">
-              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">
+            <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 space-y-4 shadow-2xs">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">
                 Question Navigator
               </div>
 
@@ -341,12 +343,12 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
                     <button
                       key={q.id}
                       onClick={() => setCurrentIndex(idx)}
-                      className={`p-3 border text-center transition-all ${
+                      className={`p-3 rounded-xl border text-center transition-all ${
                         isCurrent
-                          ? 'bg-black text-white border-black font-bold'
+                          ? 'bg-[#5E35B1] text-white border-transparent font-bold shadow-2xs'
                           : isAnswered
-                          ? 'bg-white text-black border-black/80 font-bold'
-                          : 'bg-white text-black/60 border-black/30 hover:border-black'
+                          ? 'bg-[#EDE7F6] text-[#461599] border-[#D8CCE8] font-bold'
+                          : 'bg-white text-[#7B7484] border-[#EDE7F3] hover:border-[#D8CCE8]'
                       }`}
                     >
                       <div className="text-xs">Q{idx + 1}</div>
@@ -356,7 +358,7 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
                 })}
               </div>
 
-              <div className="pt-3 text-center font-mono text-[10px] text-black/60 border-t border-black">
+              <div className="pt-3 text-center font-mono text-[10px] text-[#7B7484] border-t border-[#EDE7F3]">
                 {answeredCount} of {questions.length} answered
               </div>
 
@@ -364,11 +366,11 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
                 <button
                   onClick={submitExam}
                   disabled={submitting}
-                  className="w-full bg-black hover:bg-white hover:text-black disabled:hover:bg-black disabled:hover:text-white text-white disabled:opacity-60 border border-black py-3 font-bold text-[10px] uppercase tracking-[0.2em] transition-colors flex items-center justify-center space-x-2"
+                  className="w-full bg-[#5E35B1] hover:bg-[#461599] text-white disabled:opacity-60 rounded-xl py-3.5 font-bold text-[10px] uppercase tracking-[0.2em] transition-all flex items-center justify-center space-x-2 shadow-xs active:scale-98"
                 >
                   {submitting ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <Loader2 className="w-4 h-4 animate-spin text-[#CEB8FF]" />
                       <span>Grading with Gemini...</span>
                     </>
                   ) : (
@@ -382,33 +384,33 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
           {/* Right: Active Exam Question and Answer Box */}
           <div className="lg:col-span-9 space-y-6">
             {submitError && (
-              <div className="bg-red-50 border border-black text-red-800 text-xs font-mono flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
+              <div className="bg-red-50 border border-red-200 rounded-2xl text-red-800 text-xs font-mono p-4 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-red-600" />
                 <span>{submitError}</span>
               </div>
             )}
 
-            <div className="bg-[#F8F7F2] border border-black p-6 sm:p-8 space-y-4">
-              <div className="flex items-center justify-between border-b border-black pb-4">
-                <span className="font-mono text-xs font-bold text-white bg-black px-3 py-1">
+            <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 sm:p-8 space-y-4 shadow-2xs">
+              <div className="flex items-center justify-between border-b border-[#EDE7F3] pb-4">
+                <span className="font-mono text-xs font-bold text-white bg-[#5E35B1] px-3 py-1 rounded-lg">
                   Question {currentIndex + 1} of {questions.length} ({currentQ.marks} Marks)
                 </span>
-                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-black">{currentQ.topic}</span>
+                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">{currentQ.topic}</span>
               </div>
 
-              <h3 className="font-serif text-2xl sm:text-3xl italic font-normal text-black leading-snug">
+              <h3 className="font-serif text-2xl sm:text-3xl italic font-normal text-[#1C1B1F] leading-snug">
                 {currentQ.questionText}
               </h3>
             </div>
 
-            <div className="bg-[#F8F7F2] border border-black p-6 sm:p-8 space-y-3">
-              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Your Written Response</label>
+            <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 sm:p-8 space-y-3 shadow-2xs">
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">Your Written Response</label>
               <textarea
                 value={answers[currentQ.id] || ''}
                 onChange={(e) => handleAnswerChange(e.target.value)}
                 placeholder="Type your exam solution here..."
                 rows={9}
-                className="w-full bg-white border border-black/30 p-4 text-xs text-black focus:outline-none focus:border-black font-mono leading-relaxed"
+                className="w-full bg-[#FAF8FC] rounded-xl border border-[#EDE7F3] p-4 text-xs text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1] focus:ring-2 focus:ring-[#5E35B1]/10 font-mono leading-relaxed transition-all"
               />
             </div>
 
@@ -416,19 +418,19 @@ export const MockExamView: React.FC<MockExamViewProps> = ({ questions }) => {
               <button
                 disabled={currentIndex === 0}
                 onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
-                className="bg-[#F8F7F2] hover:bg-white text-black px-5 py-2.5 text-[10px] font-bold uppercase tracking-[0.2em] flex items-center space-x-1.5 border border-black disabled:opacity-40 transition-colors"
+                className="bg-white hover:bg-[#FAF8FC] text-[#1C1B1F] px-5 py-2.5 text-[10px] font-bold uppercase tracking-[0.2em] flex items-center space-x-1.5 rounded-xl border border-[#EDE7F3] disabled:opacity-40 transition-colors shadow-2xs"
               >
-                <ChevronLeft className="w-4 h-4" />
+                <ChevronLeft className="w-4 h-4 text-[#7B7484]" />
                 <span>Previous</span>
               </button>
 
               <button
                 disabled={currentIndex === questions.length - 1}
                 onClick={() => setCurrentIndex((prev) => Math.min(questions.length - 1, prev + 1))}
-                className="bg-[#F8F7F2] hover:bg-white text-black px-5 py-2.5 text-[10px] font-bold uppercase tracking-[0.2em] flex items-center space-x-1.5 border border-black disabled:opacity-40 transition-colors"
+                className="bg-white hover:bg-[#FAF8FC] text-[#1C1B1F] px-5 py-2.5 text-[10px] font-bold uppercase tracking-[0.2em] flex items-center space-x-1.5 rounded-xl border border-[#EDE7F3] disabled:opacity-40 transition-colors shadow-2xs"
               >
                 <span>Next Question</span>
-                <ChevronRight className="w-4 h-4" />
+                <ChevronRight className="w-4 h-4 text-[#7B7484]" />
               </button>
             </div>
           </div>

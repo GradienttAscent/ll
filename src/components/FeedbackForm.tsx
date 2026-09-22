@@ -49,22 +49,22 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({
   };
 
   return (
-    <div className="max-w-xl mx-auto p-8 sm:p-10 bg-[#FDFDFC] border border-black space-y-8 animate-fade-in my-8">
+    <div className="max-w-xl mx-auto p-8 sm:p-10 bg-white rounded-3xl border border-[#EDE7F3] space-y-8 animate-fade-in my-8 shadow-sm">
       {/* Editorial Header */}
-      <div className="text-center space-y-3 pb-6 border-b border-black">
-        <div className="inline-block px-3 py-1 border border-black text-black text-[9px] uppercase tracking-[0.25em] font-bold bg-[#F8F7F2]">
+      <div className="text-center space-y-3 pb-6 border-b border-[#EDE7F3]">
+        <div className="inline-block px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[#461599] text-[9px] uppercase tracking-[0.25em] font-bold">
           Session Completed &bull; Reflection Log
         </div>
-        <h2 className="font-serif text-3xl sm:text-4xl italic text-black">
+        <h2 className="font-serif text-3xl sm:text-4xl italic text-[#1C1B1F]">
           Session Evaluation
         </h2>
-        <p className="font-serif italic text-black/70 text-sm">
-          Reflect on your study session for <strong className="text-black font-semibold">{topicName || blockTitle || 'this topic'}</strong>.
+        <p className="font-serif italic text-[#7B7484] text-sm">
+          Reflect on your study session for <strong className="text-[#5E35B1] font-semibold">{topicName || blockTitle || 'this topic'}</strong>.
         </p>
       </div>
 
       {error && (
-        <div className="p-4 bg-red-50 border border-black text-red-800 text-xs font-mono flex items-center gap-2">
+        <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-red-800 text-xs font-mono flex items-center gap-2">
           <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
           <span>{error}</span>
         </div>
@@ -73,7 +73,7 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Focus Level */}
         <div className="space-y-2">
-          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-black/60">
+          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">
             Focus Rating (1 = Distracted, 5 = Deep Flow)
           </label>
           <div className="flex items-center gap-2">
@@ -82,10 +82,10 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({
                 key={level}
                 type="button"
                 onClick={() => setFocus(level)}
-                className={`flex-1 py-3 border text-xs font-bold font-mono transition-all ${
+                className={`flex-1 py-3 rounded-xl border text-xs font-bold font-mono transition-all shadow-2xs ${
                   focus === level
-                    ? 'border-black bg-black text-white'
-                    : 'border-black/30 bg-[#F8F7F2] text-black hover:border-black'
+                    ? 'border-transparent bg-[#5E35B1] text-white'
+                    : 'border-[#EDE7F3] bg-[#FAF8FC] text-[#7B7484] hover:border-[#D8CCE8]'
                 }`}
               >
                 {level}
@@ -96,7 +96,7 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({
 
         {/* Perceived Difficulty */}
         <div className="space-y-2">
-          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-black/60">
+          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">
             Perceived Difficulty
           </label>
           <div className="grid grid-cols-3 gap-3">
@@ -109,14 +109,14 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({
                 key={d.id}
                 type="button"
                 onClick={() => setDifficulty(d.id as any)}
-                className={`p-4 border text-left transition-all ${
+                className={`p-4 rounded-xl border text-left transition-all shadow-2xs ${
                   difficulty === d.id
-                    ? 'border-black bg-black text-white'
-                    : 'border-black/30 bg-[#F8F7F2] text-black hover:border-black'
+                    ? 'border-transparent bg-[#5E35B1] text-white'
+                    : 'border-[#EDE7F3] bg-[#FAF8FC] text-[#7B7484] hover:border-[#D8CCE8]'
                 }`}
               >
-                <div className="text-xs font-bold uppercase tracking-wider">{d.label}</div>
-                <div className={`text-[10px] mt-1 ${difficulty === d.id ? 'text-white/70' : 'text-black/60'}`}>{d.desc}</div>
+                <div className={`text-xs font-bold uppercase tracking-wider ${difficulty === d.id ? 'text-white' : 'text-[#1C1B1F]'}`}>{d.label}</div>
+                <div className={`text-[10px] mt-1 ${difficulty === d.id ? 'text-white/80' : 'text-[#7B7484]'}`}>{d.desc}</div>
               </button>
             ))}
           </div>
@@ -124,10 +124,10 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({
 
         {/* Perceived Progress */}
         <div className="space-y-2">
-          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-black/60">
+          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">
             Perceived Progress Made
           </label>
-          <div className="flex items-center justify-between bg-[#F8F7F2] p-4 border border-black">
+          <div className="flex items-center justify-between bg-[#FAF8FC] p-4 rounded-xl border border-[#EDE7F3]">
             <div className="flex items-center gap-2">
               {[1, 2, 3, 4, 5].map((star) => (
                 <button
@@ -138,13 +138,13 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({
                 >
                   <Star
                     className={`w-5 h-5 ${
-                      star <= perceivedProgress ? 'fill-black text-black' : 'text-black/20'
+                      star <= perceivedProgress ? 'fill-[#5E35B1] text-[#5E35B1]' : 'text-[#D8CCE8]'
                     }`}
                   />
                 </button>
               ))}
             </div>
-            <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-black">
+            <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-[#5E35B1]">
               {perceivedProgress * 20}% Covered
             </span>
           </div>
@@ -152,26 +152,26 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({
 
         {/* Reflection Notes */}
         <div className="space-y-2">
-          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-black/60">
-            Notes &amp; Takeaways <span className="text-black/40 font-normal">(Optional)</span>
+          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">
+            Notes &amp; Takeaways <span className="text-[#7B7484]/60 font-normal">(Optional)</span>
           </label>
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Key formulas, concepts to review, or blockers faced..."
             rows={3}
-            className="w-full p-3 bg-white border border-black text-xs font-sans focus:outline-none focus:ring-1 focus:ring-black"
+            className="w-full p-3 bg-[#FAF8FC] rounded-xl border border-[#EDE7F3] text-xs font-sans text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1] focus:ring-2 focus:ring-[#5E35B1]/10 transition-all"
           />
         </div>
 
         {/* Actions */}
-        <div className="flex items-center justify-end gap-4 pt-4 border-t border-black">
+        <div className="flex items-center justify-end gap-4 pt-4 border-t border-[#EDE7F3]">
           {onSkip && (
             <button
               type="button"
               onClick={onSkip}
               disabled={isSubmitting}
-              className="text-[10px] font-bold uppercase tracking-wider text-black/60 hover:text-black transition-colors"
+              className="text-[10px] font-bold uppercase tracking-wider text-[#7B7484] hover:text-[#1C1B1F] transition-colors"
             >
               Skip Feedback
             </button>
@@ -179,11 +179,11 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({
           <button
             type="submit"
             disabled={isSubmitting}
-            className="px-6 py-3 border border-black bg-black text-white hover:bg-white hover:text-black text-[10px] font-bold uppercase tracking-[0.2em] transition-colors flex items-center gap-2"
+            className="px-6 py-3 rounded-xl bg-[#5E35B1] hover:bg-[#461599] text-white text-[10px] font-bold uppercase tracking-[0.2em] transition-all shadow-xs hover:shadow active:scale-98 flex items-center gap-2"
           >
             {isSubmitting ? (
               <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#CEB8FF]" />
                 <span>Saving Log...</span>
               </>
             ) : (
