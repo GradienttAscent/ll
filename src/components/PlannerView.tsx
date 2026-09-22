@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Calendar, Sparkles, CheckCircle2, Circle, Loader2, Play, Send } from 'lucide-react';
+import { Calendar, CalendarCheck, CheckCircle2, Circle, Loader2, Play, Send } from 'lucide-react';
 import { AdaptiveProposal, PersistedTopic, ScheduleBlock, SchedulingAssistantPreview } from '../types';
 
 interface PlannerViewProps {
@@ -270,59 +270,315 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
   const calendarDates = Array.from(new Set([...Object.keys(blocksByDate), ...Object.keys(ghostBlocksByDate)])).sort();
 
   return (
-    <div className="max-w-7xl mx-auto py-10 px-6 sm:px-8 space-y-10 animate-fade-in">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-black pb-8">
+    <div className="max-w-7xl mx-auto py-10 px-6 sm:px-8 space-y-10 animate-fade-in pb-16">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-[#EDE7F3] pb-8">
         <div>
-          <div className="inline-flex items-center space-x-2 border border-black px-3 py-1 text-[9px] uppercase tracking-[0.2em] font-bold text-black mb-2"><Calendar className="w-3.5 h-3.5" /><span>Persistent Study Calendar</span></div>
-          <h1 className="font-serif text-4xl sm:text-5xl italic font-normal text-black">Day-Wise Personal Study Planner</h1>
-          <p className="text-xs text-black/70 mt-2 max-w-xl">Schedules are calculated from your stored extracted topics, their priority and weightage.</p>
+          <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[10px] uppercase tracking-[0.2em] font-bold text-[#461599] mb-3">
+            <Calendar className="w-3.5 h-3.5 text-[#5E35B1]" />
+            <span>Persistent Study Calendar</span>
+          </div>
+          <h1 className="font-serif text-4xl sm:text-5xl italic font-normal text-[#1C1B1F]">
+            Day-Wise Personal Study Planner
+          </h1>
+          <p className="text-xs text-[#55524E] mt-2 max-w-xl">
+            Schedules are dynamically calculated from your stored extracted topics, their priority, and declared weightage.
+          </p>
         </div>
-        <button onClick={handleGenerateSchedule} disabled={isGenerating} className="border border-black bg-black text-white hover:bg-white hover:text-black px-5 py-3 text-[10px] font-bold uppercase tracking-[0.2em] transition-colors disabled:opacity-50">
-          {isGenerating ? <><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Saving Schedule...</> : <><Sparkles className="w-4 h-4 inline mr-2" />Generate & Save Schedule</>}
+        <button
+          onClick={handleGenerateSchedule}
+          disabled={isGenerating}
+          className="rounded-xl bg-[#5E35B1] hover:bg-[#461599] text-white px-5 py-3 text-[10px] font-bold uppercase tracking-[0.16em] transition-all shadow-xs hover:shadow disabled:opacity-50 active:scale-98 flex items-center gap-2 self-start md:self-auto"
+        >
+          {isGenerating ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin text-[#CEB8FF]" />
+              <span>Saving Schedule...</span>
+            </>
+          ) : (
+            <>
+              <CalendarCheck className="w-4 h-4 text-white" />
+              <span>Generate &amp; Save Schedule</span>
+            </>
+          )}
         </button>
       </div>
 
-      {statusMessage && <div className="border border-black bg-[#F8F7F2] px-5 py-4 text-xs font-bold">{statusMessage}</div>}
-      {adaptiveMessage && !adaptiveProposal && <div className="border border-black bg-[#F8F7F2] px-5 py-4 text-xs font-bold flex flex-wrap items-center gap-3"><span>{adaptiveMessage}</span>{dismissedAdaptiveSessionId && <button onClick={() => void onReconsiderAdaptiveProposal(dismissedAdaptiveSessionId)} className="border border-black bg-white px-3 py-1.5 text-[9px] uppercase tracking-wider hover:bg-black hover:text-white">Generate another suggestion</button>}</div>}
-      {adaptiveProposal && <div className="border-2 border-black bg-[#F8F7F2] px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-4"><div className="flex-1"><div className="text-[10px] font-bold uppercase tracking-[0.2em]">Revision suggested</div><div className="font-serif text-2xl italic mt-1">{adaptiveProposal.topicName}</div><div className="text-xs mt-1">{formatDate(adaptiveProposal.proposedDate)} · {adaptiveProposal.proposedStartTime}-{adaptiveProposal.proposedEndTime} · {adaptiveProposal.proposedDurationMinutes} minutes</div><p className="text-xs text-black/70 mt-2">{adaptiveProposal.reason}</p></div><div className="flex gap-2"><button onClick={() => void applyAdaptiveProposal(true)} disabled={isApplyingProposal} className="bg-black text-white border border-black px-4 py-2 text-[10px] font-bold uppercase tracking-wider disabled:opacity-50">Accept</button><button onClick={() => void applyAdaptiveProposal(false)} disabled={isApplyingProposal} className="bg-white text-black border border-black px-4 py-2 text-[10px] font-bold uppercase tracking-wider disabled:opacity-50">Reject</button></div></div>}
+      {statusMessage && (
+        <div className="rounded-xl border border-[#D8CCE8] bg-[#EDE7F6]/60 px-5 py-4 text-xs font-bold text-[#461599]">
+          {statusMessage}
+        </div>
+      )}
+      {adaptiveMessage && !adaptiveProposal && (
+        <div className="rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] px-5 py-4 text-xs font-bold text-[#55524E] flex flex-wrap items-center gap-3">
+          <span>{adaptiveMessage}</span>
+          {dismissedAdaptiveSessionId && (
+            <button
+              onClick={() => void onReconsiderAdaptiveProposal(dismissedAdaptiveSessionId)}
+              className="rounded-lg border border-[#D8CCE8] bg-white px-3 py-1.5 text-[9px] uppercase tracking-wider text-[#461599] hover:bg-[#EDE7F6]"
+            >
+              Generate another suggestion
+            </button>
+          )}
+        </div>
+      )}
+      {adaptiveProposal && (
+        <div className="rounded-2xl border-2 border-[#5E35B1] bg-[#FDF8FE] px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4 shadow-sm">
+          <div className="flex-1">
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5E35B1]">Revision suggested</div>
+            <div className="font-serif text-2xl italic mt-1 text-[#1C1B1F]">{adaptiveProposal.topicName}</div>
+            <div className="text-xs text-[#7B7484] mt-1 font-mono">
+              {formatDate(adaptiveProposal.proposedDate)} · {adaptiveProposal.proposedStartTime}-{adaptiveProposal.proposedEndTime} · {adaptiveProposal.proposedDurationMinutes} minutes
+            </div>
+            <p className="text-xs text-[#55524E] mt-2">{adaptiveProposal.reason}</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => void applyAdaptiveProposal(true)}
+              disabled={isApplyingProposal}
+              className="rounded-xl bg-[#5E35B1] text-white px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider hover:bg-[#461599] transition-all disabled:opacity-50"
+            >
+              Accept
+            </button>
+            <button
+              onClick={() => void applyAdaptiveProposal(false)}
+              disabled={isApplyingProposal}
+              className="rounded-xl bg-white text-[#55524E] border border-[#EDE7F3] px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider hover:border-[#D8CCE8] transition-all disabled:opacity-50"
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Left Column: Target Exam Parameters */}
         <div className="lg:col-span-3 space-y-6">
-          <div className="bg-[#F8F7F2] border border-black p-6 space-y-5">
-            <h3 className="font-serif text-2xl italic">Target Exam Parameters</h3>
-            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Course / Examination<input value={examName} onChange={(e) => setExamName(e.target.value)} className="mt-1.5 w-full bg-white border border-black/30 px-3 py-2 text-xs" /></label>
-            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Final Exam Date<input type="date" min={dateKey(new Date())} value={examDate} onChange={(e) => setExamDate(e.target.value)} className="mt-1.5 w-full bg-white border border-black/30 px-3 py-2 text-xs" /></label>
-            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-black/60">Daily Available Hours: {dailyHours}<input type="range" min={1} max={10} step={0.5} value={dailyHours} onChange={(e) => setDailyHours(Number(e.target.value))} className="mt-2 w-full accent-black" /></label>
+          <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 space-y-5 shadow-2xs">
+            <h3 className="font-serif text-2xl italic text-[#1C1B1F]">Target Exam Parameters</h3>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">
+              Course / Examination
+              <input
+                value={examName}
+                onChange={(e) => setExamName(e.target.value)}
+                className="mt-1.5 w-full rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] px-3.5 py-2.5 text-xs text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]"
+              />
+            </label>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">
+              Final Exam Date
+              <input
+                type="date"
+                min={dateKey(new Date())}
+                value={examDate}
+                onChange={(e) => setExamDate(e.target.value)}
+                className="mt-1.5 w-full rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] px-3.5 py-2.5 text-xs text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]"
+              />
+            </label>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">
+              Daily Available Hours: {dailyHours}
+              <input
+                type="range"
+                min={1}
+                max={10}
+                step={0.5}
+                value={dailyHours}
+                onChange={(e) => setDailyHours(Number(e.target.value))}
+                className="mt-2 w-full accent-[#5E35B1]"
+              />
+            </label>
           </div>
-          <div className="bg-[#F8F7F2] border border-black p-6 space-y-3">
-            <h3 className="font-serif text-2xl italic">Stored Topics ({topics.length})</h3>
-            {topics.length === 0 ? <p className="text-xs text-black/60">Analyze text on the Past Papers page to populate planning topics.</p> : topics.map((topic) => <div key={topic.id} className="bg-white border border-black p-3 text-xs"><strong>{topic.name}</strong><div className="mt-1 text-black/60">Priority {topic.priority}/10{topic.hasWeightage ? ` · Declared weightage ${topic.weightage}%` : ''}</div></div>)}
+
+          <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 space-y-3 shadow-2xs">
+            <h3 className="font-serif text-2xl italic text-[#1C1B1F]">Stored Topics ({topics.length})</h3>
+            {topics.length === 0 ? (
+              <p className="text-xs text-[#7B7484]">Analyze text on the Past Papers page to populate planning topics.</p>
+            ) : (
+              topics.map((topic) => (
+                <div key={topic.id} className="bg-[#FAF8FC] rounded-xl border border-[#EDE7F3] p-3 text-xs">
+                  <strong className="text-[#1C1B1F]">{topic.name}</strong>
+                  <div className="mt-1 text-[#7B7484]">
+                    Priority {topic.priority}/10{topic.hasWeightage ? ` · Declared weightage ${topic.weightage}%` : ''}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
+        {/* Center Column: Saved Calendar Blocks */}
         <div className="lg:col-span-6 space-y-6">
-          <div className="bg-[#F8F7F2] border border-black p-6 space-y-5">
-            <div className="flex items-center justify-between border-b border-black pb-4"><h3 className="font-serif text-3xl italic">Saved Calendar Blocks</h3><span className="text-[10px] font-mono font-bold">{scheduleBlocks.filter((block) => block.completed).length}/{scheduleBlocks.length} completed</span></div>
-            {calendarDates.length === 0 ? <p className="text-xs text-black/60">No saved study blocks yet. Generate a schedule after storing topics.</p> : calendarDates.map((date) => <section key={date} className="space-y-3"><h4 className="text-[10px] font-bold uppercase tracking-[0.2em] border-b border-black/20 pb-2">{formatDate(date)}</h4>{(blocksByDate[date] || []).map((block) => <div key={block.id} className={`bg-white border p-4 flex flex-col sm:flex-row sm:items-center gap-4 ${block.completed ? 'border-black/20 opacity-60' : pendingBlockIds.has(block.id) ? 'border-2 border-dashed border-black bg-black/[0.04] opacity-70' : 'border-black'}`}><span title="Completion is recorded by the study session lifecycle">{block.completed ? <CheckCircle2 className="w-5 h-5" /> : <Circle className="w-5 h-5 text-black/40" />}</span><div className="flex-1"><div className="font-serif text-xl italic">{block.title}</div><div className="text-xs text-black/60 mt-1">{block.startTime} · {block.durationMinutes} minutes · {block.completed ? 'Completed' : pendingBlockIds.has(block.id) ? 'Pending reassignment' : 'Planned'}</div></div><button onClick={() => void onStartStudy(block).catch((error) => setStatusMessage(error.message))} disabled={block.completed} className="bg-black text-white border border-black px-4 py-2 text-[10px] font-bold uppercase tracking-wider hover:bg-white hover:text-black disabled:opacity-40"><Play className="w-3.5 h-3.5 inline mr-1" />Start Study</button></div>)}{(ghostBlocksByDate[date] || []).map((block) => <div key={block.id} className="border-2 border-dashed border-black/60 bg-black/[0.04] p-4 flex items-center gap-4 opacity-80"><div className="w-5 h-5 border border-dashed border-black/60" /><div className="flex-1"><div className="font-serif text-xl italic">{block.title}</div><div className="text-xs text-black/60 mt-1">{block.startTime} · {block.durationMinutes} minutes · Proposed {block.topicName} session</div></div><span className="border border-black px-2 py-1 text-[9px] font-bold uppercase tracking-wider">Preview</span></div>)}</section>)}
+          <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 sm:p-7 space-y-5 shadow-2xs">
+            <div className="flex items-center justify-between border-b border-[#EDE7F3] pb-4">
+              <h3 className="font-serif text-3xl italic text-[#1C1B1F]">Saved Calendar Blocks</h3>
+              <span className="text-[10px] font-mono font-bold text-[#461599] rounded-md bg-[#EDE7F6] px-2.5 py-1">
+                {scheduleBlocks.filter((block) => block.completed).length}/{scheduleBlocks.length} completed
+              </span>
+            </div>
+
+            {calendarDates.length === 0 ? (
+              <p className="text-xs text-[#7B7484] py-4">No saved study blocks yet. Generate a schedule after storing topics.</p>
+            ) : (
+              calendarDates.map((date) => (
+                <section key={date} className="space-y-3">
+                  <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] border-b border-[#EDE7F3] pb-2 text-[#7B7484]">
+                    {formatDate(date)}
+                  </h4>
+                  {(blocksByDate[date] || []).map((block) => (
+                    <div
+                      key={block.id}
+                      className={`bg-[#FAF8FC] rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center gap-4 transition-all ${
+                        block.completed
+                          ? 'border-[#EDE7F3] opacity-60'
+                          : pendingBlockIds.has(block.id)
+                          ? 'border-2 border-dashed border-[#5E35B1] bg-[#EDE7F6]/30'
+                          : 'border-[#EDE7F3] hover:border-[#D8CCE8]'
+                      }`}
+                    >
+                      <span title="Completion is recorded by the study session lifecycle">
+                        {block.completed ? (
+                          <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                        ) : (
+                          <Circle className="w-5 h-5 text-[#5E35B1]/50" />
+                        )}
+                      </span>
+                      <div className="flex-1">
+                        <div className="font-serif text-xl italic text-[#1C1B1F]">{block.title}</div>
+                        <div className="text-xs text-[#7B7484] mt-1 font-mono">
+                          {block.startTime} · {block.durationMinutes} minutes · {block.completed ? 'Completed' : pendingBlockIds.has(block.id) ? 'Pending reassignment' : 'Planned'}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => void onStartStudy(block).catch((error) => setStatusMessage(error.message))}
+                        disabled={block.completed}
+                        className="rounded-xl bg-[#5E35B1] text-white px-4 py-2 text-[10px] font-bold uppercase tracking-wider hover:bg-[#461599] transition-all disabled:opacity-40 flex items-center gap-1 shadow-2xs self-start sm:self-auto active:scale-98"
+                      >
+                        <Play className="w-3.5 h-3.5 text-[#CEB8FF]" />
+                        <span>Start Study</span>
+                      </button>
+                    </div>
+                  ))}
+                  {(ghostBlocksByDate[date] || []).map((block) => (
+                    <div
+                      key={block.id}
+                      className="rounded-xl border-2 border-dashed border-[#5E35B1] bg-[#EDE7F6]/30 p-4 flex items-center gap-4"
+                    >
+                      <div className="w-5 h-5 rounded-full border border-dashed border-[#5E35B1]" />
+                      <div className="flex-1">
+                        <div className="font-serif text-xl italic text-[#1C1B1F]">{block.title}</div>
+                        <div className="text-xs text-[#7B7484] mt-1 font-mono">
+                          {block.startTime} · {block.durationMinutes} minutes · Proposed {block.topicName} session
+                        </div>
+                      </div>
+                      <span className="rounded-md border border-[#D8CCE8] bg-white px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-[#461599]">
+                        Preview
+                      </span>
+                    </div>
+                  ))}
+                </section>
+              ))
+            )}
           </div>
         </div>
-        <aside className="lg:col-span-3 bg-[#F8F7F2] border border-black p-5 flex flex-col min-h-[34rem]">
-          <div className="border-b border-black pb-4"><div className="text-[10px] font-bold uppercase tracking-[0.2em]">Conversational Planning</div><h3 className="font-serif text-2xl italic mt-1">Scheduling Assistant</h3><p className="text-[10px] text-black/60 mt-1">I can help rearrange your study plan.</p></div>
-          <div className="flex-1 space-y-3 py-4 overflow-y-auto max-h-[32rem]" aria-live="polite">
-            {chatMessages.map((chat) => <div key={chat.id} className={chat.role === 'user' ? 'ml-5 rounded-l-lg rounded-br-lg bg-black text-white p-3 text-xs' : 'mr-3 rounded-r-lg rounded-bl-lg bg-white border border-black p-3 text-xs'}>
-              <div className="text-[9px] font-bold uppercase tracking-[0.16em] mb-1 opacity-60">{chat.role === 'user' ? 'You' : 'Assistant'}</div>
-              <p>{chat.text}</p>
-              {chat.preview?.matches && <div className="mt-3 space-y-2">{chat.preview.matches.map((match) => <button key={match.blockId} onClick={() => void requestChatPreview(chat.sourceMessage!, match.blockId, `Use ${match.topicName}: ${match.date} at ${match.startTime}`)} disabled={isChatLoading} className="w-full text-left border border-black/40 bg-[#F8F7F2] hover:bg-black hover:text-white px-2 py-2 text-[10px] transition-colors disabled:opacity-50"><strong>{match.topicName}</strong><br />{formatDate(match.date)} · {match.startTime} · {match.durationMinutes} min</button>)}</div>}
-              {chat.preview && chat.preview.changes.length > 0 && activeChatPreview?.message === chat.sourceMessage && activeChatPreview.selectedBlockId === chat.selectedBlockId && <div className="mt-3 border-t border-black/20 pt-3 space-y-2">
-                {chat.preview.changes.map((change) => <div key={change.blockId} className="text-[10px]"><strong>{change.topicName}</strong><br />{change.original.date} {change.original.startTime} to {change.proposed.date} {change.proposed.startTime} ({change.proposed.durationMinutes} min)</div>)}
-                <div className="flex gap-2"><button onClick={() => void confirmChatPreview(chat.sourceMessage!, chat.preview!, chat.selectedBlockId)} disabled={isChatLoading} className="bg-black text-white border border-black px-3 py-2 text-[9px] font-bold uppercase tracking-wider disabled:opacity-50">Confirm</button><button onClick={() => void cancelChatPreview()} disabled={isChatLoading} className="bg-white text-black border border-black px-3 py-2 text-[9px] font-bold uppercase tracking-wider disabled:opacity-50">Cancel</button></div>
-              </div>}
-            </div>)}
-            {isChatLoading && <div className="mr-3 bg-white border border-black p-3 text-xs"><Loader2 className="w-3.5 h-3.5 animate-spin inline mr-2" />Checking your calendar...</div>}
+
+        {/* Right Column: Conversational Scheduling Assistant */}
+        <aside className="lg:col-span-3 bg-white rounded-2xl border border-[#EDE7F3] p-5 flex flex-col min-h-[34rem] shadow-2xs">
+          <div className="border-b border-[#EDE7F3] pb-4">
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">Conversational Planning</div>
+            <h3 className="font-serif text-2xl italic mt-1 text-[#1C1B1F]">Scheduling Assistant</h3>
+            <p className="text-[10px] text-[#7B7484] mt-1">I can help rearrange your study plan using natural language.</p>
           </div>
-          <form onSubmit={(event) => { event.preventDefault(); void sendChatMessage(); }} className="border-t border-black pt-4 flex gap-2"><input value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="e.g. Move DBMS to tomorrow" className="min-w-0 flex-1 bg-white border border-black px-3 py-2 text-xs" /><button type="submit" disabled={!chatInput.trim() || isChatLoading} className="bg-black text-white border border-black px-3 disabled:opacity-50" aria-label="Send message"><Send className="w-4 h-4" /></button></form>
+
+          <div className="flex-1 space-y-3 py-4 overflow-y-auto max-h-[32rem]" aria-live="polite">
+            {chatMessages.map((chat) => (
+              <div
+                key={chat.id}
+                className={
+                  chat.role === 'user'
+                    ? 'ml-4 rounded-2xl rounded-br-xs bg-[#5E35B1] text-white p-3.5 text-xs shadow-2xs'
+                    : 'mr-2 rounded-2xl rounded-bl-xs bg-[#FAF8FC] border border-[#EDE7F3] text-[#1C1B1F] p-3.5 text-xs'
+                }
+              >
+                <div className="text-[9px] font-bold uppercase tracking-[0.16em] mb-1 opacity-70">
+                  {chat.role === 'user' ? 'You' : 'Assistant'}
+                </div>
+                <p>{chat.text}</p>
+                {chat.preview?.matches && (
+                  <div className="mt-3 space-y-2">
+                    {chat.preview.matches.map((match) => (
+                      <button
+                        key={match.blockId}
+                        onClick={() => void requestChatPreview(chat.sourceMessage!, match.blockId, `Use ${match.topicName}: ${match.date} at ${match.startTime}`)}
+                        disabled={isChatLoading}
+                        className="w-full text-left rounded-xl border border-[#EDE7F3] bg-white hover:bg-[#EDE7F6] hover:border-[#D8CCE8] px-3 py-2 text-[10px] transition-colors disabled:opacity-50 text-[#1C1B1F]"
+                      >
+                        <strong>{match.topicName}</strong>
+                        <br />
+                        <span className="text-[#7B7484]">{formatDate(match.date)} · {match.startTime} · {match.durationMinutes} min</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {chat.preview && chat.preview.changes.length > 0 && activeChatPreview?.message === chat.sourceMessage && activeChatPreview.selectedBlockId === chat.selectedBlockId && (
+                  <div className="mt-3 border-t border-[#EDE7F3] pt-3 space-y-2">
+                    {chat.preview.changes.map((change) => (
+                      <div key={change.blockId} className="text-[10px] text-[#55524E]">
+                        <strong className="text-[#1C1B1F]">{change.topicName}</strong>
+                        <br />
+                        {change.original.date} {change.original.startTime} &rarr; {change.proposed.date} {change.proposed.startTime} ({change.proposed.durationMinutes} min)
+                      </div>
+                    ))}
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        onClick={() => void confirmChatPreview(chat.sourceMessage!, chat.preview!, chat.selectedBlockId)}
+                        disabled={isChatLoading}
+                        className="rounded-lg bg-[#5E35B1] text-white px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider hover:bg-[#461599] disabled:opacity-50"
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        onClick={() => void cancelChatPreview()}
+                        disabled={isChatLoading}
+                        className="rounded-lg bg-white text-[#55524E] border border-[#EDE7F3] px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider hover:border-[#D8CCE8] disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {isChatLoading && (
+              <div className="mr-2 rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] p-3 text-xs text-[#7B7484]">
+                <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-2 text-[#5E35B1]" />
+                Checking your calendar...
+              </div>
+            )}
+          </div>
+
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void sendChatMessage();
+            }}
+            className="border-t border-[#EDE7F3] pt-4 flex gap-2"
+          >
+            <input
+              value={chatInput}
+              onChange={(event) => setChatInput(event.target.value)}
+              placeholder="e.g. Move DBMS to tomorrow"
+              className="min-w-0 flex-1 rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] px-3.5 py-2.5 text-xs text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]"
+            />
+            <button
+              type="submit"
+              disabled={!chatInput.trim() || isChatLoading}
+              className="rounded-xl bg-[#5E35B1] text-white px-3.5 hover:bg-[#461599] disabled:opacity-50 flex items-center justify-center transition-all"
+              aria-label="Send message"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
         </aside>
       </div>
     </div>
   );
 };
+

@@ -113,5 +113,32 @@ async function authorizedFetch(input: RequestInfo | URL, init?: RequestInit): Pr
 }
 
 export function installFetchWrapper() {
-  globalThis.fetch = authorizedFetch as typeof globalThis.fetch;
+  try {
+    // Attempt standard assignment first
+    globalThis.fetch = authorizedFetch as typeof globalThis.fetch;
+  } catch {
+    // If window.fetch has only a getter or is non-writable, define it on the window/globalThis instance
+    try {
+      Object.defineProperty(globalThis, 'fetch', {
+        value: authorizedFetch,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    } catch {
+      // If globalThis fails, attempt on window directly if available
+      if (typeof window !== 'undefined') {
+        try {
+          Object.defineProperty(window, 'fetch', {
+            value: authorizedFetch,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+          });
+        } catch {
+          // Ignore if environment strictly forbids overriding window.fetch
+        }
+      }
+    }
+  }
 }
