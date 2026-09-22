@@ -26,6 +26,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   const [fileError, setFileError] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [isSampleMode, setIsSampleMode] = useState(false);
+  const hasSyllabusTopics = topics.some((topic) => topic.syllabusEvidence);
 
   const fileAsBase64 = async (file: File) => {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -279,7 +280,9 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
                   <span>Topic Weightage &amp; Trend Analysis</span>
                 </h3>
                 <p className="text-xs text-[#7B7484] mt-1">
-                  Based on your persisted syllabus and previous-question evidence.
+                  {hasSyllabusTopics
+                    ? 'Based on your persisted syllabus and previous-question evidence.'
+                    : 'PYQ-only trends. Uploading a syllabus will align these topics with your course syllabus.'}
                 </p>
               </div>
               <span className="text-[9px] rounded-full bg-[#EDE7F6] text-[#461599] border border-[#D8CCE8] font-bold px-3 py-1 uppercase tracking-[0.2em]">
@@ -290,7 +293,7 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
             {/* Visual Topic Bars */}
             <div className="space-y-4">
               {topics.length === 0 ? (
-                <p className="text-xs text-[#7B7484] py-4">No topics extracted yet. Upload a past paper or syllabus to see analytics.</p>
+                <p className="text-xs text-[#7B7484] py-4">No past-paper topics yet. Upload a PYQ to see provisional topic trends, then add a syllabus to align them.</p>
               ) : (
                 topics.map((t) => (
                   <div key={t.id} className="space-y-2.5 bg-[#FAF8FC] p-5 rounded-xl border border-[#EDE7F3]">
@@ -356,15 +359,14 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
                       <span className="font-bold bg-[#EDE7F6] text-[#461599] rounded px-2.5 py-0.5 border border-[#D8CCE8]">
                         {q.topic}
                       </span>
-                      <span className="font-mono text-[#7B7484]">{q.year} &bull; {q.marks} Marks &bull; {q.suggestedTimeMinutes}m</span>
-                    </div>
-
-                    <p className="text-xs font-sans text-[#1C1B1F] leading-relaxed">
-                      {q.questionText}
-                    </p>
-                    {q.mappingStatus === 'mapped' && q.mappingEvidence && q.mappingEvidence.length > 0 && (
-                      <p className="text-[10px] text-[#7B7484]">{q.mappingEvidence.join('; ')}</p>
-                    )}
+                        <span className="font-mono text-[#7B7484]">
+                          {q.questionNumber ? `Question ${q.questionNumber}${q.subpart ? `(${q.subpart})` : ''} ` : ''}
+                          &bull; {q.marks} Marks &bull; Source: {q.source || 'PYQ'}
+                        </span>
+                      </div>
+                      <p className="text-xs font-sans text-[#1C1B1F] leading-relaxed">
+                        {q.questionText}
+                      </p>
                   </div>
                 ))
               )}

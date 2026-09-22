@@ -60,6 +60,9 @@ export type QuestionRow = {
   topicName: string | null;
   documentId: string | null;
   questionText: string;
+  questionNumber: string | null;
+  subpart: string | null;
+  context: string | null;
   marks: number;
   questionType: string;
   source: string;
@@ -500,7 +503,8 @@ function academicTokens(value: string): string[] {
 }
 
 export function normalizeAcademicQuestion(value: string): string {
-  return value.replace(/^\s*(?:(?:question|q)\s*)?\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*/i, '')
+  return sanitizeAcademicText(value)
+    .replace(/^\s*(?:(?:question|q)\s*)?\d+\s*(?:\([^)]*\))?\s*[.):\-]\s*/i, '')
     .replace(/\s+/g, ' ').trim();
 }
 
@@ -524,14 +528,60 @@ const COMMON_ACADEMIC_TOKENS = new Set([
 ]);
 
 // Removes decorative runs, page markers ("1/2", "PTO"), and greeting noise that appear in
-// extracted question-paper text but carry no question content.
+// extracted question-paper text but carry no question content. Markdown/rich-text markers are
+// normalized first: literal "\*\*" escapes, bold wraps, bullets, separators, and every other
+// asterisk are removed before marker detection so labels like "a)**" split cleanly.
+function stripMarkdownNoise(value: string): string {
+  return value
+    .replace(/\\\*/g, ' ')
+    .replace(/\*/g, ' ')
+    .replace(/(?:[_=~\-]\s*){3,}/g, ' ');
+}
+
+// PDF/OCR and copied HTML often leave entities, markup and footer text in what otherwise
+// looks like a valid question. Normalize this before a question or its parent context reaches
+// the database so it cannot pollute de-duplication, classification, or the practice view.
+function decodeHtmlEntities(value: string): string {
+  const named: Record<string, string> = {
+    nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", ndash: '-', mdash: '-',
+  };
+  return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code) => {
+    const key = String(code).toLowerCase();
+    if (key.startsWith('#x')) {
+      const point = Number.parseInt(key.slice(2), 16);
+      return Number.isFinite(point) ? String.fromCodePoint(point) : entity;
+    }
+    if (key.startsWith('#')) {
+      const point = Number.parseInt(key.slice(1), 10);
+      return Number.isFinite(point) ? String.fromCodePoint(point) : entity;
+    }
+    return named[key] ?? entity;
+  });
+}
+
+function sanitizeAcademicText(value: string): string {
+  let text = String(value || '').replace(/\r/g, '');
+  // Decode twice to handle escaped HTML such as "&amp;lt;br&amp;gt;" from rich-text exports.
+  text = decodeHtmlEntities(decodeHtmlEntities(text));
+  return stripMarkdownNoise(text)
+    .replace(/&nbsp;?/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    // Some extractors strip the tag brackets but leave attributes behind. They are layout
+    // metadata, never part of an academic question.
+    .replace(/\b(?:class|style|id|data-[\w-]+|href|align|width|height)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, ' ')
+    .replace(/\bA(?:ll|II)\s+the\s+Best\b[!*.\s]*/gi, ' ')
+    .replace(/[\u00a0\t]/g, ' ')
+    .replace(/[ \f\v]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .trim();
+}
+
 function cleanPaperContent(content: string): string {
-  return content
-    .replace(/[*_=~]{3,}/g, ' ')
+  return sanitizeAcademicText(content)
     .replace(/\bPTO\b/gi, ' ')
-    .replace(/\bAII\s+the\s+Best\b/gi, ' ')
     .replace(/\b\d+\s*\/\s*\d+\s*/g, ' ')
-    .replace(/\s+/g, ' ');
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ *\n */g, '\n');
 }
 
 // Progressive marker detection that works on single-line extractions (many PDFs produce one
@@ -566,12 +616,12 @@ function extractQuestionMarks(text: string): number | null {
   return null;
 }
 
-interface QuestionRecord {
+export interface QuestionRecord {
   text: string;
   marks: number;
-  group?: string;
-  subpart?: boolean;
-  lines?: string[];
+  questionNumber?: string;
+  subpart?: string;
+  context?: string;
 }
 
 interface MarkerSpan {
@@ -582,15 +632,35 @@ interface MarkerSpan {
   label: string;
 }
 
+// Punctuation that legitimately terminates a parent-question stem before a sub-part label
+// ("Question 1...?. a) ...", "...(5 Marks) b) ..."). A diagram/pseudocode vertex token such
+// as "(v)" or "v-w)" or "REcTARRY(w)" is preceded by a word, "-", "/" or "(" instead and
+// must never be treated as a sub-part marker.
+function hasStandaloneSubpartBoundary(line: string, spanStart: number): boolean {
+  const before = line.slice(0, spanStart).replace(/[\t ]+$/, '');
+  if (before === '') return true;
+  if (/[.?:\u2019;,!)\]}]$/.test(before)) return true;
+  // Parenthetical form "(a)": the opening paren may complete the boundary.
+  if (before.endsWith('(')) {
+    const inner = before.slice(0, -1).replace(/[\t ]+$/, '');
+    return inner === '' || /[.?:\u2019;,!)\]}]$/.test(inner);
+  }
+  return false;
+}
+
 function allMarkerSpans(line: string): MarkerSpan[] {
   const spans: MarkerSpan[] = [];
   for (const match of line.matchAll(LINE_MARKER)) {
     const raw = match[0];
     const [, questionWord, dot, paren, subpart] = match;
     const subpartMatch = subpart !== undefined;
-    const end = (match.index ?? 0) + raw.length;
+    const start = match.index ?? 0;
+    // An isolated letter / roman-numeral needs real question context: the label must sit
+    // after a stem boundary and be followed by substantive text, not pseudocode noise.
+    if (subpartMatch && !hasStandaloneSubpartBoundary(line, start)) continue;
+    const end = start + raw.length;
     spans.push({
-      start: match.index ?? 0,
+      start,
       end,
       marks: extractQuestionMarks(raw),
       subpart: subpartMatch,
@@ -608,15 +678,25 @@ function allMarkerSpans(line: string): MarkerSpan[] {
 interface QuestionDraft {
   lines: string[];
   marks: number;
-  group?: string;
-  subpart?: boolean;
+  questionNumber?: string;
+  subpart?: string;
+  context?: string;
 }
 
-function splitQuestionSections(content: string): QuestionRecord[] {
-  const lines = cleanPaperContent(content).replace(/\r/g, '').split('\n');
+function isDocumentHeading(line: string): boolean {
+  const text = line.trim();
+  if (!text || text.length > 120 || /[?.!]/.test(text)) return false;
+  if (/^(?:end\s+of\s+(?:question\s+)?paper|university\s+examination|examination\s+paper|course\s+title|department\s+of|academic\s+year)\b/i.test(text)) return true;
+  const letters = text.replace(/[^A-Za-z]/g, '');
+  return letters.length >= 4 && letters === letters.toUpperCase() && !/\b(?:question|q)\s*\d/i.test(text);
+}
+
+export function extractNumberedQuestionRecords(content: string): QuestionRecord[] {
+  const lines = cleanPaperContent(content).split('\n');
   const drafts: QuestionDraft[] = [];
   let current: QuestionDraft | null = null;
   let openGroup: string | null = null;
+  const groupContexts = new Map<string, string>();
 
   const commit = () => {
     if (current && current.lines.length > 0) drafts.push(current);
@@ -629,15 +709,15 @@ function splitQuestionSections(content: string): QuestionRecord[] {
     const marks = extractQuestionMarks(trimmed);
     if (marks !== null && marks > current.marks) current.marks = marks;
   };
-  const openDraft = (marks: number | null, subpart: boolean) => {
+  const openDraft = (marks: number | null, questionNumber: string) => {
     commit();
-    current = { lines: [], marks: marks || 0, subpart, group: openGroup ?? undefined };
+    current = { lines: [], marks: marks || 0, questionNumber };
   };
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
-    if (BOILERPLATE.test(line) || SECTION_HEADER.test(line)) {
+    if (BOILERPLATE.test(line) || SECTION_HEADER.test(line) || isDocumentHeading(line)) {
       commit();
       continue;
     }
@@ -654,12 +734,18 @@ function splitQuestionSections(content: string): QuestionRecord[] {
       if (pre) append(pre);
       if (span.subpart) {
         if (openGroup) {
+          const parentContext = current && !current.subpart && current.questionNumber === openGroup
+            ? normalizeAcademicQuestion(current.lines.join(' ')) : '';
+          if (parentContext) groupContexts.set(openGroup, parentContext);
           commit();
-          current = { lines: [], marks: span.marks || 0, subpart: true, group: openGroup };
+          current = {
+            lines: [], marks: span.marks || 0, questionNumber: openGroup,
+            subpart: span.label, context: groupContexts.get(openGroup),
+          };
         }
       } else {
         openGroup = span.label;
-        openDraft(span.marks, false);
+        openDraft(span.marks, span.label);
       }
       cursor = span.end;
     }
@@ -668,36 +754,56 @@ function splitQuestionSections(content: string): QuestionRecord[] {
   }
   commit();
 
-  const groupsWithSubParts = new Set(drafts.filter((draft) => draft.subpart).map((draft) => draft.group));
+  const groupsWithSubParts = new Set(drafts.filter((draft) => draft.subpart).map((draft) => draft.questionNumber));
   const maxGroupMarks = drafts.reduce((map, draft) => {
-    if (draft.group && draft.marks > (map.get(draft.group) || 0)) map.set(draft.group, draft.marks);
+    if (draft.questionNumber && draft.marks > (map.get(draft.questionNumber) || 0)) map.set(draft.questionNumber, draft.marks);
     return map;
   }, new Map<string, number>());
 
   return drafts
-    .filter((draft) => !(!draft.subpart && draft.group && groupsWithSubParts.has(draft.group)))
+    .filter((draft) => !(!draft.subpart && draft.questionNumber && groupsWithSubParts.has(draft.questionNumber)))
     .filter((draft) => draft.lines.length > 0)
     .map((draft) => {
-      const marks = draft.marks > 0 ? draft.marks : (draft.subpart && draft.group ? (maxGroupMarks.get(draft.group) || 10) : 10);
+      const marks = draft.marks > 0 ? draft.marks : (draft.subpart && draft.questionNumber ? (maxGroupMarks.get(draft.questionNumber) || 10) : 10);
       // The "(N Marks)" annotation is boilerplate - marks are stored in their own column and
       // a leftover "Marks" token must never influence topic mapping.
       const text = normalizeAcademicQuestion(draft.lines.join(' ')).replace(/\s*[(\[]\s*\d+(?:\.\d+)?\s*(?:marks?|m)\s*[)\]]/gi, '').replace(/\s+/g, ' ').trim();
-      return { text, marks, group: draft.group, subpart: draft.subpart };
+      const context = draft.context?.replace(/\s*[(\[]\s*\d+(?:\.\d+)?\s*(?:marks?|m)\s*[)\]]/gi, '').replace(/\s+/g, ' ').trim();
+      return { text, marks, questionNumber: draft.questionNumber, subpart: draft.subpart, context };
     });
 }
 
 export function extractNumberedQuestions(content: string): string[] {
-  return splitQuestionSections(content).map((section) => section.text).filter(Boolean);
-}
-
-function extractNumberedQuestionRecords(content: string): QuestionRecord[] {
   const unique = new Map<string, QuestionRecord>();
-  for (const section of splitQuestionSections(content)) {
+  for (const section of extractNumberedQuestionRecords(content)) {
     if (!section.text) continue;
-    const normalized = section.text.toLowerCase();
+    const normalized = `${section.questionNumber || ''}:${section.subpart || ''}:${section.text}`.toLowerCase();
     if (!unique.has(normalized)) unique.set(normalized, section);
   }
-  return [...unique.values()];
+  return [...unique.values()].map((section) => section.text);
+}
+
+const SENTENCE_END = /[.!?][)\s"]*$/;
+
+// Rejects short/garbled question fragments before they enter the bank that feeds Practice and
+// Mock exams. Phantom records from broken extractions are usually diagram labels, orphaned
+// marks annotations, or single-character-heavy noise.
+function isPersistableQuestion(record: { text: string }): boolean {
+  const text = record.text.trim();
+  if (!text) return false;
+  // A record that begins with a marks annotation ("2 marks) Roll No: ...") is a fragment whose
+  // real start was consumed by a stray number marker earlier in the broken extraction.
+  if (/^(?:\d+\s*marks?|[(\[]\s*\d+\s*marks?[)\]])/i.test(text)) return false;
+  if (/^[\d\s/\\+\-]+$/.test(text)) return false;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 3) return false;
+  // Too-short fragments ("K traverse v-") without sentence punctuation are never questions.
+  if (text.length < 28 && !SENTENCE_END.test(text)) return false;
+  // Fragments dominated by single-character diagram tokens ("v", "w", "r") and lacking a
+  // sentence terminator are unreadable noise ("Pick a random n x I vectorL (elements ...").
+  const shortTokens = words.filter((word) => word.length <= 2).length;
+  if (shortTokens / words.length > 0.5 && !SENTENCE_END.test(text)) return false;
+  return true;
 }
 
 function questionSimilarity(left: string, right: string): number {
@@ -708,52 +814,229 @@ function questionSimilarity(left: string, right: string): number {
   return intersection / (leftTokens.size + rightTokens.size - intersection);
 }
 
-function inferQuestionTopic(questionText: string): string | null {
-  const ignored = new Set(['Explain', 'Describe', 'Discuss', 'Compare', 'Solve', 'Apply', 'Using', 'State', 'Find', 'Derive', 'Construct', 'Demonstrate', 'Draw', 'Define', 'List', 'Write', 'Justify', 'Identify', 'Prepare', 'Perform', 'Suggest', 'Develop', 'Design', 'What', 'How', 'Why', 'When', 'Where', 'Which', 'For', 'While', 'The', 'This', 'That', 'You', 'Your', 'I', 'A', 'An']);
+// Words that would match a junk topic token from a diagram/boilerplate extraction and should
+// never be used as a single-token evidence of a real mapping.
+const NON_TOPIC_QUESTION_TOKENS = new Set(['prove', 'yes', 'no', 'roll', 'offs', 'pm', 'mark', 'marks', 'aim', 'verify', 'show', 'state', 'find', 'list', 'write', 'solve', 'apply', 'draw', 'define', 'explain', 'describe', 'compare', 'discuss', 'derive', 'compute', 'calculate', 'determine', 'design', 'construct', 'suggest', 'identify', 'justify', 'prepare', 'perform', 'each', 'chapter', 'section', 'paper', 'question', 'questions', 'part', 'parts', 'note', 'notes', 'book', 'answer', 'answers', 'carries', 'bonus', 'extra']);
+
+type ProvisionalTopicRule = { name: string; patterns: RegExp[] };
+
+// PYQ-derived topics are stable academic concepts, not fragments copied from the question.
+// They use normalized concept aliases, never capitalization or the first word of a question.
+const PROVISIONAL_TOPIC_RULES: ProvisionalTopicRule[] = [
+  { name: 'Software Process Models', patterns: [/\b(?:waterfall|spiral|incremental|agile|generic)\s+(?:software\s+)?process(?:\s+models?)?\b/i, /\bsoftware\s+process(?:\s+(?:model|stage|lifecycle|risk))?\b/i] },
+  { name: 'Software Architecture', patterns: [/\bsoftware\s+architecture\b/i, /\barchitecture\s+(?:pattern|style|design)\b/i, /\b(?:client.server|layered|microservice|repository)\s+architecture\b/i, /\btransparent\s+replication\b/i, /\breplication\b/i] },
+  { name: 'Non-Functional Requirements', patterns: [/\bnon.functional\s+requirements?\b/i, /\bquality\s+(?:attributes?|metrics?|requirements?)\b/i, /\b(?:performance|reliability|availability|maintainability|scalability|interoperability|security)\b/i] },
+  { name: 'Software Requirements Specification', patterns: [/\b(?:software\s+)?requirements?\s+specification\b/i, /\bsrs\b/i, /\bfunctional\s+requirements?\b/i] },
+  { name: 'Form-Based Requirements Specification', patterns: [/\bform.based\s+(?:requirements?|specification)\b/i, /\b(?:forms?|form\s+handling)\s+(?:to\s+)?(?:specify|capture|requirements?)\b/i] },
+  { name: 'Distributed Systems', patterns: [/\bdistributed\s+(?:system|database|application|computing)\b/i, /\b(?:replication|fragmentation|distributed\s+transaction)\b/i] },
+  { name: 'Database Systems', patterns: [/\b(?:normalization|relational\s+algebra|sql|database\s+schema|acid|transaction)\b/i] },
+  { name: 'Operating Systems', patterns: [/\b(?:paging|page\s+fault|deadlock|process\s+schedul|virtual\s+memory)\b/i] },
+  { name: 'Computer Networks', patterns: [/\b(?:tcp|udp|routing|network\s+protocol|congestion\s+control|osi\s+model)\b/i] },
+  { name: 'Graph Algorithms', patterns: [/\b(?:dijkstra|bellman.ford|floyd.warshall|breadth.first|depth.first|\bbfs\b|\bdfs\b|minimum\s+spanning|\bmst\b|topological\s+sort)\b/i] },
+  { name: 'Dynamic Programming', patterns: [/\b(?:dynamic\s+programming|memoization|tabulation|knapsack|longest\s+common\s+subsequence|matrix\s+chain)\b/i] },
+  { name: 'Divide and Conquer', patterns: [/\b(?:divide\s+and\s+conquer|master\s+theorem|recurrence\s+(?:relation|tree)|recurrence)\b/i] },
+  { name: 'Greedy Algorithms', patterns: [/\b(?:greedy|huffman|activity\s+selection|fractional\s+knapsack)\b/i] },
+  { name: 'Sorting and Searching', patterns: [/\b(?:quicksort|mergesort|heapsort|binary\s+search|counting\s+sort|radix\s+sort)\b/i] },
+  { name: 'Tree Data Structures', patterns: [/\b(?:binary\s+search\s+tree|\bbst\b|avl|red.black\s+tree|\bb.tree\b|trie)\b/i] },
+  { name: 'Priority Queues', patterns: [/\bpriority\s+queues?\b/i, /\bheap\s+(?:priority\s+)?queues?\b/i] },
+];
+
+function classifyProvisionalTopic(questionText: string): { name: string; evidence: string[] } {
+  const matches = PROVISIONAL_TOPIC_RULES.map((rule) => ({ rule, matches: rule.patterns.filter((pattern) => pattern.test(questionText)) }))
+    .filter((candidate) => candidate.matches.length > 0);
+  if (matches.length === 0) return { name: 'General Academic Concepts', evidence: ['provisional academic classification'] };
+  matches.sort((left, right) => right.matches.length - left.matches.length || right.rule.name.length - left.rule.name.length);
+  return { name: matches[0].rule.name, evidence: matches[0].matches.map((pattern) => 'provisional concept: ' + pattern.source) };
+}
+
+// Compatibility stub for old callers. New PYQ ingestion exclusively uses
+// classifyProvisionalTopic, which is concept-based rather than capitalization-based.
+function inferQuestionTopic(_questionText: string): string | null {
+  return null;
+  /*
   const isSentenceStartWord = (text: string, word: string): boolean => {
     const index = text.indexOf(word);
     if (index < 0) return false;
     const prefix = text.slice(0, index).trim();
     return prefix === '' || /[?.:!]\s*$/.test(prefix);
   };
-  const titlePhrases = questionText.match(/\b[A-Z][A-Za-z0-9']+(?:\s+[A-Z][A-Za-z0-9']+){1,3}\b/g) || [];
+  // 1) A multi-word capitalized phrase is the most reliable signal: "Master Theorem",
+  //    "Binary Heap", "Dynamic Programming". It must not start with a verb/instruction word,
+  //    must have at least one substantive word, and must not be a sentence-initial clause.
+  const titlePhrases = questionText.match(/\b[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){1,3}\b/g) || [];
   const phrase = titlePhrases.find((candidate) => {
-    const firstWord = candidate.split(/\s+/)[0];
-    if (ignored.has(firstWord)) return false;
+    const words = candidate.split(/\s+/);
+    const firstWord = words[0];
+    if (TOPIC_VERB_PREFIXES.has(firstWord) || TOPIC_STOPWORDS.has(firstWord)) return false;
+    if (words.some((word) => /[.\\/]/.test(word))) return false;
+    const hasSubstantive = words.some((word) => word.length >= 5);
+    if (!hasSubstantive) return false;
     const index = questionText.indexOf(candidate);
-    if (index > 0 && questionText[index - 1] === ':') return false;
-    return true;
+    if (index === 0) return false; // "Binary Heap:" running-head style headers, skip
+    return !isSentenceStartWord(questionText, candidate);
   });
   if (phrase) return phrase.trim();
-  const acronym = questionText.match(/\b[A-Z]{2,}(?:[-/]\d+)?\b/);
-  if (acronym) return acronym[0];
-  const technicalTerm = questionText.match(/\b[A-Z][A-Za-z0-9']+\b/g) || [];
-  const first = technicalTerm.find((word) => {
-    if (ignored.has(word) || GENERIC_TOPIC_TOKENS.has(word.toLowerCase())) return false;
+  // 2) A single Title-case token as a fallback is only trustworthy when it genuinely reads as
+  //    a noun (≥4 lowercase letters after the initial): it must occur mid-sentence (proper
+  //    nouns like "Dijkstra", "Euclid"), not sentence-initial, and not be directly followed
+  //    by an open parenthesis (a function call like "O(V + E)").
+  const capitalized = (questionText.match(/\b[A-Z][a-z]{3,}\b/g) || []).filter((word) => {
+    if (TOPIC_VERB_PREFIXES.has(word) || TOPIC_STOPWORDS.has(word)) return false;
     if (isSentenceStartWord(questionText, word)) return false;
-    return true;
+    const after = questionText.slice(questionText.indexOf(word) + word.length).trim();
+    if (after.startsWith('(') || after.startsWith('-')) return false;
+    return !GENERIC_TOPIC_TOKENS.has(word.toLowerCase());
   });
-  return first ?? null;
+  const single = capitalized.find((word) => !NON_TOPIC_QUESTION_TOKENS.has(word.toLowerCase()));
+  if (single) return single;
+  // 3) A standalone all-caps acronym ("BFS", "DFS", "MST") is a real topic when it reads as a
+  //    term: it must be its own token (never "RE" inside "REcTARRY"), must not be boilerplate,
+  //    and should group with a following substantive word ("BFS traversal", "MST on the graph").
+  //    Diagram noise like "YES YES..." or "6 PM;" fails the lowercase-follow check.
+  const acronym = (questionText.match(/(?<![A-Za-z0-9])[A-Z]{3,4}(?![A-Za-z0-9])/g) || [])
+    .find((word) => {
+      const lower = word.toLowerCase();
+      if (NON_TOPIC_QUESTION_TOKENS.has(lower) || GENERIC_TOPIC_TOKENS.has(lower)) return false;
+      if (new Set(['yes', 'no', 'pm', 'off', 'ok', 'gt', 'us', 'tv', 'tt', 'ss']).has(lower)) return false;
+      const after = questionText.slice(questionText.indexOf(word) + word.length).trim();
+      if (after === '') return false;
+      if (after.startsWith('(') || after.startsWith(')') || /^[A-Z0-9]/.test(after)) return false;
+      return true;
+    });
+  return acronym ?? null;
+  */
 }
 
-function extractSyllabusTopics(content: string): Array<{ name: string; weightage?: number }> {
+export function extractSyllabusTopics(content: string): Array<{ name: string; weightage?: number }> {
   const topics = new Map<string, { name: string; weightage?: number }>();
-  for (const rawLine of content.replace(/\r/g, '').split('\n')) {
+  const lines = content.replace(/\r/g, '').replace(/\f/g, '\n')
+    // A number of PDF text layers flatten a whole syllabus page onto one line. Restore unit
+    // boundaries before parsing so a valid syllabus still produces persisted topic names.
+    .replace(/\b(?:unit|module|topic|chapter)\s*(?:\d+|[ivxlcdm]+)\s*[:.)\-]/gi, (header) => `\n${header}`)
+    .split('\n');
+  for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
-    const body = line.replace(/^\s*(?:unit|module|topic|chapter)\s*\d*\s*[:.)\-]?\s*/i, '').trim();
-    if (!body || body.length > 120) continue;
+    const body = line.replace(/^\s*(?:unit|module|topic|chapter)\s*(?:\d+|[ivxlcdm]+)?\s*[:.)\-]?\s*/i, '').trim();
+    if (!body) continue;
     const weightageMatch = /(\d+(?:\.\d+)?)\s*%/.exec(body);
     const withoutWeightage = body.replace(/\(?\d+(?:\.\d+)?\s*%\)?/g, '').trim();
     const candidates = withoutWeightage.includes(':') ? withoutWeightage.split(':').slice(1) : [withoutWeightage];
-    for (const candidate of candidates.flatMap((item) => item.split(/[;,]/))) {
-      const name = candidate.replace(/^[-*]\s*/, '').trim();
+    for (const candidate of candidates.flatMap((item) => item.split(/[;,\u2022|]/))) {
+      const name = stripMarkdownNoise(candidate).replace(/^[-\s]+/, '').trim();
       if (name.length < 3 || name.length > 80 || /^(course|syllabus|unit|module)$/i.test(name)) continue;
       topics.set(name.toLowerCase(), { name, weightage: weightageMatch ? Number(weightageMatch[1]) : undefined });
     }
   }
   return [...topics.values()];
 }
+
+interface ConceptAliasRule {
+  domain: string;
+  topicMatches: (topicName: string, topicTokens: string[]) => boolean;
+  aliases: Array<{
+    label: string;
+    pattern: RegExp;
+  }>;
+}
+
+const CONCEPT_RULES: ConceptAliasRule[] = [
+  {
+    domain: 'Graph Algorithms',
+    topicMatches: (name, tokens) =>
+      /\bgraphs?(?:\s+algorithms?|\s+theory)?\b/i.test(name) || tokens.includes('graph'),
+    aliases: [
+      { label: 'Dijkstra', pattern: /\bdijkstra(?:'s)?\b/i },
+      { label: 'shortest path', pattern: /\bshortest\s+paths?\b/i },
+      { label: 'BFS', pattern: /\bbfs\b|\bbreadth[\s-]first(?:\s+search)?\b/i },
+      { label: 'DFS', pattern: /\bdfs\b|\bdepth[\s-]first(?:\s+search)?\b/i },
+      { label: 'MST', pattern: /\bmst\b|\bminimum\s+spanning\s+trees?\b/i },
+      { label: 'Prim', pattern: /\bprim(?:'s)?\b/i },
+      { label: 'Kruskal', pattern: /\bkruskal(?:'s)?\b/i },
+      { label: 'Bellman-Ford', pattern: /\bbellman[\s-]ford\b/i },
+      { label: 'Floyd-Warshall', pattern: /\bfloyd[\s-]warshall\b/i },
+      { label: 'topological sort', pattern: /\btopological\s+sort(?:ing)?\b/i },
+      { label: 'spanning tree', pattern: /\bspanning\s+trees?\b/i },
+      { label: 'bipartite', pattern: /\bbipartite(?:\s+graphs?)?\b/i },
+    ],
+  },
+  {
+    domain: 'Dynamic Programming',
+    topicMatches: (name, tokens) =>
+      /\bdynamic\s+programming\b/i.test(name) || /\bdp\b/i.test(name) || (tokens.includes('dynamic') && tokens.includes('programming')),
+    aliases: [
+      { label: 'Knapsack', pattern: /\bknapsack\b/i },
+      { label: 'memoization', pattern: /\bmemoi[sz](?:ation|ed|ing|e)?\b/i },
+      { label: 'tabulation', pattern: /\btabulation\b/i },
+      { label: 'optimal substructure', pattern: /\boptimal\s+substructures?\b/i },
+      { label: 'overlapping subproblems', pattern: /\boverlapping\s+subproblems?\b/i },
+      { label: 'Dynamic Programming', pattern: /\bdynamic\s+programming\b/i },
+      { label: 'longest common subsequence', pattern: /\blongest\s+common\s+subsequences?\b|\blcs\b/i },
+      { label: 'matrix chain multiplication', pattern: /\bmatrix\s+chain(?:\s+multiplication)?\b/i },
+    ],
+  },
+  {
+    domain: 'Divide and Conquer',
+    topicMatches: (name, tokens) =>
+      /\bdivide\s+(?:and|&)\s+conquer\b/i.test(name) || (tokens.includes('divide') && tokens.includes('conquer')),
+    aliases: [
+      { label: 'Master Theorem', pattern: /\bmaster\s+theorems?\b/i },
+      { label: 'recurrence', pattern: /\brecurrence(?:s)?\b/i },
+      { label: 'recurrence relation', pattern: /\brecurrence\s+relations?\b/i },
+      { label: 'divide and conquer', pattern: /\bdivide\s+(?:and|&)\s+conquer\b/i },
+      { label: 'master method', pattern: /\bmaster\s+methods?\b/i },
+    ],
+  },
+  {
+    domain: 'Recurrence Relations',
+    topicMatches: (name, tokens) =>
+      /\brecurrence(?:s|\s+relations?)?\b/i.test(name) || tokens.includes('recurrence') || tokens.includes('recurrences'),
+    aliases: [
+      { label: 'Master Theorem', pattern: /\bmaster\s+theorems?\b/i },
+      { label: 'recurrence', pattern: /\brecurrence(?:s)?\b/i },
+      { label: 'recurrence relation', pattern: /\brecurrence\s+relations?\b/i },
+      { label: 'master method', pattern: /\bmaster\s+methods?\b/i },
+      { label: 'recursion tree', pattern: /\brecursion\s+trees?\b/i },
+    ],
+  },
+  {
+    domain: 'Greedy Algorithms',
+    topicMatches: (name, tokens) =>
+      /\bgreedy\b/i.test(name) || tokens.includes('greedy'),
+    aliases: [
+      { label: 'Huffman coding', pattern: /\bhuffman(?:\s+coding|\s+code)?\b/i },
+      { label: 'activity selection', pattern: /\bactivity\s+selection\b/i },
+      { label: 'fractional knapsack', pattern: /\bfractional\s+knapsack\b/i },
+      { label: 'greedy choice', pattern: /\bgreedy\s+choice\b/i },
+    ],
+  },
+  {
+    domain: 'Sorting and Searching',
+    topicMatches: (name, tokens) =>
+      /\b(?:sorting|searching)\b/i.test(name) || tokens.includes('sorting') || tokens.includes('searching'),
+    aliases: [
+      { label: 'quicksort', pattern: /\bquicksort\b/i },
+      { label: 'mergesort', pattern: /\bmergesort\b/i },
+      { label: 'heapsort', pattern: /\bheapsort\b/i },
+      { label: 'radix sort', pattern: /\bradix\s+sort\b/i },
+      { label: 'counting sort', pattern: /\bcounting\s+sort\b/i },
+      { label: 'binary search', pattern: /\bbinary\s+search\b/i },
+    ],
+  },
+  {
+    domain: 'Trees and Search Trees',
+    topicMatches: (name, tokens) =>
+      /\b(?:trees?|binary\s+search\s+trees?)\b/i.test(name) || tokens.includes('tree'),
+    aliases: [
+      { label: 'AVL tree', pattern: /\bavl(?:\s+trees?)?\b/i },
+      { label: 'red-black tree', pattern: /\bred[\s-]black(?:\s+trees?)?\b/i },
+      { label: 'binary search tree', pattern: /\bbinary\s+search\s+trees?\b/i },
+      { label: 'BST', pattern: /\bbst\b/i },
+      { label: 'B-tree', pattern: /\bb[\s-]trees?\b/i },
+      { label: 'trie', pattern: /\btrie\b/i },
+    ],
+  },
+];
 
 function mapQuestionToTopic(questionText: string, topics: TopicRow[]) {
   const questionTokens = new Set(academicTokens(questionText));
@@ -762,18 +1045,41 @@ function mapQuestionToTopic(questionText: string, topics: TopicRow[]) {
     const topicTokens = [...new Set(academicTokens(topic.name))];
     const distinctiveCount = topicTokens.filter((token) => !GENERIC_TOPIC_TOKENS.has(token)).length;
     const matches = [...new Set(topicTokens.filter((token) => questionTokens.has(token)))];
-    if (matches.length === 0) continue;
-    // A topic matched purely through generic words ("management", "while", "PM", "system",
-    // "process", "model", ...) is not a real mapping - leave the question UNMATCHED instead.
+
+    // Check token overlap validity against stop/junk token guards:
     const matchedDistinctive = matches.filter((token) => !GENERIC_TOPIC_TOKENS.has(token)).length;
-    if (matchedDistinctive === 0) continue;
-    // A single common academic token ("software" for "Software Architecture Patterns") is not
-    // enough when the topic has several distinctive words; prefer UNMATCHED over a guess.
-    if (matchedDistinctive === 1 && distinctiveCount >= 3 && COMMON_ACADEMIC_TOKENS.has(matches[0])) continue;
-    const topicTokenCount = Math.max(1, topicTokens.length);
-    const score = matchedDistinctive / topicTokenCount;
-    const evidence = matches.map((token) => `matched keyword: ${token}`);
-    if (!best || score > best.score || (score === best.score && matches.length > best.evidence.length)) {
+    const tokenOverlapValid = matches.length > 0 && matchedDistinctive > 0 &&
+      !(matchedDistinctive === 1 && distinctiveCount >= 3 && COMMON_ACADEMIC_TOKENS.has(matches[0])) &&
+      !(matchedDistinctive === 1 && matches.length === 1 && NON_TOPIC_QUESTION_TOKENS.has(matches[0]));
+
+    const tokenScore = tokenOverlapValid ? (matchedDistinctive / Math.max(1, topicTokens.length)) : 0;
+
+    // Check deterministic concept alias rules:
+    const matchedAliases: string[] = [];
+    for (const rule of CONCEPT_RULES) {
+      if (rule.topicMatches(topic.name, topicTokens)) {
+        for (const alias of rule.aliases) {
+          if (alias.pattern.test(questionText)) {
+            matchedAliases.push(alias.label);
+          }
+        }
+      }
+    }
+    const uniqueAliases = [...new Set(matchedAliases)];
+
+    // If neither valid token overlap nor concept alias matched, this topic does not match
+    if (!tokenOverlapValid && uniqueAliases.length === 0) continue;
+
+    // Combine alias evidence with token-overlap score rather than replacing it
+    const aliasScore = uniqueAliases.length > 0 ? (0.75 + 0.15 * Math.min(uniqueAliases.length - 1, 3)) : 0;
+    const score = Number((tokenScore + aliasScore).toFixed(3));
+
+    const evidence: string[] = [
+      ...(tokenOverlapValid ? matches.map((token) => `matched keyword: ${token}`) : []),
+      ...uniqueAliases.map((alias) => `concept alias: ${alias}`),
+    ];
+
+    if (!best || score > best.score || (score === best.score && evidence.length > best.evidence.length)) {
       best = { topic, score, evidence };
     }
   }
@@ -795,7 +1101,14 @@ export type RankedTopicRow = TopicRow & {
 export function rankedTopicRows(userId: string, documentId?: string): RankedTopicRow[] {
   const questionsForEvidence = questionRows(userId, documentId);
   const mappedTopicIds = new Set(questionsForEvidence.flatMap((question) => question.topicId ? [question.topicId] : []));
-  const topics = topicRows(userId).filter((topic) => !documentId || mappedTopicIds.has(topic.id));
+  const allTopics = topicRows(userId);
+  const hasSyllabusTopics = allTopics.some((topic) => topic.source === 'syllabus');
+  const topics = allTopics.filter((topic) =>
+    (!documentId || topic.source === 'syllabus' || mappedTopicIds.has(topic.id)) &&
+    // Once a syllabus is present, a provisional topic remains visible only while it has PYQ
+    // evidence that could not yet be aligned to any authoritative syllabus topic.
+    (!hasSyllabusTopics || topic.source !== 'paper-derived/provisional' || mappedTopicIds.has(topic.id)),
+  );
   const sourceDocumentIds = new Map<string, string[]>();
   for (const row of getDb().prepare(`SELECT topic_id AS topicId, document_id AS documentId
     FROM topic_document_sources WHERE user_id = ?`).all(userId) as any[]) {
@@ -832,7 +1145,27 @@ export function rankedTopicRows(userId: string, documentId?: string): RankedTopi
   return ranking.sort((left, right) => right.priorityScore - left.priorityScore || right.mappedQuestionCount - left.mappedQuestionCount || left.name.localeCompare(right.name));
 }
 
-export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string; fileData?: Uint8Array; mimeType?: string; extractionMethod?: string; topicMappings?: Array<{ questionText: string; topicName: string; confidence: number }>; aiQuestions?: Array<{ text: string; marks: number }> }) {
+function questionClassificationText(question: Pick<QuestionRecord, 'text' | 'context'>): string {
+  return [question.context, question.text].filter(Boolean).join(' ');
+}
+
+function findOrCreateProvisionalTopic(userId: string, classification: { name: string; evidence: string[] }): TopicRow {
+  const existing = topicRows(userId).find((topic) =>
+    topic.source === 'paper-derived/provisional' &&
+    classifyProvisionalTopic(topic.name).name === classification.name,
+  );
+  if (existing) return existing;
+  saveTopics(userId, [{
+    name: classification.name,
+    priority: 1,
+    weightage: 10,
+    hasWeightage: false,
+    source: 'paper-derived/provisional',
+  }]);
+  return findOwnedTopicByName(userId, classification.name)!;
+}
+
+export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string; fileData?: Uint8Array; mimeType?: string; extractionMethod?: string; topicMappings?: Array<{ questionText: string; topicName: string; confidence: number }>; questionRecords?: QuestionRecord[] }) {
   const existingDocument = getDb().prepare(`SELECT id, title, doc_type AS docType, content, file_size AS fileSize, created_at AS createdAt
     FROM documents WHERE user_id = ? AND title = ? AND content = ?`).get(userId, input.title.trim(), input.content) as DocumentRow | undefined;
   const document = existingDocument || createDocument(userId, input);
@@ -855,58 +1188,29 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
     });
     associateAll(syllabusTopics);
   }
-  const hasSyllabusTopics = topicRows(userId).some((topic) => topic.source === 'syllabus');
+  const persistedSyllabusTopics = topicRows(userId).filter((topic) => topic.source === 'syllabus');
   if (syllabusTopics.length > 0) {
-    remapUnmatchedQuestions(userId, hasSyllabusTopics
-      ? topicRows(userId).filter((topic) => topic.source === 'syllabus')
-      : topicRows(userId));
+    remapUnmatchedQuestions(userId, persistedSyllabusTopics);
+    reconcileProvisionalMappings(userId, persistedSyllabusTopics);
   }
-  // AI topic classifications, aligned to the syllabus when one exists. When a syllabus is
-  // present the pipeline ONLY maps to syllabus topics - AI topics that cannot be resolved to
-  // a syllabus topic are dropped, and paper-derived topics are never created.
+  // PYQs may only map to syllabus topics that were already persisted. Gemini can improve this
+  // mapping, but can neither create a topic nor make extraction depend on its availability.
   const paperMappings = (input.topicMappings || [])
     .filter((mapping) => mapping.topicName.trim() && mapping.confidence >= 0.6)
-    .map((mapping) => hasSyllabusTopics
-      ? { ...mapping, topicName: resolveSyllabusTopicName(mapping.topicName, topicRows(userId).filter((topic) => topic.source === 'syllabus')) }
-      : mapping)
+    .map((mapping) => ({ ...mapping, topicName: resolveSyllabusTopicName(mapping.topicName, persistedSyllabusTopics) }))
     .filter((mapping): mapping is { questionText: string; topicName: string; confidence: number } => Boolean(mapping.topicName));
-  if (paperMappings.length > 0 && !hasSyllabusTopics) {
-    saveTopics(userId, [...new Set(paperMappings.map((mapping) => mapping.topicName.trim().toLowerCase()))].map((key) => ({
-      name: paperMappings.find((mapping) => mapping.topicName.trim().toLowerCase() === key)!.topicName.trim(),
-      priority: 1,
-      weightage: 1,
-      hasWeightage: false,
-      source: 'paper-analysis',
-    })));
-  }
-  const ruleExtractedQuestions = input.docType.toLowerCase().includes('past') ? extractNumberedQuestionRecords(input.content) : [];
-  const aiExtractedQuestions = (input.aiQuestions || [])
+  const extractedQuestions = (input.docType.toLowerCase().includes('past')
+    ? input.questionRecords || extractNumberedQuestionRecords(input.content) : [])
     .map((question) => ({
-      text: normalizeAcademicQuestion(String(question.text || '')),
-      marks: Math.max(1, Math.round(Number(question.marks) || 10)),
+      ...question,
+      text: normalizeAcademicQuestion(question.text),
+      context: question.context ? normalizeAcademicQuestion(question.context) : undefined,
     }))
-    .filter((question) => Boolean(question.text));
-  const extractedQuestions = aiExtractedQuestions.length > 0 ? aiExtractedQuestions : ruleExtractedQuestions;
-  if (!hasSyllabusTopics && paperMappings.length === 0) {
-    const inferredTopics = extractedQuestions
-      .map((question) => inferQuestionTopic(question.text))
-      .filter((name): name is string => Boolean(name));
-    if (inferredTopics.length > 0) {
-      saveTopics(userId, [...new Set(inferredTopics)].map((name) => ({
-        name,
-        priority: 1,
-        weightage: 1,
-        hasWeightage: false,
-        source: 'paper-derived',
-      })));
-    }
-  }
-  let availableTopics = topicRows(userId);
-  if (hasSyllabusTopics) availableTopics = availableTopics.filter((topic) => topic.source === 'syllabus');
+    .filter(isPersistableQuestion);
   const existing = (getDb().prepare('SELECT normalized_text AS normalizedText FROM questions WHERE user_id = ? AND document_id = ?').all(userId, document.id) as any[]).map((row) => row.normalizedText);
   const insert = getDb().prepare(`INSERT INTO questions
-    (id, user_id, document_id, topic_id, question_text, normalized_text, marks, question_type, source, suggested_time_minutes, mapping_score, mapping_evidence, mapping_status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (id, user_id, document_id, topic_id, question_text, normalized_text, question_number, subpart, context_text, marks, question_type, source, suggested_time_minutes, mapping_score, mapping_evidence, mapping_status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, document_id, normalized_text) WHERE document_id IS NOT NULL DO NOTHING`);
   const createdQuestionIds: string[] = [];
   // Decide each question's mapping up front so sibling sub-parts that match nothing can
@@ -921,18 +1225,27 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
       const hintedTopic = findOwnedTopicByName(userId, hinted.topicName);
       if (hintedTopic) return { topic: hintedTopic, score: hinted.confidence, evidence: ['AI topic classification from uploaded paper'] };
     }
-    return mapQuestionToTopic(question.text, availableTopics);
+    const classificationText = questionClassificationText(question);
+    if (persistedSyllabusTopics.length > 0) return mapQuestionToTopic(classificationText, persistedSyllabusTopics);
+    const provisional = classifyProvisionalTopic(classificationText);
+    return {
+      topic: findOrCreateProvisionalTopic(userId, provisional),
+      score: 0.8,
+      evidence: provisional.evidence,
+    };
   });
   applyQuestionGroupInheritance(extractedQuestions, mappingDecisions);
   const saveQuestions = getDb().transaction((items: Array<QuestionRecord>) => {
     items.forEach((item, index) => {
       const questionText = item.text;
-      const normalizedText = questionText.toLowerCase();
-      if (existing.some((stored) => stored === normalizedText || questionSimilarity(stored, normalizedText) >= 0.88)) return;
+      const normalizedText = `${item.questionNumber || ''}:${item.subpart || ''}:${questionText}`.toLowerCase();
+      // Numbered questions are distinct exam items even when a paper repeats the same wording.
+      // Similarity de-duplication is reserved for malformed records with no recoverable label.
+      if (existing.some((stored) => stored === normalizedText || (!item.questionNumber && questionSimilarity(stored, normalizedText) >= 0.88))) return;
       const mapping = mappingDecisions[index];
       const id = createId('question');
       const marks = item.marks;
-      insert.run(id, userId, document.id, mapping?.topic.id || null, questionText, normalizedText, marks, 'Subjective', 'pyq', Math.max(5, marks * 2),
+      insert.run(id, userId, document.id, mapping?.topic.id || null, questionText, normalizedText, item.questionNumber || null, item.subpart || null, item.context || null, marks, 'Subjective', 'pyq', Math.max(5, marks * 2),
         mapping?.score || null, JSON.stringify(mapping?.evidence || []), mapping ? 'mapped' : 'unmatched', now());
       createdQuestionIds.push(id);
       existing.push(normalizedText);
@@ -962,20 +1275,20 @@ function resolveSyllabusTopicName(topicName: string, syllabusTopics: TopicRow[])
 function applyQuestionGroupInheritance(records: QuestionRecord[], decisions: Array<{ topic: TopicRow; score: number; evidence: string[] } | null>): void {
   const groupBest = new Map<string, number>();
   records.forEach((record, index) => {
-    if (!record.group || !decisions[index]) return;
-    const bestIndex = groupBest.get(record.group);
+    if (!record.questionNumber || !decisions[index]) return;
+    const bestIndex = groupBest.get(record.questionNumber);
     if (bestIndex === undefined || (decisions[index]!.score ?? 0) > (decisions[bestIndex]!.score ?? 0)) {
-      groupBest.set(record.group, index);
+      groupBest.set(record.questionNumber, index);
     }
   });
   records.forEach((record, index) => {
-    if (!record.group || !record.subpart || decisions[index]) return;
-    const bestIndex = groupBest.get(record.group);
+    if (!record.questionNumber || !record.subpart || decisions[index]) return;
+    const bestIndex = groupBest.get(record.questionNumber);
     if (bestIndex !== undefined && decisions[bestIndex]) {
       decisions[index] = {
         topic: decisions[bestIndex]!.topic,
         score: decisions[bestIndex]!.score,
-        evidence: [`Inherited from sibling sub-part in question ${record.group}`],
+        evidence: [`Inherited from sibling sub-part in question ${record.questionNumber}`],
       };
     }
   });
@@ -995,6 +1308,57 @@ function remapUnmatchedQuestions(userId: string, topics: TopicRow[]) {
   apply(unmatched);
 }
 
+// Syllabus topics are authoritative. Once they arrive, replace a provisional mapping whenever
+// the stored question/context can be matched to a syllabus concept. Unrelated provisional
+// evidence is retained rather than discarded, so a partial syllabus does not erase PYQ trends.
+function reconcileProvisionalMappings(userId: string, topics: TopicRow[]) {
+  const provisionalQuestions = getDb().prepare(
+    'SELECT q.id, q.question_text AS questionText, q.context_text AS context, t.name AS provisionalTopicName ' +
+    'FROM questions q JOIN topics t ON t.id = q.topic_id AND t.user_id = q.user_id ' +
+    "WHERE q.user_id = ? AND t.source = 'paper-derived/provisional'",
+  ).all(userId) as Array<{ id: string; questionText: string; context: string | null; provisionalTopicName: string }>;
+  const update = getDb().prepare("UPDATE questions SET topic_id = ?, mapping_score = ?, mapping_evidence = ?, mapping_status = 'mapped' WHERE user_id = ? AND id = ?");
+  const apply = getDb().transaction((questions: typeof provisionalQuestions) => {
+    for (const question of questions) {
+      const mapping = mapQuestionToTopic(
+        [question.context, question.questionText, question.provisionalTopicName].filter(Boolean).join(' '),
+        topics,
+      );
+      if (mapping) {
+        update.run(mapping.topic.id, mapping.score, JSON.stringify([
+          'Reconciled from provisional PYQ topic',
+          ...mapping.evidence,
+        ]), userId, question.id);
+      }
+    }
+  });
+  apply(provisionalQuestions);
+}
+
+// Older uploads predate the question sanitizer. Run this idempotent repair when the service
+// starts so existing UI data does not continue to expose HTML/entities after the ingest fix.
+export function sanitizePersistedAcademicQuestions() {
+  const rows = getDb().prepare(
+    'SELECT id, user_id AS userId, question_text AS questionText, context_text AS context, ' +
+    'question_number AS questionNumber, subpart, normalized_text AS normalizedText FROM questions',
+  ).all() as Array<{
+    id: string; userId: string; questionText: string; context: string | null;
+    questionNumber: string | null; subpart: string | null; normalizedText: string;
+  }>;
+  const update = getDb().prepare('UPDATE questions SET question_text = ?, context_text = ?, normalized_text = ? WHERE id = ? AND user_id = ?');
+  const apply = getDb().transaction((items: typeof rows) => {
+    for (const row of items) {
+      const questionText = normalizeAcademicQuestion(row.questionText);
+      const context = row.context ? normalizeAcademicQuestion(row.context) : null;
+      const normalizedText = ((row.questionNumber || '') + ':' + (row.subpart || '') + ':' + questionText).toLowerCase();
+      if (questionText !== row.questionText || context !== row.context || normalizedText !== row.normalizedText) {
+        update.run(questionText, context, normalizedText, row.id, row.userId);
+      }
+    }
+  });
+  apply(rows);
+}
+
 export function academicEvidence(userId: string, documentId?: string) {
   const documents = documentRows(userId);
   const selectedDocumentId = documentId || documents.find((document) => document.docType.toLowerCase().includes('past'))?.id;
@@ -1003,7 +1367,8 @@ export function academicEvidence(userId: string, documentId?: string) {
 
 export function questionRows(userId: string, documentId?: string): QuestionRow[] {
   return getDb().prepare(`
-    SELECT q.id, q.topic_id AS topicId, q.document_id AS documentId, q.question_text AS questionText, q.marks,
+    SELECT q.id, q.topic_id AS topicId, q.document_id AS documentId, q.question_text AS questionText,
+      q.question_number AS questionNumber, q.subpart, q.context_text AS context, q.marks,
       q.question_type AS questionType, q.source, q.suggested_time_minutes AS suggestedTimeMinutes,
       q.mapping_score AS mappingScore, q.mapping_evidence AS mappingEvidence, q.mapping_status AS mappingStatus,
       q.created_at AS createdAt, t.name AS topicName
@@ -1016,7 +1381,8 @@ export function questionRows(userId: string, documentId?: string): QuestionRow[]
 
 export function findOwnedQuestion(userId: string, questionId: string): QuestionRow | undefined {
   const row = getDb().prepare(`
-    SELECT q.id, q.topic_id AS topicId, q.document_id AS documentId, q.question_text AS questionText, q.marks,
+    SELECT q.id, q.topic_id AS topicId, q.document_id AS documentId, q.question_text AS questionText,
+      q.question_number AS questionNumber, q.subpart, q.context_text AS context, q.marks,
       q.question_type AS questionType, q.source, q.suggested_time_minutes AS suggestedTimeMinutes,
       q.mapping_score AS mappingScore, q.mapping_evidence AS mappingEvidence, q.mapping_status AS mappingStatus,
       q.created_at AS createdAt, t.name AS topicName

@@ -20,9 +20,9 @@ export class Api {
 
   async request(
     path: string,
-    options: { method?: string; body?: any } = {},
+    options: { method?: string; body?: any; headers?: Record<string, string> } = {},
   ): Promise<ApiResponse> {
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...(options.headers || {}) };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
     const response = await fetch(`${this.baseUrl}${path}`, {

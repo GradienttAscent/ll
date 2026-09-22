@@ -126,6 +126,8 @@ describe('Mid Sem 2025 CSE312 regression', () => {
     const status = uploaded.json.analysis.aiStatus;
     assert.ok(status, 'aiStatus should be present on the analysis payload');
     assert.strictEqual(status.ok, false);
+    assert.strictEqual(status.attempted, false);
+    assert.match(status.message, /disabled for PYQ uploads/i);
     assert.ok(status.message.length > 0);
     assert.strictEqual(typeof status.model, 'string');
   });

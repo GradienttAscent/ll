@@ -376,6 +376,16 @@ const MIGRATIONS: Migration[] = [
       createMockExamTables(db);
     },
   },
+  {
+    version: 14,
+    name: 'question-bank-parser-metadata',
+    up: (db) => {
+      const columns = pragmaTableInfo(db, 'questions').map((column) => column.name);
+      if (!columns.includes('question_number')) db.run('ALTER TABLE questions ADD COLUMN question_number TEXT;');
+      if (!columns.includes('subpart')) db.run('ALTER TABLE questions ADD COLUMN subpart TEXT;');
+      if (!columns.includes('context_text')) db.run('ALTER TABLE questions ADD COLUMN context_text TEXT;');
+    },
+  },
 ];
 
 function createMockExamTables(db: SqlJsDatabase) {
