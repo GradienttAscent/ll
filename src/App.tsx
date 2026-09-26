@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ActiveTab, AdaptiveProposal, PastPaper, ExtractedTopic, QuestionItem, PeerUser, StudyRoomMessage, LMSCourse, ScheduleBlock, StudySession, UserAccount } from './types';
+import { ActiveTab, AdaptiveProposal, PastPaper, ExtractedTopic, QuestionItem, PeerUser, StudyRoomMessage, ScheduleBlock, StudySession, UserAccount } from './types';
 import { hasStoredSession, logout as logoutSession, restoreSession, setSessionExpiredHandler } from './api';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -12,7 +12,6 @@ import { CalendarView } from './components/CalendarView';
 import { InsightsView } from './components/InsightsView';
 import { HistoryView } from './components/HistoryView';
 import { StudyRoomView } from './components/StudyRoomView';
-import { LMSIntegrationView } from './components/LMSIntegrationView';
 import { UploadModal } from './components/UploadModal';
 import { SessionFeedbackCard } from './components/SessionFeedbackCard';
 import { AuthScreen } from './components/AuthScreen';
@@ -50,7 +49,6 @@ export default function App() {
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
   const [peers, setPeers] = useState<PeerUser[]>([]);
   const [messages, setMessages] = useState<StudyRoomMessage[]>([]);
-  const [lmsCourses, setLmsCourses] = useState<LMSCourse[]>([]);
 
   const clearUserState = () => {
     setActiveTab('dashboard');
@@ -73,7 +71,6 @@ export default function App() {
     setQuestions([]);
     setPeers([]);
     setMessages([]);
-    setLmsCourses([]);
     setScheduleBlocks([]);
   };
 
@@ -390,16 +387,6 @@ export default function App() {
     setMessages([msg, ...messages]);
   };
 
-  const handleLMSSync = () => {
-    setLmsCourses((prev) =>
-      prev.map((c) => ({
-        ...c,
-        syncedAt: 'Just now',
-        syllabiStatus: 'Synced',
-      }))
-    );
-  };
-
   const handleAuthenticated = (authenticatedUser: UserAccount) => {
     clearUserState();
     setUser(authenticatedUser);
@@ -529,12 +516,6 @@ export default function App() {
 
           {activeTab === 'room' && <StudyRoomView />}
 
-          {activeTab === 'lms' && (
-            <LMSIntegrationView
-              courses={lmsCourses}
-              onSync={handleLMSSync}
-            />
-          )}
         </main>
       </div>
 
