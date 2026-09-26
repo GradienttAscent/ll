@@ -6,7 +6,6 @@ import {
   Layers, 
   Clock, 
   Users, 
-  GraduationCap, 
   BookOpen, 
   Plus,
   ShieldCheck,
@@ -62,7 +61,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { tab: 'insights', label: 'Behavioral Insights', icon: LineChart },
     { tab: 'history', label: 'Session History', icon: History },
     { tab: 'room', label: 'Study Room (Peers)', icon: Users },
-    { tab: 'lms', label: 'LMS Sync (Canvas)', icon: GraduationCap },
   ];
 
   return (

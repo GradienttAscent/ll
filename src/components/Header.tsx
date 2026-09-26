@@ -47,7 +47,6 @@ export const Header: React.FC<HeaderProps> = ({
     practice: 'AI Practice Mode',
     mock: 'Timed Mock Exam',
     room: 'Study Room',
-    lms: 'LMS Sync',
     session: 'Live Session',
   };
 

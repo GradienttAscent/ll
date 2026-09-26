@@ -1,4 +1,4 @@
-export type ActiveTab = 'dashboard' | 'upload' | 'practice' | 'mock' | 'planner' | 'room' | 'lms' | 'calendar' | 'session' | 'insights' | 'history' | 'memory';
+export type ActiveTab = 'dashboard' | 'upload' | 'practice' | 'mock' | 'planner' | 'room' | 'calendar' | 'session' | 'insights' | 'history' | 'memory';
 
 export interface ExtractedTopic {
   id: string;
@@ -177,21 +177,6 @@ export interface StudyRoomSession {
   durationMinutes: number;
   status: 'active' | 'paused' | 'stopped';
   updatedAt: string;
-}
-
-export interface LMSCourse {
-  id: string;
-  platform: 'Canvas' | 'Moodle' | 'Blackboard' | 'Google Classroom';
-  courseCode: string;
-  courseName: string;
-  instructor: string;
-  syncedAt: string;
-  syllabiStatus: 'Synced' | 'Pending' | 'Needs Update';
-  upcomingExams: {
-    title: string;
-    date: string;
-    weight: string;
-  }[];
 }
 
 export interface UserAccount {

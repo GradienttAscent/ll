@@ -1,4 +1,4 @@
-import { ExtractedTopic, QuestionItem, PastPaper, StudySessionItem, PeerUser, StudyRoomMessage, LMSCourse } from '../types';
+import { ExtractedTopic, QuestionItem, PastPaper, StudySessionItem, PeerUser, StudyRoomMessage } from '../types';
 
 export const INITIAL_TOPICS: ExtractedTopic[] = [
   { id: 't1', name: 'Graph Algorithms & Shortest Path', weightage: 28, frequencyCount: 14, difficulty: 'Hard', highYield: true, color: '#d97706' },
@@ -147,42 +147,3 @@ export const INITIAL_MESSAGES: StudyRoomMessage[] = [
   }
 ];
 
-export const INITIAL_LMS_COURSES: LMSCourse[] = [
-  {
-    id: 'lms1',
-    platform: 'Canvas',
-    courseCode: 'CS301',
-    courseName: 'Design & Analysis of Algorithms',
-    instructor: 'Prof. Katherine Vance',
-    syncedAt: 'Today at 08:30 AM',
-    syllabiStatus: 'Synced',
-    upcomingExams: [
-      { title: 'Final Comprehensive Examination', date: 'Aug 24, 2026', weight: '40% of grade' },
-      { title: 'Assignment 4: Dynamic Programming', date: 'Aug 10, 2026', weight: '10% of grade' }
-    ]
-  },
-  {
-    id: 'lms2',
-    platform: 'Canvas',
-    courseCode: 'CS305',
-    courseName: 'Operating System Principles',
-    instructor: 'Dr. Aris Thorne',
-    syncedAt: 'Yesterday at 04:15 PM',
-    syllabiStatus: 'Synced',
-    upcomingExams: [
-      { title: 'Midterm 2: Memory Management & Paging', date: 'Aug 18, 2026', weight: '25% of grade' }
-    ]
-  },
-  {
-    id: 'lms3',
-    platform: 'Moodle',
-    courseCode: 'MATH204',
-    courseName: 'Linear Algebra & Optimization',
-    instructor: 'Prof. David Hilbert',
-    syncedAt: 'Aug 1, 2026',
-    syllabiStatus: 'Needs Update',
-    upcomingExams: [
-      { title: 'Final Exam: Eigenvalues & SVD', date: 'Aug 28, 2026', weight: '35% of grade' }
-    ]
-  }
-];
