@@ -8,6 +8,7 @@ export interface ExtractedTopic {
   weightage?: number;
   frequencyCount: number;
   syllabusEvidence?: boolean;
+  source?: string;
   sourceDocumentIds?: string[];
   difficulty: 'Easy' | 'Medium' | 'Hard';
   highYield: boolean;
@@ -20,7 +21,11 @@ export interface QuestionItem {
   subject: string;
   topic: string;
   questionText: string;
+  questionNumber?: string | null;
+  subpart?: string | null;
+  context?: string | null;
   marks: number;
+  source?: string;
   year?: string;
   type: 'Short Answer' | 'Long Proof' | 'Code/Algorithm' | 'Numerical';
   suggestedTimeMinutes: number;

@@ -5,10 +5,11 @@ import dotenv from 'dotenv';
 import { pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
-import { extractPdfText } from './pdfText';
+import { extractPdfText, extractionIsLowQuality } from './pdfText';
 import { initDatabase, getDatabase } from './db';
 import * as auth from './auth';
 import * as services from './services';
+import * as fallbackAi from './fallbackAi';
 import { parseSchedulingAssistantIntent } from './schedulingAssistant';
 import {
   HttpError,
@@ -651,8 +652,19 @@ app.post('/api/academic-documents/analyze', (req, res) => {
 
 type TopicMapping = { questionText: string; topicName: string; confidence: number };
 
-// gemini-2.0-flash has been retired upstream; every new-outgoing route uses gemini-3.5-flash.
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+// Default to active gemini-2.5-flash (gemini-3.5-flash does not exist upstream and returns 503).
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-3.6-flash'];
+const ENABLE_PYQ_GEMINI_CLASSIFICATION = process.env.LAZYLIFT_PYQ_GEMINI_CLASSIFICATION === 'true';
+const ENABLE_PDF_GEMINI_OCR = process.env.LAZYLIFT_PDF_GEMINI_OCR === 'true';
+
+export function isFallbackModeEnabled(req: express.Request): boolean {
+  if (process.env.LAZYLIFT_AI_FALLBACK === 'true') return true;
+  const header = String(req.headers['x-allow-fallback'] || req.headers['x-fallback'] || '');
+  if (header.toLowerCase() === 'true') return true;
+  if (req.query?.fallback === 'true' || (req.body as any)?.fallback === true) return true;
+  return false;
+}
 
 interface AiClassificationStatus {
   configured: boolean;
@@ -662,8 +674,11 @@ interface AiClassificationStatus {
   model: string;
 }
 
-async function classifyPaperQuestions(content: string): Promise<{ mappings: TopicMapping[]; status: AiClassificationStatus }> {
-  const ai = getAIClient();
+export async function classifyPaperQuestions(
+  input: services.QuestionRecord[] | string,
+  aiClient: any = getAIClient()
+): Promise<{ mappings: TopicMapping[]; status: AiClassificationStatus }> {
+  const ai = aiClient;
   const configured = Boolean(ai);
   if (!ai) {
     return {
@@ -671,10 +686,18 @@ async function classifyPaperQuestions(content: string): Promise<{ mappings: Topi
       status: { configured: false, attempted: false, ok: false, message: 'GEMINI_API_KEY is not configured; AI topic classification was skipped.', model: GEMINI_MODEL },
     };
   }
+  const promptContents = Array.isArray(input)
+    ? `Classify only these parser-extracted exam questions into existing syllabus topics. Return no invented questions or topics. If a question cannot be classified confidently, omit it.\n\n${input.map((question) => {
+        const label = `Question ${question.questionNumber || '?'}${question.subpart ? `(${question.subpart})` : ''}`;
+        const context = question.context ? `\nContext: ${question.context}` : '';
+        return `${label}: ${question.text}${context}`;
+      }).join('\n\n').slice(0, 18000)}`
+    : `Classify each numbered exam question below into its most specific academic topic. Return no invented questions. If a question cannot be classified confidently, omit it.\n\n${String(input).slice(0, 18000)}`;
+
   try {
     const response = await geminiGenerate(ai, {
       model: GEMINI_MODEL,
-      contents: `Classify each numbered exam question below into its most specific academic topic. Return no invented questions. If a question cannot be classified confidently, omit it.\n\n${content.slice(0, 18000)}`,
+      contents: promptContents,
       config: {
         responseMimeType: 'application/json',
         responseSchema: { type: Type.OBJECT, properties: { mappings: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { questionText: { type: Type.STRING }, topicName: { type: Type.STRING }, confidence: { type: Type.NUMBER } }, required: ['questionText', 'topicName', 'confidence'] } } }, required: ['mappings'] },
@@ -711,13 +734,21 @@ async function classifyPaperQuestions(content: string): Promise<{ mappings: Topi
 async function ocrPdfWithAI(payload: Buffer, title: string): Promise<string> {
   const ai = getAIClient();
   if (!ai) throw new HttpError(422, 'This PDF has no extractable text. Configure GEMINI_API_KEY to analyze scanned PDFs, or upload a text-based PDF.');
-  const response = await geminiGenerate(ai, {
-    model: GEMINI_MODEL,
-    contents: [{ inlineData: { mimeType: 'application/pdf', data: payload.toString('base64') } }, { text: `Extract the complete readable question-paper text from ${title}. Preserve question numbering and marks. Do not add or infer content.` }],
-  });
-  const text = String(response.text || '').trim();
-  if (text.length < 20) throw new HttpError(422, 'The PDF could not be read. Please upload a clearer text-based PDF.');
-  return text;
+  try {
+    const response = await geminiGenerate(ai, {
+      model: GEMINI_MODEL,
+      contents: [{ inlineData: { mimeType: 'application/pdf', data: payload.toString('base64') } }, { text: `Extract the complete readable question-paper text from ${title}. Preserve question numbering and marks. Do not add or infer content.` }],
+    });
+    const text = String(response.text || '').trim();
+    if (text.length < 20) throw new HttpError(422, 'The PDF could not be read. Please upload a clearer text-based PDF.');
+    return text;
+  } catch (err: any) {
+    if (err instanceof HttpError) throw err;
+    if (isTransientGeminiError(err)) {
+      throw new HttpError(503, 'AI OCR is currently experiencing high demand. Please try again in a few moments or upload a text-based PDF.');
+    }
+    throw err;
+  }
 }
 
 // Receives the original file, persists it with its extraction metadata, and never substitutes sample content.
@@ -734,19 +765,49 @@ app.post('/api/academic-documents/upload', async (req, res) => {
     let content: string;
     let extractionMethod: string;
     if (isPdf) {
-      try { content = extractPdfText(payload); extractionMethod = 'embedded-pdf-text'; }
-      catch { content = await ocrPdfWithAI(payload, title); extractionMethod = 'gemini-pdf-ocr'; }
+      try {
+        content = extractPdfText(payload);
+        extractionMethod = 'embedded-pdf-text';
+        if (extractionIsLowQuality(content)) {
+          throw new HttpError(422, 'This PDFs embedded text is garbled or unstructured. Configure GEMINI_API_KEY to OCR it, or upload a cleaner text-based PDF.');
+        }
+      } catch (error) {
+        if (!ENABLE_PDF_GEMINI_OCR) {
+          const detail = error instanceof Error ? error.message : 'No usable embedded text was found in this PDF.';
+          throw new HttpError(422, `${detail} Automatic Gemini OCR is disabled. Upload a text-based PDF or set LAZYLIFT_PDF_GEMINI_OCR=true to enable OCR.`);
+        }
+        content = await ocrPdfWithAI(payload, title);
+        extractionMethod = 'gemini-pdf-ocr';
+        if (extractionIsLowQuality(content)) {
+          throw new HttpError(422, 'The PDF text could not be read reliably after OCR. Please upload a clearer text-based PDF.');
+        }
+      }
     } else {
       content = payload.toString('utf8').trim();
       extractionMethod = 'utf8-text';
       if (!content) return sendError(res, 422, 'The uploaded text file is empty or unreadable.');
     }
-    const classification = docType.toLowerCase().includes('past')
-      ? await classifyPaperQuestions(content)
-      : { mappings: [], status: { configured: false, attempted: false, ok: false, message: 'AI question-topic classification skipped for non-past-paper documents.', model: GEMINI_MODEL } };
+    const questionRecords = docType.toLowerCase().includes('past')
+      ? services.extractNumberedQuestionRecords(content)
+      : [];
+    const classification = docType.toLowerCase().includes('past') && ENABLE_PYQ_GEMINI_CLASSIFICATION
+      ? await classifyPaperQuestions(questionRecords.length > 0 ? questionRecords : content)
+      : {
+        mappings: [],
+        status: {
+          configured: Boolean(getAIClient()),
+          attempted: false,
+          ok: false,
+          message: docType.toLowerCase().includes('past')
+            ? 'AI question-topic classification is disabled for PYQ uploads. Set LAZYLIFT_PYQ_GEMINI_CLASSIFICATION=true to enable it.'
+            : 'AI question-topic classification skipped for non-past-paper documents.',
+          model: GEMINI_MODEL,
+        },
+      };
     const analysis = services.ingestAcademicDocument(userIdOf(req), {
       title, docType, content, fileSize: `${payload.length} bytes`, fileData: payload,
-      mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'), extractionMethod, topicMappings: classification.mappings,
+      mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'), extractionMethod,
+      topicMappings: classification.mappings, questionRecords,
     });
     return res.status(201).json({ analysis: { ...analysis, aiStatus: classification.status } });
   } catch (error) {
@@ -827,221 +888,246 @@ app.get('/api/feedback', (req, res) => {
 
 // ---- AI Document Analysis: Syllabus / Past Paper Extraction ----
 app.post('/api/gemini/analyze-document', async (req, res) => {
-  try {
-    const { documentName, documentType, content } = req.body as any;
-    const ai = getAIClient();
-    const suppliedText = String(content || '');
+  const { documentName, documentType, content } = req.body as any;
+  const suppliedText = String(content || '');
 
-    if (!suppliedText.trim()) return sendError(res, 400, 'content is required.');
-    if (!ai) {
-      return sendError(res, 503, 'AI document analysis is unavailable. Configure GEMINI_API_KEY or use the persisted academic document upload flow.');
-    }
+  if (!suppliedText.trim()) return sendError(res, 400, 'content is required.');
+  const ai = getAIClient();
+  if (!ai && !isFallbackModeEnabled(req)) {
+    return sendError(res, 503, 'AI document analysis is unavailable. Configure GEMINI_API_KEY or use the persisted academic document upload flow.');
+  }
 
-    const response = await geminiGenerate(ai, {
-      model: GEMINI_MODEL,
-      contents: `Analyze the following academic document (${documentType}: ${documentName}) content and extract topic weightages, frequency counts, difficulty levels, and representative exam questions.
+  if (ai) {
+    try {
+      const response = await geminiGenerate(ai, {
+        model: GEMINI_MODEL,
+        contents: `Analyze the following academic document (${documentType}: ${documentName}) content and extract topic weightages, frequency counts, difficulty levels, and representative exam questions.
           Content:
 ${suppliedText.substring(0, 4000)}`,
-      config: {
-        systemInstruction: 'You are an expert university professor analyzing past papers and syllabi for exam preparation.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            summary: { type: Type.STRING },
-            topics: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  priority: { type: Type.NUMBER },
-                  weightage: { type: Type.NUMBER },
-                  frequencyCount: { type: Type.NUMBER },
-                  difficulty: { type: Type.STRING },
-                  highYield: { type: Type.BOOLEAN },
+        config: {
+          systemInstruction: 'You are an expert university professor analyzing past papers and syllabi for exam preparation.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              summary: { type: Type.STRING },
+              topics: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING },
+                    priority: { type: Type.NUMBER },
+                    weightage: { type: Type.NUMBER },
+                    frequencyCount: { type: Type.NUMBER },
+                    difficulty: { type: Type.STRING },
+                    highYield: { type: Type.BOOLEAN },
+                  },
                 },
               },
-            },
-            extractedQuestions: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  id: { type: Type.STRING },
-                  topic: { type: Type.STRING },
-                  question: { type: Type.STRING },
-                  marks: { type: Type.NUMBER },
-                  type: { type: Type.STRING },
-                  suggestedTimeMinutes: { type: Type.NUMBER },
+              extractedQuestions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id: { type: Type.STRING },
+                    topic: { type: Type.STRING },
+                    question: { type: Type.STRING },
+                    marks: { type: Type.NUMBER },
+                    type: { type: Type.STRING },
+                    suggestedTimeMinutes: { type: Type.NUMBER },
+                  },
                 },
               },
             },
           },
         },
-      },
-    });
+      });
 
-    const parsed = JSON.parse(response.text || '{}');
-    return res.json({ success: true, source: 'gemini', data: normalizeAnalysis(parsed, suppliedText, documentName) });
-  } catch (err: any) {
-    console.error('Gemini error analyzing document:', err);
-    return sendError(res, 502, err?.message || 'AI document analysis failed.');
+      const parsed = JSON.parse(response.text || '{}');
+      return res.json({ success: true, source: 'gemini', data: normalizeAnalysis(parsed, suppliedText, documentName) });
+    } catch (err: any) {
+      console.warn('[gemini] Document analysis error or high demand, using fallback:', err?.message || err);
+    }
   }
+
+  const fallbackData = fallbackAi.generateFallbackDocumentAnalysis(suppliedText, documentName, documentType);
+  return res.json({ success: true, source: 'fallback', data: fallbackData });
 });
 
 // ---- AI Evaluation of Practice Answers ----
 app.post('/api/gemini/evaluate-answer', async (req, res) => {
-  try {
-    const { question, studentAnswer, maxMarks } = req.body as any;
-    const ai = getAIClient();
+  const { question, studentAnswer, maxMarks } = req.body as any;
+  const questionText = String(question || '').trim();
+  const answerText = String(studentAnswer || '').trim();
+  const marks = Math.max(1, Math.min(100, Math.round(Number(maxMarks) || 10)));
 
-    if (!ai) {
-      return sendError(res, 503, 'AI answer evaluation is unavailable. Configure GEMINI_API_KEY to evaluate answers.');
-    }
+  const ai = getAIClient();
+  if (!ai && !isFallbackModeEnabled(req)) {
+    return sendError(res, 503, 'AI answer evaluation is unavailable. Configure GEMINI_API_KEY to evaluate answers.');
+  }
 
-    const response = await geminiGenerate(ai, {
-      model: GEMINI_MODEL,
-      contents: `Question (Max marks: ${maxMarks || 10}): "${question}"
-Student's Submitted Answer: "${studentAnswer}"
+  if (ai) {
+    try {
+      const response = await geminiGenerate(ai, {
+        model: GEMINI_MODEL,
+        contents: `Question (Max marks: ${marks}): "${questionText}"
+Student's Submitted Answer: "${answerText}"
 
-Provide detailed evaluation, numerical score out of ${maxMarks || 10}, strengths, areas for improvement, constructive feedback, and a concise model answer snippet.`,
-      config: {
-        systemInstruction: 'You are an empathetic, rigorous academic exam grader.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            score: { type: Type.NUMBER },
-            maxMarks: { type: Type.NUMBER },
-            strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-            improvements: { type: Type.ARRAY, items: { type: Type.STRING } },
-            feedbackText: { type: Type.STRING },
-            modelAnswerSnippet: { type: Type.STRING },
+Provide detailed evaluation, numerical score out of ${marks}, strengths, areas for improvement, constructive feedback, and a concise model answer snippet.`,
+        config: {
+          systemInstruction: 'You are an empathetic, rigorous academic exam grader.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              score: { type: Type.NUMBER },
+              maxMarks: { type: Type.NUMBER },
+              strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+              improvements: { type: Type.ARRAY, items: { type: Type.STRING } },
+              feedbackText: { type: Type.STRING },
+              modelAnswerSnippet: { type: Type.STRING },
+            },
           },
         },
-      },
-    });
+      });
 
-    const parsed = JSON.parse(response.text || '{}');
-    return res.json({ success: true, source: 'gemini', data: parsed });
-  } catch (err: any) {
-    console.error('Gemini evaluation error:', err);
-    return res.status(500).json({ error: err.message || 'Failed to evaluate answer' });
+      const parsed = JSON.parse(response.text || '{}');
+      return res.json({ success: true, source: 'gemini', data: parsed });
+    } catch (err: any) {
+      console.warn('[gemini] Answer evaluation error or high demand, using fallback:', err?.message || err);
+    }
   }
+
+  const fallbackData = fallbackAi.generateFallbackEvaluation(questionText, answerText, marks);
+  return res.json({ success: true, source: 'fallback', data: fallbackData });
 });
 
 // ---- AI Practice Mode: Persistent Answer Evaluation ----
 app.post('/api/practice/evaluate', async (req, res) => {
-  try {
-    const { question, studentAnswer, maxMarks } = req.body as any;
-    const ai = getAIClient();
+  const { question, studentAnswer, maxMarks } = req.body as any;
+  const questionText = String(question || '').trim();
+  const answerText = String(studentAnswer || '').trim();
+  if (!questionText) return sendError(res, 400, 'question is required.');
+  if (!answerText) return sendError(res, 400, 'studentAnswer is required and must be a non-empty string.');
+  if (answerText.length > 20000) return sendError(res, 400, 'Answer is too long (20,000 character limit).');
 
-    const questionText = String(question || '').trim();
-    const answerText = String(studentAnswer || '').trim();
-    if (!questionText) return sendError(res, 400, 'question is required.');
-    if (!answerText) return sendError(res, 400, 'studentAnswer is required and must be a non-empty string.');
-    if (answerText.length > 20000) return sendError(res, 400, 'Answer is too long (20,000 character limit).');
-    if (!ai) {
-      return sendError(res, 503, 'AI practice evaluation is unavailable. Configure GEMINI_API_KEY to practice with AI feedback.');
-    }
-    const marks = Math.max(1, Math.min(100, Math.round(Number(maxMarks) || 0)));
+  const marks = Math.max(1, Math.min(100, Math.round(Number(maxMarks) || 0)));
+  const ai = getAIClient();
+  if (!ai && !isFallbackModeEnabled(req)) {
+    return sendError(res, 503, 'AI practice evaluation is unavailable. Configure GEMINI_API_KEY to practice with AI feedback.');
+  }
 
-    const response = await geminiGenerate(ai, {
-      model: GEMINI_MODEL,
-      contents: `Question (Max marks: ${marks}): "${questionText}"
+  let normalized: any = null;
+  let source = 'gemini';
+
+  if (ai) {
+    try {
+      const response = await geminiGenerate(ai, {
+        model: GEMINI_MODEL,
+        contents: `Question (Max marks: ${marks}): "${questionText}"
 Student's Submitted Answer: "${answerText}"
 
 Provide a numerical score out of ${marks}, strengths, areas for improvement, constructive feedback, and a concise model answer snippet.`,
-      config: {
-        systemInstruction: 'You are an empathetic, rigorous academic exam grader.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            score: { type: Type.NUMBER },
-            maxMarks: { type: Type.NUMBER },
-            strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-            improvements: { type: Type.ARRAY, items: { type: Type.STRING } },
-            feedbackText: { type: Type.STRING },
-            modelAnswerSnippet: { type: Type.STRING },
+        config: {
+          systemInstruction: 'You are an empathetic, rigorous academic exam grader.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              score: { type: Type.NUMBER },
+              maxMarks: { type: Type.NUMBER },
+              strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+              improvements: { type: Type.ARRAY, items: { type: Type.STRING } },
+              feedbackText: { type: Type.STRING },
+              modelAnswerSnippet: { type: Type.STRING },
+            },
           },
         },
-      },
-    });
+      });
 
-    const parsed = JSON.parse(response.text || '{}');
-    const normalized = services.normalizePracticeEvaluation(parsed, marks);
-    const persisted = services.savePracticeEvaluation(userIdOf(req), {
-      question: questionText,
-      answer: answerText,
-      ...normalized,
-    });
-    return res.json({ success: true, source: 'gemini', data: normalized, persisted: true, feedbackId: persisted.id });
-  } catch (err: any) {
-    console.error('AI practice evaluation error:', err);
-    return res.status(500).json({ error: err.message || 'Failed to evaluate practice answer' });
+      const parsed = JSON.parse(response.text || '{}');
+      normalized = services.normalizePracticeEvaluation(parsed, marks);
+    } catch (err: any) {
+      console.warn('[gemini] AI practice evaluation error or high demand, using fallback:', err?.message || err);
+    }
   }
+
+  if (!normalized) {
+    normalized = fallbackAi.generateFallbackEvaluation(questionText, answerText, marks);
+    source = 'fallback';
+  }
+
+  const persisted = services.savePracticeEvaluation(userIdOf(req), {
+    question: questionText,
+    answer: answerText,
+    ...normalized,
+  });
+  return res.json({ success: true, source, data: normalized, persisted: true, feedbackId: persisted.id });
 });
 
 // ---- AI Practice Mode: Gemini Concept Hint ----
 app.post('/api/practice/hint', async (req, res) => {
-  try {
-    const { question, maxMarks } = req.body as any;
-    const ai = getAIClient();
+  const { question, maxMarks } = req.body as any;
+  const questionText = String(question || '').trim();
+  if (!questionText) return sendError(res, 400, 'question is required.');
+  const marks = Math.max(1, Math.min(100, Math.round(Number(maxMarks) || 0)));
 
-    const questionText = String(question || '').trim();
-    if (!questionText) return sendError(res, 400, 'question is required.');
-    if (!ai) {
-      return sendError(res, 503, 'AI concept hints are unavailable. Configure GEMINI_API_KEY to generate hints.');
-    }
-    const marks = Math.max(1, Math.min(100, Math.round(Number(maxMarks) || 0)));
+  const ai = getAIClient();
+  if (!ai && !isFallbackModeEnabled(req)) {
+    return sendError(res, 503, 'AI concept hints are unavailable. Configure GEMINI_API_KEY to generate hints.');
+  }
 
-    const response = await geminiGenerate(ai, {
-      model: GEMINI_MODEL,
-      contents: `Question (Max marks: ${marks}): "${questionText}"
+  if (ai) {
+    try {
+      const response = await geminiGenerate(ai, {
+        model: GEMINI_MODEL,
+        contents: `Question (Max marks: ${marks}): "${questionText}"
 
 Give a concise concept hint that helps the student solve this question themselves.
 Rules: do NOT write the full solution. Cover the key idea, the relevant concepts/theorems/formulas, and the boundary conditions or edge cases to check. Keep it under 5 short bullet points.`,
-      config: {
-        systemInstruction: 'You are a supportive tutor giving hints for exam questions. Guide, never solve outright.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            hint: { type: Type.STRING },
+        config: {
+          systemInstruction: 'You are a supportive tutor giving hints for exam questions. Guide, never solve outright.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              hint: { type: Type.STRING },
+            },
           },
         },
-      },
-    });
+      });
 
-    const parsed = JSON.parse(response.text || '{}');
-    const hint = String(parsed.hint || '').trim();
-    if (!hint) {
-      return sendError(res, 502, 'AI hint generation returned no hint.');
+      const parsed = JSON.parse(response.text || '{}');
+      const hint = String(parsed.hint || '').trim();
+      if (hint) {
+        return res.json({ success: true, source: 'gemini', data: { hint: hint.slice(0, 2000) } });
+      }
+    } catch (err: any) {
+      console.warn('[gemini] AI practice hint error or high demand, using fallback:', err?.message || err);
     }
-    return res.json({ success: true, source: 'gemini', data: { hint: hint.slice(0, 2000) } });
-  } catch (err: any) {
-    console.error('AI practice hint error:', err);
-    return res.status(500).json({ error: err.message || 'Failed to generate concept hint' });
   }
+
+  const fallbackHint = fallbackAi.generateFallbackHint(questionText, marks);
+  return res.json({ success: true, source: 'fallback', data: fallbackHint });
 });
 
 // ---- Timed Mock Exams: Gemini Grading (persisted) ----
 app.post('/api/mock-exams', async (req, res) => {
-  try {
-    const { examName, durationSeconds, startedAt, endedAt, questions } = req.body as any;
-    const ai = getAIClient();
-    if (!ai) {
-      return sendError(res, 503, 'AI mock exam grading is unavailable. Configure GEMINI_API_KEY to grade your mock exam.');
-    }
-    if (!Array.isArray(questions) || questions.length === 0) {
-      return sendError(res, 400, 'questions is required with at least one question.');
-    }
-    if (questions.length > 25) return sendError(res, 400, 'A mock exam can contain at most 25 questions.');
+  const { examName, durationSeconds, startedAt, endedAt, questions } = req.body as any;
+  const ai = getAIClient();
+  if (!ai && !isFallbackModeEnabled(req)) {
+    return sendError(res, 503, 'AI mock exam grading is unavailable. Configure GEMINI_API_KEY to grade your mock exam.');
+  }
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return sendError(res, 400, 'questions is required with at least one question.');
+  }
+  if (questions.length > 25) return sendError(res, 400, 'A mock exam can contain at most 25 questions.');
 
-    const normalizedQuestions = questions.map((q: any, index: number) => {
+  let normalizedQuestions: any[];
+  try {
+    normalizedQuestions = questions.map((q: any, index: number) => {
       const text = String(q?.questionText || '').trim();
       if (!text) throw new HttpError(400, `Question ${index + 1} requires questionText.`);
       const answer = String(q?.answer || '');
@@ -1054,62 +1140,77 @@ app.post('/api/mock-exams', async (req, res) => {
         suggestedTimeMinutes: Math.max(1, Math.round(Number(q?.suggestedTimeMinutes) || 0)),
       };
     });
+  } catch (err: any) {
+    if (err instanceof HttpError) return sendError(res, err.status, err.message);
+    throw err;
+  }
 
-    const response = await geminiGenerate(ai, {
-      model: GEMINI_MODEL,
-      contents: buildMockExamPrompt(normalizedQuestions),
-      config: {
-        systemInstruction: 'You are a strict university examiner grading a timed mock exam answer sheet question by question. Grade each question independently on its own 0..max marks scale and base every score strictly on the submitted answer text.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            perQuestion: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  index: { type: Type.NUMBER },
-                  score: { type: Type.NUMBER },
-                  strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  improvements: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  feedback: { type: Type.STRING },
+  let report: any = null;
+  let source = 'gemini';
+
+  if (ai) {
+    try {
+      const response = await geminiGenerate(ai, {
+        model: GEMINI_MODEL,
+        contents: buildMockExamPrompt(normalizedQuestions),
+        config: {
+          systemInstruction: 'You are a strict university examiner grading a timed mock exam answer sheet question by question. Grade each question independently on its own 0..max marks scale and base every score strictly on the submitted answer text.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              perQuestion: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    index: { type: Type.NUMBER },
+                    score: { type: Type.NUMBER },
+                    strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    improvements: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    feedback: { type: Type.STRING },
+                  },
                 },
               },
-            },
-            overall: { type: Type.OBJECT, properties: { advice: { type: Type.STRING } } },
-            topicBreakdown: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  topic: { type: Type.STRING },
-                  score: { type: Type.NUMBER },
-                  maxMarks: { type: Type.NUMBER },
-                  mastery: { type: Type.STRING },
+              overall: { type: Type.OBJECT, properties: { advice: { type: Type.STRING } } },
+              topicBreakdown: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    topic: { type: Type.STRING },
+                    score: { type: Type.NUMBER },
+                    maxMarks: { type: Type.NUMBER },
+                    mastery: { type: Type.STRING },
+                  },
                 },
               },
             },
           },
         },
-      },
-    });
+      });
 
-    const parsed = JSON.parse(response.text || '{}');
-    const report = services.normalizeMockExamReport(parsed, normalizedQuestions);
-    const record = services.createMockExam(userIdOf(req), {
-      examName,
-      durationSeconds,
-      startedAt,
-      endedAt,
-      report,
-    });
-    return res.status(201).json({ mockExam: record });
-  } catch (err: any) {
-    if (err instanceof HttpError) return sendError(res, err.status, err.message);
-    console.error('Gemini mock exam grading error:', err);
-    return res.status(500).json({ error: err.message || 'Failed to grade mock exam' });
+      const parsed = JSON.parse(response.text || '{}');
+      report = services.normalizeMockExamReport(parsed, normalizedQuestions);
+    } catch (err: any) {
+      console.warn('[gemini] Mock exam grading error or high demand, using fallback:', err?.message || err);
+    }
   }
+
+  if (!report) {
+    const fallbackParsed = fallbackAi.generateFallbackMockExamReport(normalizedQuestions);
+    report = services.normalizeMockExamReport(fallbackParsed, normalizedQuestions);
+    source = 'fallback';
+  }
+
+  const record = services.createMockExam(userIdOf(req), {
+    examName,
+    durationSeconds,
+    startedAt,
+    endedAt,
+    report,
+  });
+  return res.status(201).json({ mockExam: record, source });
 });
 
 app.get('/api/mock-exams', (req, res) => {
@@ -1134,54 +1235,63 @@ function buildMockExamPrompt(questions: any[]): string {
 
 // ---- AI Study Plan Generator ----
 app.post('/api/gemini/generate-plan', async (req, res) => {
-  try {
-    const { examName, examDate, dailyStudyHours, topics } = req.body as any;
-    const ai = getAIClient();
+  const { examName, examDate, dailyStudyHours, topics } = req.body as any;
+  const ai = getAIClient();
+  if (!ai && !isFallbackModeEnabled(req)) {
+    return sendError(res, 503, 'AI plan generation is unavailable. Use the persisted planner, which schedules analyzed topics from your academic evidence.');
+  }
 
-    if (!ai) {
-      return sendError(res, 503, 'AI plan generation is unavailable. Use the persisted planner, which schedules analyzed topics from your academic evidence.');
-    }
-
-    const response = await geminiGenerate(ai, {
-      model: GEMINI_MODEL,
-      contents: `Create a day-by-day revision study schedule for target exam "${examName}" on ${examDate}.
+  if (ai) {
+    try {
+      const response = await geminiGenerate(ai, {
+        model: GEMINI_MODEL,
+        contents: `Create a day-by-day revision study schedule for target exam "${examName}" on ${examDate}.
 Daily available hours: ${dailyStudyHours || 4}.
 Topics to cover: ${JSON.stringify(topics || ['Graph Algorithms', 'Dynamic Programming', 'Complexity'])}.`,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            totalDays: { type: Type.NUMBER },
-            dailySchedule: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  day: { type: Type.NUMBER },
-                  date: { type: Type.STRING },
-                  topic: { type: Type.STRING },
-                  hours: { type: Type.NUMBER },
-                  focus: { type: Type.STRING },
-                  status: { type: Type.STRING },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              totalDays: { type: Type.NUMBER },
+              dailySchedule: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    day: { type: Type.NUMBER },
+                    date: { type: Type.STRING },
+                    topic: { type: Type.STRING },
+                    hours: { type: Type.NUMBER },
+                    focus: { type: Type.STRING },
+                    status: { type: Type.STRING },
+                  },
                 },
               },
             },
           },
         },
-      },
-    });
+      });
 
-    const parsed = JSON.parse(response.text || '{}');
-    return res.json({ success: true, source: 'gemini', data: parsed });
-  } catch (err: any) {
-    console.error('Gemini plan error:', err);
-    return res.status(500).json({ error: err.message || 'Failed to generate study plan' });
+      const parsed = JSON.parse(response.text || '{}');
+      return res.json({ success: true, source: 'gemini', data: parsed });
+    } catch (err: any) {
+      console.warn('[gemini] Plan generation error or high demand, using fallback:', err?.message || err);
+    }
   }
+
+  const fallbackPlan = fallbackAi.generateFallbackStudyPlan(examName, examDate, dailyStudyHours, topics);
+  return res.json({ success: true, source: 'fallback', data: fallbackPlan });
 });
 
+let mockAIClient: any = null;
+export function setAIClientForTesting(client: any) {
+  mockAIClient = client;
+}
+
 function getAIClient() {
+  if (mockAIClient !== null) return mockAIClient;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     return null;
@@ -1208,19 +1318,27 @@ function isTransientGeminiError(err: any): boolean {
   );
 }
 
-async function geminiGenerate(ai: any, request: any, maxRetries = 3): Promise<any> {
+async function geminiGenerate(ai: any, request: any, maxRetries = 2): Promise<any> {
   let lastError: any;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    if (attempt > 0) {
-      const delayMs = Math.round(700 * Math.pow(2, attempt - 1) * (0.75 + Math.random() * 0.5));
-      console.warn(`[gemini] transient error; retrying (${attempt}/${maxRetries}) in ${delayMs}ms`);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-    try {
-      return await ai.models.generateContent(request);
-    } catch (err) {
-      lastError = err;
-      if (!isTransientGeminiError(err)) throw err;
+  const requestedModel = request.model || GEMINI_MODEL;
+  const candidateModels = Array.from(new Set([requestedModel, ...GEMINI_FALLBACK_MODELS]));
+
+  for (const modelCandidate of candidateModels) {
+    const currentReq = { ...request, model: modelCandidate };
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        const delayMs = Math.round(500 * Math.pow(2, attempt - 1));
+        console.warn(`[gemini] transient error on ${modelCandidate}; retrying (${attempt}/${maxRetries}) in ${delayMs}ms`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      try {
+        return await ai.models.generateContent(currentReq);
+      } catch (err) {
+        lastError = err;
+        const msg = String(err?.message || '');
+        const isTransient = isTransientGeminiError(err) || /(?:404|NOT_FOUND)/i.test(msg);
+        if (!isTransient) throw err;
+      }
     }
   }
   throw lastError;
@@ -1248,6 +1366,7 @@ export async function createApp() {
   await initDatabase();
   const db = await getDatabase();
   services.setDb(db);
+  services.sanitizePersistedAcademicQuestions();
   return { app, db };
 }
 
