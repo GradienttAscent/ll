@@ -1253,12 +1253,13 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
   });
   saveQuestions(extractedQuestions);
   const ranking = rankedTopicRows(userId);
+  const questions = questionRows(userId).filter((question) => createdQuestionIds.includes(question.id));
   return {
     document,
     extractedTopicCount: syllabusTopics.length,
     extractedQuestionCount: extractedQuestions.length,
     createdQuestionCount: createdQuestionIds.length,
-    questions: questionRows(userId).filter((question) => createdQuestionIds.includes(question.id)),
+    questions,
     ranking,
   };
 }
@@ -1362,7 +1363,13 @@ export function sanitizePersistedAcademicQuestions() {
 export function academicEvidence(userId: string, documentId?: string) {
   const documents = documentRows(userId);
   const selectedDocumentId = documentId || documents.find((document) => document.docType.toLowerCase().includes('past'))?.id;
-  return { documents, activeDocumentId: selectedDocumentId || null, questions: questionRows(userId, selectedDocumentId), ranking: rankedTopicRows(userId, selectedDocumentId) };
+  const questions = questionRows(userId, selectedDocumentId);
+  return {
+    documents,
+    activeDocumentId: selectedDocumentId || null,
+    questions,
+    ranking: rankedTopicRows(userId, selectedDocumentId),
+  };
 }
 
 export function questionRows(userId: string, documentId?: string): QuestionRow[] {
