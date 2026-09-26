@@ -83,13 +83,13 @@ export const NotificationsPopover: React.FC<NotificationsPopoverProps> = ({
     // 2. Adaptive Proposal pending
     if (adaptiveProposal) {
       list.push({
-        id: `adaptive-${adaptiveProposal.sessionId || 'pending'}`,
+        id: `adaptive-${adaptiveProposal.studySessionId}`,
         type: 'adaptive_proposal',
         title: 'Study plan update proposed',
-        description: `Adaptive schedule adjustment suggested for "${adaptiveProposal.proposedBlock.title}"`,
+        description: `Adaptive schedule adjustment suggested for "${adaptiveProposal.topicName}"`,
         timestamp: 'New',
         targetTab: 'planner',
-        isRead: readIds.includes(`adaptive-${adaptiveProposal.sessionId || 'pending'}`),
+        isRead: readIds.includes(`adaptive-${adaptiveProposal.studySessionId}`),
       });
     }
 
