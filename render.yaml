@@ -16,5 +16,7 @@ services:
         value: /tmp/lazylift-data
       - key: GEMINI_API_KEY
         sync: false
+      - key: LAZYLIFT_CORS_ORIGINS
+        sync: false
       - key: APP_URL
         sync: false

@@ -1,4 +1,5 @@
 import type { UserAccount } from './types';
+import { apiUrl } from './apiBase';
 
 let sessionToken: string | null = null;
 const TOKEN_KEY = 'lazylift_session_token';
@@ -50,7 +51,7 @@ function saveSession(token: string) {
 }
 
 async function authRequest(path: string, body: Record<string, string>) {
-  const response = await originalFetch(path, {
+  const response = await originalFetch(apiUrl(path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -75,7 +76,7 @@ export async function restoreSession(): Promise<UserAccount | null> {
   const token = sessionToken || storedToken();
   if (!token) return null;
   sessionToken = token;
-  const response = await originalFetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+  const response = await originalFetch(apiUrl('/api/auth/me'), { headers: { Authorization: `Bearer ${token}` } });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.user) {
     clearSessionIfCurrent(token);
@@ -87,11 +88,23 @@ export async function restoreSession(): Promise<UserAccount | null> {
 export async function logout() {
   const token = sessionToken || storedToken();
   clearSessionIfCurrent(token);
-  if (token) await originalFetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  if (token) await originalFetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
 }
 
 export function setSessionExpiredHandler(handler: (() => void) | null) {
   onSessionExpired = handler;
+}
+
+/**
+ * Points the request at the configured backend origin. Centralised here so the ~47
+ * component call sites can keep using root-relative '/api/...' paths and still reach
+ * Render when the app is served from Vercel. `Request` inputs are passed through
+ * untouched; no call site in this app uses them.
+ */
+function resolveRequestInput(input: RequestInfo | URL): RequestInfo | URL {
+  if (typeof input === 'string') return apiUrl(input);
+  if (input instanceof URL) return apiUrl(`${input.pathname}${input.search}`);
+  return input;
 }
 
 async function authorizedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -102,7 +115,7 @@ async function authorizedFetch(input: RequestInfo | URL, init?: RequestInit): Pr
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const response = await originalFetch(input, { ...init, headers });
+  const response = await originalFetch(resolveRequestInput(input), { ...init, headers });
 
   if (response.status === 401 && token && !String(input).includes('/api/auth/') && (sessionToken || storedToken()) === token) {
     clearSession();

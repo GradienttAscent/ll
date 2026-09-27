@@ -6,6 +6,7 @@ import { pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import { extractPdfText, extractionIsLowQuality } from './pdfText';
+import { corsMiddleware } from './cors';
 import { initDatabase, getDatabase } from './db';
 import * as auth from './auth';
 import * as services from './services';
@@ -28,6 +29,11 @@ const ADAPTIVE_REASONS = ['missed', 'abandoned', 'high-difficulty'];
 dotenv.config({ path: fs.existsSync('.env.local') ? '.env.local' : '.env' });
 
 const app = express();
+// Cross-origin support for the split deployment, where the frontend is served by Vercel
+// and this API by Render. Configured with LAZYLIFT_CORS_ORIGINS. Registered before the
+// body parser and before the `/api` auth gate so preflights are answered here rather than
+// rejected with 401.
+app.use(corsMiddleware(process.env.LAZYLIFT_CORS_ORIGINS));
 app.use(express.json({ limit: '25mb' }));
 
 const PORT = Number(process.env.APP_PORT || process.env.PORT || 3000);
