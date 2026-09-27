@@ -6,7 +6,7 @@ services:
     branch: main
     autoDeploy: true
     plan: free
-    buildCommand: npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
