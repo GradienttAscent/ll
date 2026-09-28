@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { StudySession, FeedbackEntry, MockExamRecord } from '../types';
+import { StudySession, MockExamRecord } from '../types';
 import { safeNumber } from '../utils/formatters';
 import { History, Clock, Star, MessageSquare, RefreshCw, AlertTriangle, CheckCircle2, XCircle, Award } from 'lucide-react';
 
 export const HistoryView: React.FC = () => {
   const [sessions, setSessions] = useState<StudySession[]>([]);
-  const [feedbackList, setFeedbackList] = useState<FeedbackEntry[]>([]);
   const [mockExams, setMockExams] = useState<MockExamRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -14,22 +13,18 @@ export const HistoryView: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [sessionsRes, feedbackRes, mockRes] = await Promise.all([
+      const [sessionsRes, mockRes] = await Promise.all([
         fetch('/api/study-sessions'),
-        fetch('/api/feedback'),
         fetch('/api/mock-exams')
       ]);
 
       if (!sessionsRes.ok) throw new Error('Failed to fetch study sessions');
-      if (!feedbackRes.ok) throw new Error('Failed to fetch feedback history');
       if (!mockRes.ok) throw new Error('Failed to fetch mock exam history');
 
       const sessionsData = await sessionsRes.json();
-      const feedbackData = await feedbackRes.json();
       const mockData = await mockRes.json();
 
       setSessions(sessionsData.studySessions || []);
-      setFeedbackList(feedbackData.feedback || []);
       setMockExams(mockData.mockExams || []);
     } catch (err: any) {
       setError(err.message || 'Error loading session history');
@@ -41,13 +36,6 @@ export const HistoryView: React.FC = () => {
   useEffect(() => {
     fetchHistory();
   }, []);
-
-  const feedbackBySessionId = new Map<string, FeedbackEntry>();
-  feedbackList.forEach((fb) => {
-    if (fb.sessionId) {
-      feedbackBySessionId.set(fb.sessionId, fb);
-    }
-  });
 
   const formatDuration = (seconds: any) => {
     const sec = safeNumber(seconds, 0);
@@ -155,7 +143,7 @@ export const HistoryView: React.FC = () => {
       ) : (
         <div className="space-y-6">
           {sessions.map((session) => {
-            const fb = feedbackBySessionId.get(session.id);
+            const fb = session.feedback;
             const isCompleted = session.status === 'completed';
 
             return (
@@ -218,7 +206,7 @@ export const HistoryView: React.FC = () => {
                         Session Reflection Log
                       </span>
                       <span className="text-[10px] font-mono text-[#7B7484]">
-                        Focus: {fb.focus || 'N/A'}/5 &bull; Difficulty: {fb.difficulty || 'N/A'}
+                        Focus: {fb.focusRating}/5 &bull; Difficulty: {fb.difficultyRating}/5
                       </span>
                     </div>
 
@@ -226,12 +214,8 @@ export const HistoryView: React.FC = () => {
                       <div>
                         <span className="text-[#7B7484]">Progress:</span>{' '}
                         <span className="font-bold text-[#1C1B1F]">
-                          {fb.perceivedProgress ? `${fb.perceivedProgress * 20}%` : 'N/A'}
+                          {fb.progressRating * 20}%
                         </span>
-                      </div>
-                      <div>
-                        <span className="text-[#7B7484]">Score:</span>{' '}
-                        <span className="font-bold text-[#5E35B1]">{fb.score}/100</span>
                       </div>
                     </div>
 

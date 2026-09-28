@@ -358,17 +358,36 @@ export type StudySessionRow = {
   status: string;
   endedAt: string | null;
   activeSince: string | null;
+  feedback: SessionFeedbackRow | null;
 };
 
 export function studySessionRows(userId: string): StudySessionRow[] {
-  return getDb().prepare(`
-    SELECT id, schedule_block_id AS scheduleBlockId, started_at AS startedAt, created_at AS createdAt,
-      duration_minutes AS durationMinutes, actual_duration_seconds AS actualDurationSeconds,
-      status, ended_at AS endedAt, active_since AS activeSince
-    FROM study_sessions
-    WHERE user_id = ?
-    ORDER BY started_at DESC
-  `).all(userId) as StudySessionRow[];
+  const rows = getDb().prepare(`
+    SELECT s.id, s.schedule_block_id AS scheduleBlockId, s.started_at AS startedAt, s.created_at AS createdAt,
+      s.duration_minutes AS durationMinutes, s.actual_duration_seconds AS actualDurationSeconds,
+      s.status, s.ended_at AS endedAt, s.active_since AS activeSince,
+      f.id AS feedbackId, f.study_session_id AS feedbackStudySessionId, f.focus_rating AS feedbackFocusRating,
+      f.difficulty_rating AS feedbackDifficultyRating, f.progress_rating AS feedbackProgressRating,
+      f.notes AS feedbackNotes, f.created_at AS feedbackCreatedAt, f.updated_at AS feedbackUpdatedAt
+    FROM study_sessions s
+    LEFT JOIN session_feedback f ON f.study_session_id = s.id AND f.user_id = s.user_id
+    WHERE s.user_id = ?
+    ORDER BY s.started_at DESC
+  `).all(userId) as any[];
+  return rows.map(({ feedbackId, feedbackStudySessionId, feedbackFocusRating, feedbackDifficultyRating,
+    feedbackProgressRating, feedbackNotes, feedbackCreatedAt, feedbackUpdatedAt, ...session }) => ({
+    ...session,
+    feedback: feedbackId ? {
+      id: feedbackId,
+      studySessionId: feedbackStudySessionId,
+      focusRating: feedbackFocusRating,
+      difficultyRating: feedbackDifficultyRating,
+      progressRating: feedbackProgressRating,
+      notes: feedbackNotes,
+      createdAt: feedbackCreatedAt,
+      updatedAt: feedbackUpdatedAt,
+    } : null,
+  }));
 }
 
 export function findOwnedStudySession(userId: string, sessionId: string) {

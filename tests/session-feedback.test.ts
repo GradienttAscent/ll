@@ -110,7 +110,7 @@ describe('study session lifecycle and feedback', () => {
     })).status, 409);
   });
 
-  it('validates, persists, upserts, and retrieves completed-session feedback', async () => {
+  it('BUG-02 — Completed-session feedback missing from Session History: includes feedback in the session-list contract', async () => {
     const { session } = await createSession();
     await patch(session.id, 'completed', 30);
     assert.strictEqual((await client.request(`/api/study-sessions/${session.id}/feedback`, {
@@ -134,6 +134,8 @@ describe('study session lifecycle and feedback', () => {
     assert.strictEqual(updated.json.feedback.id, saved.json.feedback.id);
     const read = await client.request(`/api/study-sessions/${session.id}/feedback`);
     assert.deepStrictEqual(read.json.feedback.notes, 'Second reflection.');
+    const listed = (await client.request('/api/study-sessions')).json.studySessions.find((item: any) => item.id === session.id);
+    assert.deepStrictEqual(listed.feedback, read.json.feedback);
   });
 
   it('requires completion and keeps session feedback private', async () => {

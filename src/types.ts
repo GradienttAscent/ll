@@ -253,6 +253,7 @@ export interface StudySession {
   status: 'active' | 'paused' | 'completed' | 'stopped';
   endedAt: string | null;
   activeSince: string | null;
+  feedback: SessionFeedback | null;
 }
 
 export interface AdaptiveProposal {
