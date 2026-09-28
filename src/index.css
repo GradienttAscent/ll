@@ -1,0 +1,139 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-surface: #FAF8FC;
+    --color-surface-elevated: #FFFFFF;
+    --color-border: #EDE7F3;
+    --color-primary: #5E35B1;
+    --color-primary-dark: #461599;
+    --color-primary-light: #EDE7F6;
+    --color-lavender-accent: #CEB8FF;
+    --color-text-primary: #1C1B1F;
+    --color-text-secondary: #55524E;
+    --color-text-muted: #7B7484;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #FAF8FC;
+    color: #1C1B1F;
+  }
+
+  h1, h2, h3, .font-serif {
+    font-family: 'Playfair Display', 'Instrument Serif', Georgia, serif;
+  }
+}
+
+/* Custom Editorial Academia scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #FAF8FC;
+}
+::-webkit-scrollbar-thumb {
+  background: #D8CCE8;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #5E35B1;
+}
+
+/* Keyframe Animations */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.6; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out both;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out both;
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 2s ease-in-out infinite;
+}
+
+/* Memory Atlas forgetting landscape */
+@keyframes ma-draw {
+  from { stroke-dashoffset: 1; }
+  to   { stroke-dashoffset: 0; }
+}
+
+@keyframes ma-rise {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ma-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.ma-curve {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: ma-draw 1s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.ma-rise {
+  animation: ma-rise 0.5s ease-out both;
+}
+
+.ma-fade {
+  animation: ma-fade 0.7s ease-out both;
+}
+
+.ma-transition {
+  transition: all 300ms ease;
+}
+
+.ma-index-row {
+  transition: background-color 200ms ease, opacity 200ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ma-curve, .ma-rise, .ma-fade {
+    animation: none !important;
+  }
+  .ma-curve {
+    stroke-dashoffset: 0;
+  }
+  .ma-transition, .ma-index-row {
+    transition: none !important;
+  }
+}
+
+/* Keyboard Accessibility Focus Rings */
+*:focus-visible {
+  outline: 2px solid #5E35B1;
+  outline-offset: 2px;
+}
+
+/* Screen reader utility */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
