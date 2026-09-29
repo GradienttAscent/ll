@@ -8,3 +8,23 @@ coverage/
 !.env.example
 data/*.db*
 _lzinspect.mts
+   .e2e-data/
+        CSE312_FINAL_REPORT_DATA.md
+        CSE312_REPO_AUDIT.md
+        CSE312_SCREENSHOT_PLAN.md
+        CSE312_TEST_INVENTORY.md
+        CSE312_TEST_REPORT_DATA.md
+        TEST_SUBMISSION.md
+        assignment_tests/
+        evidence/EVIDENCE_INDEX.md
+        evidence/SEL-01.png
+        evidence/SEL-02.png
+        evidence/final-report-screenshots.zip
+        evidence/final-report-screenshots/
+        evidence/gowri_to_jyothika_handoff.md
+        evidence/logs/
+        evidence/non-functional/
+        evidence/playwright-report/
+        evidence/screenshots/
+        screenshots/
+        test-results/

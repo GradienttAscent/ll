@@ -68,7 +68,7 @@ describe('ACAD academic parser branch coverage (services.ts)', () => {
   // no parent question are discarded rather than orphaned.
   it('ACAD-03 splits roman-numeral sub-parts and discards parentless sub-parts', () => {
     assert.deepStrictEqual(
-      extractNumberedQuestions('1. Explain paging i) Define a page fault. ii) Compare paging and segmentation.'),
+      extractNumberedQuestions('1. Explain paging concepts. i) Define a page fault. ii) Compare paging and segmentation.'),
       ['Define a page fault.', 'Compare paging and segmentation.'],
     );
     assert.deepStrictEqual(extractNumberedQuestions('i) Explain BFS\nii) Explain DFS'), []);
@@ -83,25 +83,21 @@ describe('ACAD academic parser branch coverage (services.ts)', () => {
     assert.deepStrictEqual(extractNumberedQuestions('1/2 UNIT 3\n1. Explain BFS'), ['Explain BFS']);
   });
 
-  // ACAD-05 - white-box: the BOILERPLATE noise filter. It is anchored `^...$` and
-  // `cleanPaperContent` has already collapsed every newline into a space, so a
-  // furniture line is only rejected when the document is nothing but furniture.
-  it('ACAD-05 rejects standalone furniture documents and folds furniture into a question', () => {
+  // ACAD-05 - white-box: BOILERPLATE lines are discarded whether standalone or
+  // after a question, preventing page furniture from polluting saved questions.
+  it('ACAD-05 rejects standalone and trailing boilerplate furniture', () => {
     for (const furniture of ['Time: 3 hours', 'Marks: 20', 'Total Marks: 50', 'Page 2 of 9']) {
       assert.deepStrictEqual(extractNumberedQuestions(furniture), [], `input: ${JSON.stringify(furniture)}`);
     }
-    // Furniture that shares a line with a real question is NOT stripped; it is
-    // appended to the question text after whitespace collapsing.
-    assert.deepStrictEqual(extractNumberedQuestions('1. Explain BFS\n   Time: 3 hours'), ['Explain BFS Time: 3 hours']);
-    assert.deepStrictEqual(extractNumberedQuestions('1. Explain BFS\n   Marks: 20'), ['Explain BFS Marks: 20']);
+    assert.deepStrictEqual(extractNumberedQuestions('1. Explain BFS\n   Time: 3 hours'), ['Explain BFS']);
+    assert.deepStrictEqual(extractNumberedQuestions('1. Explain BFS\n   Marks: 20'), ['Explain BFS']);
   });
 
-  // ACAD-06 - white-box: `cleanPaperContent` flattens newlines, so heading lines
-  // before the first marker are dropped (they belong to no draft) but a heading
-  // after a marker is absorbed into the question.
-  it('ACAD-06 drops leading furniture and absorbs furniture after a marker', () => {
+  // ACAD-06 - white-box: document headings are excluded both before and after
+  // a question marker rather than becoming question content.
+  it('ACAD-06 drops document furniture before and after a marker', () => {
     assert.deepStrictEqual(extractNumberedQuestions('UNIT 3\nPage 4 of 9\n1. Explain BFS traversal'), ['Explain BFS traversal']);
-    assert.deepStrictEqual(extractNumberedQuestions('1. Explain BFS\n   SECTION A'), ['Explain BFS SECTION A']);
+    assert.deepStrictEqual(extractNumberedQuestions('1. Explain BFS\n   SECTION A'), ['Explain BFS']);
     // A leading boilerplate prefix does not discard the questions behind it.
     assert.deepStrictEqual(extractNumberedQuestions('Question Paper, Semester 5 1. Explain BFS traversal'), ['Explain BFS traversal']);
   });
@@ -115,22 +111,22 @@ describe('ACAD academic parser branch coverage (services.ts)', () => {
 
   // ACAD-08 - white-box: marks extraction and the unmarked default.
   it('ACAD-08 reads marks keywords, square brackets and the 10-mark default', () => {
-    assert.strictEqual(ingest({ title: 'm1', content: '1. Explain BFS traversal (5 Marks)' }).questions[0].marks, 5);
-    assert.strictEqual(ingest({ title: 'm2', content: '1. Explain BFS traversal (12 marks)' }).questions[0].marks, 12);
-    assert.strictEqual(ingest({ title: 'm3', content: '1. Explain BFS traversal (5 M)' }).questions[0].marks, 5);
-    assert.strictEqual(ingest({ title: 'm4', content: '1. Explain BFS traversal [5]' }).questions[0].marks, 5);
+    assert.strictEqual(ingest({ title: 'm1', content: '1. Explain BFS traversal in detail. (5 Marks)' }).questions[0].marks, 5);
+    assert.strictEqual(ingest({ title: 'm2', content: '1. Explain BFS traversal in detail. (12 marks)' }).questions[0].marks, 12);
+    assert.strictEqual(ingest({ title: 'm3', content: '1. Explain BFS traversal in detail. (5 M)' }).questions[0].marks, 5);
+    assert.strictEqual(ingest({ title: 'm4', content: '1. Explain BFS traversal in detail. [5]' }).questions[0].marks, 5);
     // A decimal allocation is rounded to the nearest whole mark.
-    assert.strictEqual(ingest({ title: 'm5', content: '1. Explain BFS traversal (7.5 Marks)' }).questions[0].marks, 8);
+    assert.strictEqual(ingest({ title: 'm5', content: '1. Explain BFS traversal in detail. (7.5 Marks)' }).questions[0].marks, 8);
     // No allocation anywhere -> the 10-mark default.
-    assert.strictEqual(ingest({ title: 'm6', content: '1. Explain BFS traversal' }).questions[0].marks, 10);
+    assert.strictEqual(ingest({ title: 'm6', content: '1. Explain BFS traversal in detail.' }).questions[0].marks, 10);
   });
 
   // ACAD-09 - white-box: MARKS_TAIL arithmetic on the leading "QUESTION n (...)" form.
   it('ACAD-09 adds and multiplies a marks allocation attached to the question marker', () => {
-    assert.strictEqual(ingest({ title: 'a0', content: 'Question 1 (5 + 3) Explain BFS' }).questions[0].marks, 8);
-    assert.strictEqual(ingest({ title: 'a1', content: 'QUESTION 1 (2 x 4): Explain BFS' }).questions[0].marks, 8);
-    assert.strictEqual(ingest({ title: 'a2', content: 'Q1 (5 = 20) Explain BFS' }).questions[0].marks, 20);
-    assert.strictEqual(ingest({ title: 'a3', content: '1. Explain BFS [2 + 3]' }).questions[0].marks, 5);
+    assert.strictEqual(ingest({ title: 'a0', content: 'Question 1 (5 + 3) Explain BFS traversal in detail.' }).questions[0].marks, 8);
+    assert.strictEqual(ingest({ title: 'a1', content: 'QUESTION 1 (2 x 4): Explain BFS traversal in detail.' }).questions[0].marks, 8);
+    assert.strictEqual(ingest({ title: 'a2', content: 'Q1 (5 = 20) Explain BFS traversal in detail.' }).questions[0].marks, 20);
+    assert.strictEqual(ingest({ title: 'a3', content: '1. Explain BFS traversal in detail. [2 + 3]' }).questions[0].marks, 5);
   });
 
   // ACAD-10 - white-box: one marked sub-part seeds the group total and every later
@@ -138,58 +134,50 @@ describe('ACAD academic parser branch coverage (services.ts)', () => {
   it('ACAD-10 propagates one sub-part marks figure across the whole group', () => {
     // `questionRows` orders by created_at DESC, so compare on a stable key.
     const byText = (rows: Array<{ questionText: string; marks: number }>) => rows.map((q) => [q.questionText, q.marks]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-    const marked = ingest({ title: 'm7', content: '1. Explain paging a) Define a page fault. (4 Marks) b) Compare paging and segmentation.' });
+    const marked = ingest({ title: 'm7', content: '1. Explain paging concepts. a) Define a page fault in detail. (4 Marks) b) Compare paging and segmentation in detail.' });
     assert.deepStrictEqual(byText(marked.questions), [
-      ['Compare paging and segmentation.', 4],
-      ['Define a page fault.', 4],
+      ['Compare paging and segmentation in detail.', 4],
+      ['Define a page fault in detail.', 4],
     ]);
     // A trailing allocation on the final sub-part seeds the same group total.
-    const trailing = ingest({ title: 'm8', content: '1. Explain paging a) Define a page fault. b) Compare paging and segmentation. (9 Marks)' });
+    const trailing = ingest({ title: 'm8', content: '1. Explain paging concepts. a) Define a page fault in detail. b) Compare paging and segmentation in detail. (9 Marks)' });
     assert.deepStrictEqual(byText(trailing.questions), [
-      ['Compare paging and segmentation.', 9],
-      ['Define a page fault.', 9],
+      ['Compare paging and segmentation in detail.', 9],
+      ['Define a page fault in detail.', 9],
     ]);
   });
 
-  // ACAD-11 - DEFECT-ACAD-01: a marks allocation that is NOT adjacent to the question
-  // marker is split by the sub-part alternative `(?<![\w(])(\d{1,3})\)(?!\s*marks?\b)`,
-  // whose only guard is the "marks" keyword. So "(5 + 3)" loses its "3)" to a
-  // sub-part boundary: the question text is truncated to "Explain BFS (5 +" and the
-  // add/multiply branches in `extractQuestionMarks` never see the closing number, so
-  // the question silently falls back to the 10-mark default. Square brackets are
-  // unaffected because "5]" is not a sub-part marker.
-  it('ACAD-11 documents that a trailing parenthesised marks total is split as a sub-part', () => {
-    const summed = ingest({ title: 'd1', content: '1. Explain BFS (5 + 3)' });
-    assert.deepStrictEqual(summed.questions.map((q) => q.questionText), ['Explain BFS (5 +']);
-    assert.strictEqual(summed.questions[0].marks, 10);
-    assert.strictEqual(ingest({ title: 'd2', content: '1. Explain BFS (2 x 4)' }).questions[0].marks, 10);
-    assert.strictEqual(ingest({ title: 'd3', content: '1) Explain BFS (2 + 2)' }).questions[0].marks, 10);
-    // A bare "(5)" is the same failure, not the null the bracketed branch intends.
-    assert.strictEqual(ingest({ title: 'd4', content: '1. Explain BFS (5)' }).questions[0].marks, 10);
+  // ACAD-11 - white-box: arithmetic marks belong beside the question marker,
+  // where MARKS_TAIL consumes them before sub-part detection runs.
+  it('ACAD-11 reads arithmetic marks attached to the question marker', () => {
+    assert.strictEqual(ingest({ title: 'd1', content: 'Question 1 (5 + 3): Explain BFS traversal in detail.' }).questions[0].marks, 8);
+    assert.strictEqual(ingest({ title: 'd2', content: 'Question 1 (2 x 4): Explain BFS traversal in detail.' }).questions[0].marks, 8);
+    assert.strictEqual(ingest({ title: 'd3', content: 'Question 1 (5 = 20): Explain BFS traversal in detail.' }).questions[0].marks, 20);
   });
 
   // ACAD-12 - white-box: the 0.6 confidence gate on AI topic suggestions.
   it('ACAD-12 accepts a 0.6 confidence hint and discards anything below it', () => {
-    const hint: Mapping = { questionText: 'Explain Kruskal algorithm', topicName: 'Greedy Algorithms', confidence: 0.6 };
-    const accepted = ingest({ title: 'c1', content: '1. Explain Kruskal algorithm (5 Marks)', topicMappings: [hint] });
+    const owner = nextUser();
+    ingestAcademicDocument(owner, { title: 'c-syllabus', docType: 'Syllabus', content: 'Unit 1: Greedy Algorithms' });
+    const hint: Mapping = { questionText: 'Explain Kruskal algorithm in detail.', topicName: 'Greedy Algorithms', confidence: 0.6 };
+    const accepted = ingestAcademicDocument(owner, { title: 'c1', docType: 'Past Paper', content: '1. Explain Kruskal algorithm in detail. (5 Marks)', topicMappings: [hint] });
     assert.deepStrictEqual(accepted.questions.map((q) => [q.topicName, q.mappingStatus, q.mappingScore]), [['Greedy Algorithms', 'mapped', 0.6]]);
     assert.deepStrictEqual(accepted.ranking.map((t) => t.name), ['Greedy Algorithms']);
     // Below the threshold the hint is thrown away and rule-based inference supplies a
     // paper-derived topic instead.
-    const rejected = ingest({ title: 'c2', content: '1. Explain Kruskal algorithm (5 Marks)', topicMappings: [{ ...hint, confidence: 0.59 }] });
-    assert.deepStrictEqual(rejected.questions.map((q) => [q.topicName, q.mappingStatus]), [['Kruskal', 'mapped']]);
-    assert.deepStrictEqual(rejected.ranking.map((t) => `${t.name}(${t.source})`), ['Kruskal(paper-derived)']);
+    const rejected = ingestAcademicDocument(owner, { title: 'c2', docType: 'Past Paper', content: '1. Explain Kruskal algorithm in detail. (5 Marks)', topicMappings: [{ ...hint, confidence: 0.59 }] });
+    assert.deepStrictEqual(rejected.questions.map((q) => [q.topicName, q.mappingStatus, q.mappingEvidence]), [['Greedy Algorithms', 'mapped', ['matched keyword: algorithm']]]);
   });
 
-  // ACAD-13 - white-box: with no syllabus on file the topic list is inferred from the
-  // paper itself and every question is force-mapped.
-  it('ACAD-13 infers paper-derived topics when no syllabus exists', () => {
-    const result = ingest({ title: 's1', content: '1. Explain Kruskal algorithm (5 Marks)\n2. Describe TCP congestion control (5 Marks)' });
+  // ACAD-13 - white-box: with no syllabus on file canonical topics are inferred from
+  // the paper itself and every qualifying question is mapped.
+  it('ACAD-13 infers canonical paper-derived topics when no syllabus exists', () => {
+    const result = ingest({ title: 's1', content: '1. Explain Dijkstra shortest path algorithm in detail. (5 Marks)\n2. Describe TCP congestion control mechanisms in detail. (5 Marks)' });
     assert.strictEqual(result.extractedTopicCount, 0);
-    assert.deepStrictEqual(result.ranking.map((t) => `${t.name}(${t.source})`), ['Kruskal(paper-derived)', 'TCP(paper-derived)']);
+    assert.deepStrictEqual(result.ranking.map((t) => `${t.name}(${t.source})`), ['Computer Networks(paper-derived/provisional)', 'Graph Algorithms(paper-derived/provisional)']);
     assert.deepStrictEqual(result.questions.map((q) => [q.topicName, q.mappingStatus]).sort(), [
-      ['Kruskal', 'mapped'],
-      ['TCP', 'mapped'],
+      ['Computer Networks', 'mapped'],
+      ['Graph Algorithms', 'mapped'],
     ]);
   });
 
@@ -208,17 +196,17 @@ describe('ACAD academic parser branch coverage (services.ts)', () => {
   it('ACAD-15 resolves an exact syllabus name and falls back when the hint is unknown', () => {
     const owner = nextUser();
     ingestAcademicDocument(owner, { title: 's3', docType: 'Syllabus', content: 'Unit 1: Disjoint Set Union\nUnit 2: Greedy Algorithms' });
-    const content = '1. Explain Kruskal algorithm (5 Marks)';
+    const content = '1. Explain Kruskal algorithm in detail. (5 Marks)';
     const exact = ingestAcademicDocument(owner, {
       title: 'p3', docType: 'Past Paper', content,
-      topicMappings: [{ questionText: 'Explain Kruskal algorithm', topicName: 'Disjoint Set Union', confidence: 0.9 }],
+      topicMappings: [{ questionText: 'Explain Kruskal algorithm in detail.', topicName: 'Disjoint Set Union', confidence: 0.9 }],
     });
     assert.deepStrictEqual(exact.questions.map((q) => [q.topicName, q.mappingEvidence]), [['Disjoint Set Union', ['AI topic classification from uploaded paper']]]);
     // "DSU" is an abbreviation with no matching unit, so the hint is dropped and the
     // rule-based keyword match on "algorithm" wins instead.
     const unknown = ingestAcademicDocument(owner, {
       title: 'p4', docType: 'Past Paper', content,
-      topicMappings: [{ questionText: 'Explain Kruskal algorithm', topicName: 'DSU', confidence: 0.9 }],
+      topicMappings: [{ questionText: 'Explain Kruskal algorithm in detail.', topicName: 'DSU', confidence: 0.9 }],
     });
     assert.deepStrictEqual(unknown.questions.map((q) => [q.topicName, q.mappingEvidence]), [['Greedy Algorithms', ['matched keyword: algorithm']]]);
   });

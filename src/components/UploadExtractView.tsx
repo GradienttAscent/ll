@@ -159,8 +159,9 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
 
             {/* Document Title input */}
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">Document Name / Code</label>
+              <label htmlFor="academic-document-name" className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">Document Name / Code</label>
               <input
+                id="academic-document-name"
                 type="text"
                 value={docName}
                 onChange={(e) => setDocName(e.target.value)}
@@ -184,8 +185,9 @@ QUESTION 3 (8 Marks): Apply Master Theorem to recurrences T(n) = 3T(n/2) + n^2 a
 
             {/* Raw Text Input */}
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">Or Paste Document Text</label>
+              <label htmlFor="academic-document-text" className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">Or Paste Document Text</label>
               <textarea
+                id="academic-document-text"
                 value={inputText}
                 onChange={(e) => { setInputText(e.target.value); setUploadedFile(null); setIsSampleMode(false); setFileError(''); }}
                 placeholder="Paste questions or syllabus outline here..."
