@@ -249,6 +249,7 @@ app.patch('/api/schedule-blocks/:id', (req, res) => {
     startTime?: string;
     durationMinutes?: number;
     completed?: number;
+    missed?: number;
     topicId?: string;
   } = {};
   const summaryChanges: Record<string, { field: string; oldValue: string; newValue: string }> = {};
@@ -277,7 +278,14 @@ app.patch('/api/schedule-blocks/:id', (req, res) => {
   if (body.completed !== undefined) {
     if (typeof body.completed !== 'boolean') return sendError(res, 400, 'completed must be a boolean.');
     updates.completed = body.completed ? 1 : 0;
+    if (body.completed) updates.missed = 0;
     summaryChanges.completed = { field: 'completed', oldValue: String(existing.completed), newValue: body.completed ? '1' : '0' };
+  }
+  if (body.missed !== undefined) {
+    if (typeof body.missed !== 'boolean') return sendError(res, 400, 'missed must be a boolean.');
+    updates.missed = body.missed ? 1 : 0;
+    if (body.missed) updates.completed = 0;
+    summaryChanges.missed = { field: 'missed', oldValue: String(existing.missed || 0), newValue: body.missed ? '1' : '0' };
   }
   if (body.topicId !== undefined) {
     if (typeof body.topicId !== 'string' || !body.topicId) return sendError(res, 400, 'topicId is required.');
@@ -567,6 +575,53 @@ app.get('/api/study-streak', (req, res) => {
   res.json({ streak: services.computeStudyStreak(userIdOf(req), tzOffsetMinutes) });
 });
 
+// ---- YOUR ASCENT Progression System ----
+app.get('/api/ascent', (req, res) => {
+  const offset = Number(req.query.tzOffsetMinutes);
+  const tzOffsetMinutes = Number.isFinite(offset) ? offset : new Date().getTimezoneOffset();
+  res.json({ ascent: services.computeAscentState(userIdOf(req), tzOffsetMinutes) });
+});
+
+app.post('/api/ascent/commit-tomorrow', (req, res) => {
+  const { title, startTime, durationMinutes, topicId, tzOffsetMinutes } = req.body || {};
+  const offset = Number(tzOffsetMinutes);
+  const tz = Number.isFinite(offset) ? offset : new Date().getTimezoneOffset();
+  try {
+    const block = services.commitTomorrowScheduleBlock(userIdOf(req), {
+      title: typeof title === 'string' ? title : '',
+      startTime: typeof startTime === 'string' ? startTime : undefined,
+      durationMinutes: Number(durationMinutes) || undefined,
+      topicId: typeof topicId === 'string' ? topicId : undefined,
+      tzOffsetMinutes: tz,
+    });
+    const ascent = services.computeAscentState(userIdOf(req), tz);
+    return res.status(201).json({ block, ascent });
+  } catch (error: any) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error.message || 'Unable to commit for tomorrow.');
+  }
+});
+
+app.post('/api/ascent/action', (req, res) => {
+  const { action, blockId, tzOffsetMinutes } = req.body || {};
+  const offset = Number(tzOffsetMinutes);
+  const tz = Number.isFinite(offset) ? offset : new Date().getTimezoneOffset();
+  try {
+    if (action === 'complete') {
+      services.markCommitmentCompleted(userIdOf(req), typeof blockId === 'string' ? blockId : undefined);
+    } else if (action === 'miss') {
+      services.markCommitmentMissed(userIdOf(req), typeof blockId === 'string' ? blockId : undefined);
+    } else {
+      return sendError(res, 400, 'Invalid action. Expected "complete" or "miss".');
+    }
+    const ascent = services.computeAscentState(userIdOf(req), tz);
+    return res.json({ ascent });
+  } catch (error: any) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error.message || 'Unable to update ascent commitment.');
+  }
+});
+
 // ---- Session-derived adaptive revisions ----
 app.post('/api/adaptive-proposals', (req, res) => {
   const studySessionId = req.body?.studySessionId;
@@ -828,6 +883,30 @@ app.get('/api/academic-evidence', (req, res) => {
   return res.json({ academic: services.academicEvidence(userIdOf(req), documentId) });
 });
 
+// ---- TEACHER'S EXAM INTELLIGENCE ("WHAT TO STUDY") ----
+app.get('/api/academic/what-to-study', (req, res) => {
+  try {
+    const items = services.getWhatToStudyRanking(userIdOf(req));
+    return res.json({ whatToStudy: items });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, error instanceof Error ? error.message : 'Unable to generate What to Study ranking.');
+  }
+});
+
+app.post('/api/academic/load-sample-pack', (req, res) => {
+  try {
+    const items = services.loadSampleAcademicPack(userIdOf(req));
+    return res.status(201).json({
+      message: 'Operating Systems course pack loaded successfully (Syllabus, Lecture Slides with Slides 18–24 on Deadlocks, and 4 Past Papers).',
+      whatToStudy: items,
+    });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, error instanceof Error ? error.message : 'Unable to load sample academic pack.');
+  }
+});
+
 app.get('/api/documents', (req, res) => {
   res.json({ documents: services.documentRows(userIdOf(req)) });
 });
@@ -843,6 +922,20 @@ app.get('/api/documents/:id', (req, res) => {
   const document = services.findOwnedDocument(userIdOf(req), req.params.id);
   if (!document) return sendError(res, 404, 'Document not found.');
   return res.json({ document });
+});
+
+app.get('/api/documents/:id/file', (req, res) => {
+  const fileInfo = services.findOwnedDocumentFileData(userIdOf(req), req.params.id);
+  if (!fileInfo) return sendError(res, 404, 'Document not found.');
+  
+  if (fileInfo.fileData) {
+    res.setHeader('Content-Type', fileInfo.mimeType || 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileInfo.title)}"`);
+    return res.send(fileInfo.fileData);
+  }
+  
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  return res.send(fileInfo.content || '');
 });
 
 // ---- Questions ----

@@ -18,6 +18,7 @@ import { AuthScreen } from './components/AuthScreen';
 import { MemoryAtlasView } from './components/MemoryAtlasView';
 import { SplashScreen } from './components/SplashScreen';
 import { FocusModeModal, FocusModeConfig } from './components/FocusModeModal';
+import { ScrollToTopButton } from './components/ScrollToTopButton';
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
@@ -416,7 +417,7 @@ export default function App() {
   }
 
   return (
-    <div key={user.id} className="min-h-screen bg-[#FAF8FC] text-[#1C1B1F] flex flex-col font-sans selection:bg-[#5E35B1] selection:text-white">
+    <div key={user.id} className="min-h-screen bg-[#FDFDFC] dark:bg-[#111013] text-[#17151A] dark:text-[#F5F3F7] flex flex-col font-sans selection:bg-[#EDE7F6] dark:selection:bg-[#251E30] selection:text-[#6D28D9] dark:selection:text-[#8B5CF6] transition-colors duration-200">
       {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
       
       {/* Top Header */}
@@ -452,7 +453,7 @@ export default function App() {
         />
 
         {/* Main Workspace Body View */}
-        <main className="flex-1 bg-[#FDFDFC] min-h-[calc(100vh-61px)] pb-12">
+        <main className="flex-1 bg-[#FDFDFC] dark:bg-[#111013] min-h-[calc(100vh-61px)] pb-12 transition-colors">
           {activeTab === 'dashboard' && (
             <DashboardView
               setActiveTab={setActiveTab}
@@ -460,6 +461,7 @@ export default function App() {
               user={user}
               onStartStudy={startStudy}
               onOpenFocusMode={() => setIsFocusModalOpen(true)}
+              onScheduleChanged={() => setScheduleRefreshKey((key) => key + 1)}
             />
           )}
 
@@ -540,6 +542,9 @@ export default function App() {
       />
 
       {feedbackSession && <SessionFeedbackCard key={feedbackSession.id} sessionId={feedbackSession.id} title={feedbackSession.title} onSave={saveSessionFeedback} />}
+
+      {/* Scroll To Top Button */}
+      <ScrollToTopButton />
 
     </div>
   );

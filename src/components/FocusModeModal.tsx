@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shield, Sparkles, X, Check, Laptop, Smartphone, AlertCircle, Play } from 'lucide-react';
+import { Shield, X, Check, Laptop, Smartphone, AlertCircle, Play } from 'lucide-react';
 
 export interface DistractionTarget {
   id: string;
@@ -92,12 +92,12 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
   const allTargets = [...COMMON_DISTRACTIONS, ...customList];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#1C1B1F]/40 backdrop-blur-xs animate-fade-in">
-      <div className="bg-white rounded-3xl border border-[#EDE7F3] max-w-lg w-full p-6 sm:p-8 space-y-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 dark:bg-black/70 backdrop-blur-xs animate-fade-in">
+      <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] max-w-lg w-full p-6 sm:p-8 space-y-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
         {/* Close Button */}
         <button
           onClick={onClose}
-          className="absolute top-6 right-6 p-2 rounded-full text-[#7B7484] hover:text-[#1C1B1F] hover:bg-[#FAF8FC] transition-colors"
+          className="absolute top-6 right-6 p-2 rounded-full text-[#7B7484] dark:text-[#A9A3AE] hover:text-[#17151A] dark:hover:text-[#F5F3F7] hover:bg-[#FAF8FC] dark:hover:bg-[#251E30] transition-colors"
           title="Close"
         >
           <X className="w-4 h-4" />
@@ -105,15 +105,15 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
 
         {/* Header */}
         <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[9px] uppercase tracking-[0.2em] font-bold text-[#461599] mb-3">
-            <Shield className="w-3.5 h-3.5 text-[#5E35B1]" /> Focus Mode &bull; Distraction Guard
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#EDE7F6] dark:bg-[#251E30] border border-[#D8CCE8] dark:border-[#3E3846] text-[9px] uppercase tracking-[0.2em] font-bold text-[#6D28D9] dark:text-[#8B5CF6] mb-3">
+            <Shield className="w-3.5 h-3.5 text-[#6D28D9] dark:text-[#8B5CF6]" /> Focus Mode &bull; Distraction Guard
           </div>
-          <h2 className="font-serif text-3xl sm:text-4xl italic text-[#1C1B1F] leading-tight">
+          <h2 className="font-serif text-3xl sm:text-4xl italic text-[#17151A] dark:text-[#F5F3F7] leading-tight">
             Configure Focus Mode
           </h2>
-          <p className="text-xs text-[#7B7484] font-sans mt-1.5">
+          <p className="text-xs text-[#7B7484] dark:text-[#A9A3AE] font-sans mt-1.5">
             {taskTitle ? (
-              <span>Locked into: <strong className="text-[#5E35B1] font-semibold">{taskTitle}</strong></span>
+              <span>Locked into: <strong className="text-[#6D28D9] dark:text-[#8B5CF6] font-semibold">{taskTitle}</strong></span>
             ) : (
               'Shield your study block from cognitive leaks, social loops, and tab drift.'
             )}
@@ -122,7 +122,7 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
 
         {/* Duration Configuration */}
         <div className="space-y-2.5">
-          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">
+          <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484] dark:text-[#A9A3AE]">
             Focus Duration
           </label>
           <div className="grid grid-cols-4 gap-2.5">
@@ -134,10 +134,10 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
                   setDuration(m);
                   setIsCustom(false);
                 }}
-                className={`py-3 rounded-xl border text-xs font-bold transition-all shadow-2xs ${
+                className={`py-3 rounded-xl border text-xs font-semibold transition-all shadow-2xs ${
                   !isCustom && duration === m
-                    ? 'bg-[#5E35B1] text-white border-transparent shadow-xs'
-                    : 'bg-[#FAF8FC] border-[#EDE7F3] text-[#7B7484] hover:border-[#D8CCE8] hover:text-[#1C1B1F]'
+                    ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-transparent shadow-xs'
+                    : 'bg-[#FAF8FC] dark:bg-[#1D1A21] border-[#EDE7F3] dark:border-[#302B35] text-[#7B7484] dark:text-[#A9A3AE] hover:border-[#D8CCE8] dark:hover:border-[#3E3846] hover:text-[#17151A] dark:hover:text-[#F5F3F7]'
                 }`}
               >
                 {m} min
@@ -146,10 +146,10 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
             <button
               type="button"
               onClick={() => setIsCustom(true)}
-              className={`py-3 rounded-xl border text-xs font-bold transition-all shadow-2xs ${
+              className={`py-3 rounded-xl border text-xs font-semibold transition-all shadow-2xs ${
                 isCustom
-                  ? 'bg-[#5E35B1] text-white border-transparent shadow-xs'
-                  : 'bg-[#FAF8FC] border-[#EDE7F3] text-[#7B7484] hover:border-[#D8CCE8] hover:text-[#1C1B1F]'
+                  ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-transparent shadow-xs'
+                  : 'bg-[#FAF8FC] dark:bg-[#1D1A21] border-[#EDE7F3] dark:border-[#302B35] text-[#7B7484] dark:text-[#A9A3AE] hover:border-[#D8CCE8] dark:hover:border-[#3E3846] hover:text-[#17151A] dark:hover:text-[#F5F3F7]'
               }`}
             >
               Custom
@@ -165,9 +165,9 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
                 value={customDuration}
                 onChange={(e) => setCustomDuration(e.target.value)}
                 placeholder="Minutes (e.g. 45)"
-                className="w-full bg-[#FAF8FC] rounded-xl border border-[#EDE7F3] px-3.5 py-2 text-xs font-mono text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]"
+                className="w-full bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-xl border border-[#EDE7F3] dark:border-[#302B35] px-3.5 py-2 text-xs font-mono text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#A9A3AE] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6]"
               />
-              <span className="text-xs text-[#7B7484] whitespace-nowrap">minutes</span>
+              <span className="text-xs text-[#7B7484] dark:text-[#A9A3AE] whitespace-nowrap">minutes</span>
             </div>
           )}
         </div>
@@ -175,7 +175,7 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
         {/* Distraction Selection */}
         <div className="space-y-2.5">
           <div className="flex items-center justify-between">
-            <label className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">
+            <label className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484] dark:text-[#A9A3AE]">
               Monitored Distractions ({selectedDistractions.length} active)
             </label>
             <button
@@ -187,7 +187,7 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
                   setSelectedDistractions(allTargets.map((t) => t.id));
                 }
               }}
-              className="text-[9px] uppercase tracking-wider font-bold text-[#5E35B1] hover:underline"
+              className="text-[9px] uppercase tracking-wider font-semibold text-[#6D28D9] dark:text-[#8B5CF6] hover:underline"
             >
               {selectedDistractions.length === allTargets.length ? 'Clear all' : 'Select all'}
             </button>
@@ -203,16 +203,16 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
                   onClick={() => toggleDistraction(item.id)}
                   className={`p-3 rounded-xl border text-left flex items-center justify-between transition-all shadow-2xs ${
                     isChecked
-                      ? 'bg-[#EDE7F6] border-[#D8CCE8] text-[#461599] font-bold'
-                      : 'bg-[#FAF8FC] border-[#EDE7F3] text-[#7B7484] hover:border-[#D8CCE8]'
+                      ? 'bg-[#EDE7F6] dark:bg-[#251E30] border-[#D8CCE8] dark:border-[#3E3846] text-[#6D28D9] dark:text-[#8B5CF6] font-semibold'
+                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] border-[#EDE7F3] dark:border-[#302B35] text-[#7B7484] dark:text-[#A9A3AE] hover:border-[#D8CCE8] dark:hover:border-[#3E3846]'
                   }`}
                 >
                   <span className="text-xs truncate">{item.name}</span>
                   <div
                     className={`w-4 h-4 rounded-md border flex items-center justify-center shrink-0 ${
                       isChecked
-                        ? 'bg-[#5E35B1] border-transparent text-white'
-                        : 'border-[#D8CCE8] bg-white'
+                        ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] border-transparent text-white'
+                        : 'border-[#D8CCE8] dark:border-[#3E3846] bg-white dark:bg-[#17151A]'
                     }`}
                   >
                     {isChecked && <Check className="w-3 h-3 stroke-[3]" />}
@@ -229,12 +229,12 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
               value={customSiteInput}
               onChange={(e) => setCustomSiteInput(e.target.value)}
               placeholder="Add other site/app (e.g. twitch.tv)..."
-              className="flex-1 bg-[#FAF8FC] rounded-xl border border-[#EDE7F3] px-3.5 py-2 text-xs text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]"
+              className="flex-1 bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-xl border border-[#EDE7F3] dark:border-[#302B35] px-3.5 py-2 text-xs text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#A9A3AE] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6]"
             />
             <button
               type="submit"
               disabled={!customSiteInput.trim()}
-              className="px-3.5 py-2 rounded-xl bg-white border border-[#EDE7F3] hover:border-[#D8CCE8] text-[10px] font-bold uppercase tracking-wider text-[#461599] disabled:opacity-40 transition-colors"
+              className="px-3.5 py-2 rounded-xl bg-white dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8] dark:hover:border-[#3E3846] text-[10px] font-bold uppercase tracking-wider text-[#6D28D9] dark:text-[#8B5CF6] disabled:opacity-40 transition-colors"
             >
               + Add
             </button>
@@ -242,69 +242,69 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
         </div>
 
         {/* Technical Architecture Distinctions (No fake system blocking) */}
-        <div className="space-y-3 pt-2 border-t border-[#EDE7F3]">
-          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">
+        <div className="space-y-3 pt-2 border-t border-[#EDE7F3] dark:border-[#302B35]">
+          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484] dark:text-[#A9A3AE]">
             Enforcement Layer
           </div>
 
           <div className="space-y-2">
-            <label className="flex items-start gap-3 p-3 rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] cursor-pointer hover:border-[#D8CCE8]">
+            <label className="flex items-start gap-3 p-3 rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] cursor-pointer hover:border-[#D8CCE8] dark:hover:border-[#3E3846]">
               <input
                 type="checkbox"
                 checked={blockWebsites}
                 onChange={(e) => setBlockWebsites(e.target.checked)}
-                className="mt-0.5 rounded text-[#5E35B1] focus:ring-[#5E35B1]"
+                className="mt-0.5 rounded text-[#6D28D9] dark:text-[#8B5CF6] focus:ring-[#6D28D9] accent-[#6D28D9] dark:accent-[#8B5CF6]"
               />
               <div className="text-xs">
-                <div className="font-semibold text-[#1C1B1F] flex items-center gap-1.5">
-                  <Laptop className="w-3.5 h-3.5 text-[#5E35B1]" />
+                <div className="font-semibold text-[#17151A] dark:text-[#F5F3F7] flex items-center gap-1.5">
+                  <Laptop className="w-3.5 h-3.5 text-[#6D28D9] dark:text-[#8B5CF6]" />
                   <span>Tab &amp; In-App Distraction Shield</span>
                 </div>
-                <div className="text-[11px] text-[#7B7484] mt-0.5">
+                <div className="text-[11px] text-[#7B7484] dark:text-[#A9A3AE] mt-0.5">
                   Tracks active tab blur, interrupts navigational wanderlust, and logs focus drops in your reflection history.
                 </div>
               </div>
             </label>
 
-            <label className="flex items-start gap-3 p-3 rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] cursor-pointer hover:border-[#D8CCE8]">
+            <label className="flex items-start gap-3 p-3 rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] cursor-pointer hover:border-[#D8CCE8] dark:hover:border-[#3E3846]">
               <input
                 type="checkbox"
                 checked={blockApps}
                 onChange={(e) => setBlockApps(e.target.checked)}
-                className="mt-0.5 rounded text-[#5E35B1] focus:ring-[#5E35B1]"
+                className="mt-0.5 rounded text-[#6D28D9] dark:text-[#8B5CF6] focus:ring-[#6D28D9] accent-[#6D28D9] dark:accent-[#8B5CF6]"
               />
               <div className="text-xs">
-                <div className="font-semibold text-[#1C1B1F] flex items-center gap-1.5">
-                  <Smartphone className="w-3.5 h-3.5 text-[#5E35B1]" />
+                <div className="font-semibold text-[#17151A] dark:text-[#F5F3F7] flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5 text-[#6D28D9] dark:text-[#8B5CF6]" />
                   <span>Companion OS / Desktop App Shield</span>
-                  <span className="text-[9px] uppercase px-1.5 py-0.2 bg-[#EDE7F6] text-[#461599] rounded font-bold">Companion Bridge</span>
+                  <span className="text-[9px] uppercase px-1.5 py-0.2 bg-[#EDE7F6] dark:bg-[#251E30] text-[#6D28D9] dark:text-[#8B5CF6] border border-[#D8CCE8] dark:border-[#3E3846] rounded font-bold">Companion Bridge</span>
                 </div>
-                <div className="text-[11px] text-[#7B7484] mt-0.5">
+                <div className="text-[11px] text-[#7B7484] dark:text-[#A9A3AE] mt-0.5">
                   System-level app blocking (e.g. WhatsApp Desktop/mobile) triggers via the LazyLift OS companion bridge. When no native companion is detected, strict browser focus reminders apply.
                 </div>
               </div>
             </label>
           </div>
 
-          <div className="p-3 rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] text-[11px] text-[#7B7484] flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 text-[#5E35B1]" />
+          <div className="p-3 rounded-xl bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] text-[11px] text-[#7B7484] dark:text-[#A9A3AE] flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-[#6D28D9] dark:text-[#8B5CF6]" />
             <span>Honest student guarantee: LazyLift never pretends to kill system tasks without verified companion permissions.</span>
           </div>
         </div>
 
         {/* CTA Actions */}
-        <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#EDE7F3]">
+        <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#EDE7F3] dark:border-[#302B35]">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-wider text-[#7B7484] hover:text-[#1C1B1F] transition-colors"
+            className="px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider text-[#7B7484] dark:text-[#A9A3AE] hover:text-[#17151A] dark:hover:text-[#F5F3F7] transition-colors"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick={handleStart}
-            className="px-6 py-3 rounded-xl bg-[#5E35B1] hover:bg-[#461599] text-white text-[10px] font-bold uppercase tracking-[0.2em] transition-all shadow-xs hover:shadow active:scale-98 flex items-center gap-2"
+            className="px-5 py-2.5 rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white text-xs font-semibold uppercase tracking-[0.16em] transition-all shadow-xs hover:shadow active:scale-98 flex items-center gap-2"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
             <span>Start Focus Session</span>

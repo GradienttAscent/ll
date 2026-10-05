@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
-import { Bell, Calendar, Clock, CheckCircle2, Check, ArrowRight, X, AlertCircle } from 'lucide-react';
+import { Bell, Calendar, Clock, CheckCircle2, ArrowRight, X } from 'lucide-react';
 import { ActiveTab, AdaptiveProposal, ScheduleBlock } from '../types';
 
 export interface NotificationItem {
@@ -162,17 +162,17 @@ export const NotificationsPopover: React.FC<NotificationsPopoverProps> = ({
   return (
     <div
       ref={popoverRef}
-      className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white rounded-2xl border border-[#EDE7F3] shadow-xl z-50 overflow-hidden animate-scale-in"
+      className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] shadow-xl z-50 overflow-hidden animate-scale-in"
       role="dialog"
       aria-label="Notifications"
     >
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-[#EDE7F3] bg-[#FAF8FC]">
+      <div className="flex items-center justify-between p-4 border-b border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21]">
         <div className="flex items-center gap-2">
-          <Bell className="w-4 h-4 text-[#5E35B1]" />
-          <h3 className="font-serif text-lg italic text-[#1C1B1F]">Notifications</h3>
+          <Bell className="w-4 h-4 text-[#6D28D9] dark:text-[#8B5CF6]" />
+          <h3 className="font-serif text-lg italic text-[#17151A] dark:text-[#F5F3F7]">Notifications</h3>
           {unreadCount > 0 && (
-            <span className="text-[9px] font-bold uppercase tracking-wider bg-[#5E35B1] text-white px-2 py-0.5 rounded-full">
+            <span className="text-[9px] font-bold uppercase tracking-wider bg-[#6D28D9] dark:bg-[#8B5CF6] text-white px-2 py-0.5 rounded-full">
               {unreadCount} new
             </span>
           )}
@@ -181,14 +181,14 @@ export const NotificationsPopover: React.FC<NotificationsPopoverProps> = ({
           {unreadCount > 0 && (
             <button
               onClick={markAllRead}
-              className="text-[10px] font-bold uppercase tracking-wider text-[#5E35B1] hover:underline"
+              className="text-[10px] font-semibold uppercase tracking-wider text-[#6D28D9] dark:text-[#8B5CF6] hover:underline"
             >
               Mark all read
             </button>
           )}
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-[#7B7484] hover:text-[#1C1B1F] hover:bg-[#EDE7F6] transition-colors"
+            className="p-1 rounded-lg text-[#7B7484] dark:text-[#A9A3AE] hover:text-[#17151A] dark:hover:text-[#F5F3F7] hover:bg-[#EDE7F6] dark:hover:bg-[#251E30] transition-colors"
             aria-label="Close notifications"
           >
             <X className="w-4 h-4" />
@@ -197,37 +197,37 @@ export const NotificationsPopover: React.FC<NotificationsPopoverProps> = ({
       </div>
 
       {/* Notifications List */}
-      <div className="max-h-88 overflow-y-auto divide-y divide-[#EDE7F3]">
+      <div className="max-h-88 overflow-y-auto divide-y divide-[#EDE7F3] dark:divide-[#302B35]">
         {notifications.length === 0 ? (
           <div className="py-10 px-6 text-center space-y-2">
-            <div className="w-10 h-10 rounded-full bg-[#FAF8FC] border border-[#EDE7F3] flex items-center justify-center mx-auto text-[#7B7484]">
-              <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+            <div className="w-10 h-10 rounded-full bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] flex items-center justify-center mx-auto text-[#7B7484] dark:text-[#A9A3AE]">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
             </div>
-            <p className="font-serif italic text-base text-[#1C1B1F]">You&apos;re all caught up</p>
-            <p className="text-xs text-[#7B7484]">No pending session alerts or schedule changes right now.</p>
+            <p className="font-serif italic text-base text-[#17151A] dark:text-[#F5F3F7]">You&apos;re all caught up</p>
+            <p className="text-xs text-[#7B7484] dark:text-[#A9A3AE]">No pending session alerts or schedule changes right now.</p>
           </div>
         ) : (
           notifications.map((item) => (
             <div
               key={item.id}
               onClick={() => handleNotificationClick(item)}
-              className={`p-4 transition-colors cursor-pointer flex items-start gap-3 hover:bg-[#FAF8FC] ${
-                !item.isRead ? 'bg-[#FAF8FC]/60' : 'bg-white'
+              className={`p-4 transition-colors cursor-pointer flex items-start gap-3 hover:bg-[#FAF8FC] dark:hover:bg-[#1D1A21] ${
+                !item.isRead ? 'bg-[#FAF8FC]/60 dark:bg-[#1D1A21]/60' : 'bg-white dark:bg-[#17151A]'
               }`}
             >
               <div className="mt-0.5 shrink-0">
                 {item.type === 'session_active' && (
-                  <div className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40 flex items-center justify-center">
                     <Clock className="w-3.5 h-3.5" />
                   </div>
                 )}
                 {item.type === 'adaptive_proposal' && (
-                  <div className="w-7 h-7 rounded-lg bg-[#EDE7F6] text-[#461599] border border-[#D8CCE8] flex items-center justify-center">
+                  <div className="w-7 h-7 rounded-lg bg-[#EDE7F6] dark:bg-[#251E30] text-[#6D28D9] dark:text-[#8B5CF6] border border-[#D8CCE8] dark:border-[#3E3846] flex items-center justify-center">
                     <Calendar className="w-3.5 h-3.5" />
                   </div>
                 )}
                 {item.type === 'upcoming_session' && (
-                  <div className="w-7 h-7 rounded-lg bg-[#FAF8FC] text-[#5E35B1] border border-[#EDE7F3] flex items-center justify-center">
+                  <div className="w-7 h-7 rounded-lg bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#6D28D9] dark:text-[#8B5CF6] border border-[#EDE7F3] dark:border-[#302B35] flex items-center justify-center">
                     <Clock className="w-3.5 h-3.5" />
                   </div>
                 )}
@@ -235,16 +235,16 @@ export const NotificationsPopover: React.FC<NotificationsPopoverProps> = ({
 
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-[#1C1B1F] truncate">{item.title}</span>
-                  <span className="text-[10px] font-mono text-[#7B7484] shrink-0">{item.timestamp}</span>
+                  <span className="text-xs font-semibold text-[#17151A] dark:text-[#F5F3F7] truncate">{item.title}</span>
+                  <span className="text-[10px] font-mono text-[#7B7484] dark:text-[#A9A3AE] shrink-0">{item.timestamp}</span>
                 </div>
-                <p className="text-xs text-[#55524E] mt-0.5 line-clamp-2 leading-relaxed">
+                <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-0.5 line-clamp-2 leading-relaxed">
                   {item.description}
                 </p>
               </div>
 
               {!item.isRead && (
-                <span className="w-2 h-2 rounded-full bg-[#5E35B1] shrink-0 mt-1.5" />
+                <span className="w-2 h-2 rounded-full bg-[#6D28D9] dark:bg-[#8B5CF6] shrink-0 mt-1.5" />
               )}
             </div>
           ))
@@ -252,13 +252,13 @@ export const NotificationsPopover: React.FC<NotificationsPopoverProps> = ({
       </div>
 
       {/* Footer */}
-      <div className="p-3 border-t border-[#EDE7F3] bg-[#FAF8FC] text-center">
+      <div className="p-3 border-t border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] text-center">
         <button
           onClick={() => {
             setActiveTab('planner');
             onClose();
           }}
-          className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#5E35B1] hover:text-[#461599] inline-flex items-center gap-1"
+          className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#6D28D9] dark:text-[#8B5CF6] hover:text-[#5B21B6] dark:hover:text-[#A78BFA] inline-flex items-center gap-1"
         >
           <span>View Study Planner</span>
           <ArrowRight className="w-3 h-3" />

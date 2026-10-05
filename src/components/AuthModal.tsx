@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Lock, Mail, User, Sparkles, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
+import { Lock, Mail, User, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
 import { LazyLiftLogo } from './LazyLiftLogo';
 
 export const AuthModal: React.FC = () => {
@@ -46,20 +46,20 @@ export const AuthModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#1C1B1F]/30 backdrop-blur-xs animate-fade-in">
-      <div className="bg-white rounded-3xl border border-[#EDE7F3] max-w-md w-full p-8 space-y-6 shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 dark:bg-black/70 backdrop-blur-xs animate-fade-in">
+      <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] max-w-md w-full p-8 space-y-6 shadow-xl">
         {/* Header Branding */}
         <div className="text-center space-y-3">
           <div className="flex justify-center mb-2">
             <LazyLiftLogo size="md" />
           </div>
-          <div className="inline-block px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[#461599] text-[9px] uppercase tracking-[0.25em] font-bold">
+          <div className="inline-block px-3 py-1 rounded-full bg-[#EDE7F6] dark:bg-[#251E30] border border-[#D8CCE8] dark:border-[#3E3846] text-[#6D28D9] dark:text-[#8B5CF6] text-[9px] uppercase tracking-[0.25em] font-bold">
             Academic Workspace &bull; Authentication
           </div>
-          <h2 className="font-serif text-3xl sm:text-4xl italic text-[#1C1B1F] leading-tight">
+          <h2 className="font-serif text-3xl sm:text-4xl italic text-[#17151A] dark:text-[#F5F3F7] leading-tight">
             {mode === 'login' ? 'Welcome Back' : 'Create Student Account'}
           </h2>
-          <p className="text-xs text-[#7B7484] font-sans">
+          <p className="text-xs text-[#7B7484] dark:text-[#A9A3AE] font-sans">
             {mode === 'login' 
               ? 'Sign in to access your adaptive study schedule and analytics.'
               : 'Join LazyLift to parse syllabi, generate study schedules, and track progress.'}
@@ -67,14 +67,14 @@ export const AuthModal: React.FC = () => {
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex rounded-xl border border-[#EDE7F3] p-1 bg-[#FAF8FC]">
+        <div className="flex rounded-xl border border-[#EDE7F3] dark:border-[#302B35] p-1 bg-[#FAF8FC] dark:bg-[#1D1A21]">
           <button
             type="button"
             onClick={() => { setMode('login'); clearError(); setLocalError(null); }}
             className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
               mode === 'login'
-                ? 'bg-[#5E35B1] text-white shadow-2xs'
-                : 'text-[#7B7484] hover:text-[#1C1B1F]'
+                ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white shadow-2xs'
+                : 'text-[#7B7484] dark:text-[#A9A3AE] hover:text-[#17151A] dark:hover:text-[#F5F3F7]'
             }`}
           >
             Sign In
@@ -84,8 +84,8 @@ export const AuthModal: React.FC = () => {
             onClick={() => { setMode('register'); clearError(); setLocalError(null); }}
             className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
               mode === 'register'
-                ? 'bg-[#5E35B1] text-white shadow-2xs'
-                : 'text-[#7B7484] hover:text-[#1C1B1F]'
+                ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white shadow-2xs'
+                : 'text-[#7B7484] dark:text-[#A9A3AE] hover:text-[#17151A] dark:hover:text-[#F5F3F7]'
             }`}
           >
             Create Account
@@ -93,8 +93,8 @@ export const AuthModal: React.FC = () => {
         </div>
 
         {(error || localError) && (
-          <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-red-800 text-xs font-mono flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+          <div className="p-3.5 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 rounded-xl text-red-800 dark:text-red-300 text-xs font-mono flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-red-600 dark:text-red-400" />
             <span>{localError || error}</span>
           </div>
         )}
@@ -102,46 +102,46 @@ export const AuthModal: React.FC = () => {
         <form onSubmit={handleSubmit} className="space-y-4">
           {mode === 'register' && (
             <div>
-              <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] mb-1.5">
+              <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#A9A3AE] mb-1.5">
                 Display Name
               </label>
               <div className="relative">
-                <User className="w-4 h-4 text-[#7B7484] absolute left-3.5 top-3" />
+                <User className="w-4 h-4 text-[#7B7484] dark:text-[#A9A3AE] absolute left-3.5 top-3" />
                 <input
                   type="text"
                   required
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="Alex Vance"
-                  className="w-full pl-10 pr-3.5 py-2.5 text-xs bg-[#FAF8FC] rounded-xl border border-[#EDE7F3] text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1] focus:ring-2 focus:ring-[#5E35B1]/10 font-sans transition-all"
+                  className="w-full pl-10 pr-3.5 py-2.5 text-xs bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-xl border border-[#EDE7F3] dark:border-[#302B35] text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#A9A3AE] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] font-sans transition-all"
                 />
               </div>
             </div>
           )}
 
           <div>
-            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] mb-1.5">
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#A9A3AE] mb-1.5">
               Email Address
             </label>
             <div className="relative">
-              <Mail className="w-4 h-4 text-[#7B7484] absolute left-3.5 top-3" />
+              <Mail className="w-4 h-4 text-[#7B7484] dark:text-[#A9A3AE] absolute left-3.5 top-3" />
               <input
                 type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="student@university.edu"
-                className="w-full pl-10 pr-3.5 py-2.5 text-xs bg-[#FAF8FC] rounded-xl border border-[#EDE7F3] text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1] focus:ring-2 focus:ring-[#5E35B1]/10 font-sans transition-all"
+                className="w-full pl-10 pr-3.5 py-2.5 text-xs bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-xl border border-[#EDE7F3] dark:border-[#302B35] text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#A9A3AE] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] font-sans transition-all"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] mb-1.5">
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#A9A3AE] mb-1.5">
               Password
             </label>
             <div className="relative">
-              <Lock className="w-4 h-4 text-[#7B7484] absolute left-3.5 top-3" />
+              <Lock className="w-4 h-4 text-[#7B7484] dark:text-[#A9A3AE] absolute left-3.5 top-3" />
               <input
                 type="password"
                 required
@@ -149,7 +149,7 @@ export const AuthModal: React.FC = () => {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full pl-10 pr-3.5 py-2.5 text-xs bg-[#FAF8FC] rounded-xl border border-[#EDE7F3] text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1] focus:ring-2 focus:ring-[#5E35B1]/10 font-sans transition-all"
+                className="w-full pl-10 pr-3.5 py-2.5 text-xs bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-xl border border-[#EDE7F3] dark:border-[#302B35] text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#A9A3AE] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] font-sans transition-all"
               />
             </div>
           </div>
@@ -157,7 +157,7 @@ export const AuthModal: React.FC = () => {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full rounded-xl bg-[#5E35B1] hover:bg-[#461599] text-white py-3.5 px-4 text-[10px] font-bold uppercase tracking-[0.2em] transition-all shadow-xs hover:shadow active:scale-98 flex items-center justify-center space-x-2 disabled:opacity-50"
+            className="w-full rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white py-3 px-4 text-xs font-semibold uppercase tracking-[0.16em] transition-all shadow-xs hover:shadow active:scale-98 flex items-center justify-center space-x-2 disabled:opacity-50"
           >
             {isSubmitting ? (
               <>
@@ -173,14 +173,13 @@ export const AuthModal: React.FC = () => {
           </button>
         </form>
 
-        <div className="border-t border-[#EDE7F3] pt-4">
+        <div className="border-t border-[#EDE7F3] dark:border-[#302B35] pt-4">
           <button
             type="button"
             onClick={handleDemoSignIn}
             disabled={isSubmitting}
-            className="w-full rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] hover:bg-[#EDE7F6] text-[#461599] py-3 px-3 text-[10px] font-bold uppercase tracking-[0.2em] transition-all flex items-center justify-center space-x-2 shadow-2xs"
+            className="w-full rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] hover:bg-[#EDE7F6] dark:hover:bg-[#251E30] text-[#6D28D9] dark:text-[#8B5CF6] py-2.5 px-3 text-xs font-semibold uppercase tracking-[0.16em] transition-all flex items-center justify-center space-x-2 shadow-2xs"
           >
-            <Sparkles className="w-3.5 h-3.5 text-[#5E35B1]" />
             <span>Sign In as Demo Student</span>
           </button>
         </div>

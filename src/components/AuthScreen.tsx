@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Loader2, LockKeyhole, Sparkles } from 'lucide-react';
+import { ArrowRight, Loader2, LockKeyhole } from 'lucide-react';
 import { login, register } from '../api';
 import type { UserAccount } from '../types';
 import { LazyLiftLogo } from './LazyLiftLogo';
@@ -56,19 +56,14 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ initialMessage, onAuthen
 
   const registering = mode === 'register';
   return (
-    <main className="min-h-screen bg-[#FAF8FC] text-[#1C1B1F] px-6 py-10 flex items-center justify-center selection:bg-[#EDE7F6] selection:text-[#461599]">
-      <section className="w-full max-w-5xl grid lg:grid-cols-[1.1fr_0.9fr] rounded-3xl border border-[#EDE7F3] bg-white shadow-xl overflow-hidden">
+    <main className="min-h-screen bg-[#FAF8FC] dark:bg-[#111013] text-[#1C1B1F] dark:text-[#F5F3F7] px-6 py-10 flex items-center justify-center selection:bg-[#EDE7F6] selection:text-[#461599] transition-colors">
+      <section className="w-full max-w-5xl grid lg:grid-cols-[1.1fr_0.9fr] rounded-3xl border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] shadow-xl overflow-hidden">
         {/* Left Side: Brand Story & Values */}
-        <div className="p-8 sm:p-12 border-b lg:border-b-0 lg:border-r border-[#EDE7F3] bg-gradient-to-br from-[#FAF8FC] to-[#F3EEF8] flex flex-col justify-between min-h-[380px]">
+        <div className="p-8 sm:p-12 border-b lg:border-b-0 lg:border-r border-[#EDE7F3] dark:border-[#302B35] bg-gradient-to-br from-[#FAF8FC] dark:from-[#17151A] to-[#F3EEF8] dark:to-[#1D1726] flex flex-col justify-between min-h-[380px]">
           <div>
             <LazyLiftLogo size="lg" showWordmark showTagline showBadge />
 
-            <div className="inline-flex items-center gap-2 px-3 py-1 mt-10 rounded-full bg-white border border-[#D8CCE8] text-[10px] uppercase tracking-[0.2em] font-bold text-[#461599]">
-              <Sparkles className="w-3.5 h-3.5 text-[#5E35B1]" />
-              <span>Personal academic workspace</span>
-            </div>
-
-            <h1 className="font-serif text-4xl sm:text-5xl italic leading-[1.05] mt-6 text-[#1C1B1F]">
+            <h1 className="font-serif text-4xl sm:text-5xl italic leading-[1.05] mt-8 text-[#1C1B1F] dark:text-[#F5F3F7]">
               Study with evidence, not guesswork.
             </h1>
             
@@ -84,79 +79,79 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ initialMessage, onAuthen
         </div>
 
         {/* Right Side: Authentication Form */}
-        <div className="p-8 sm:p-12 bg-white flex flex-col justify-center">
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] font-bold text-[#7B7484]">
-            <LockKeyhole className="w-3.5 h-3.5 text-[#5E35B1]" />
+        <div className="p-8 sm:p-12 bg-white dark:bg-[#17151A] flex flex-col justify-center">
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] font-bold text-[#7B7484] dark:text-[#A9A3AE]">
+            <LockKeyhole className="w-3.5 h-3.5 text-[#6D28D9] dark:text-[#8B5CF6]" />
             <span>Secure account access</span>
           </div>
 
-          <h2 className="font-serif text-3xl sm:text-4xl italic mt-3 text-[#1C1B1F]">
+          <h2 className="font-serif text-3xl sm:text-4xl italic mt-3 text-[#17151A] dark:text-[#F5F3F7]">
             {registering ? 'Create your account' : 'Welcome back'}
           </h2>
           
-          <p className="text-xs text-[#7B7484] mt-2">
+          <p className="text-xs text-[#7B7484] dark:text-[#A9A3AE] mt-2 font-sans">
             {registering ? 'Register to save your academic work across sessions.' : 'Log in to continue your saved study plan.'}
           </p>
 
           {initialMessage && (
-            <div className="mt-5 rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] p-3 text-xs text-[#55524E]">
+            <div className="mt-5 rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] p-3 text-xs text-[#55524E] dark:text-[#A9A3AE]">
               {initialMessage}
             </div>
           )}
 
           {error && (
-            <div role="alert" className="mt-5 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700 font-medium">
+            <div role="alert" className="mt-5 rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/20 p-3 text-xs text-red-700 dark:text-red-300 font-medium">
               {error}
             </div>
           )}
 
           <form onSubmit={submit} className="mt-6 space-y-4">
             {registering && (
-              <label className="block text-[10px] uppercase tracking-[0.16em] font-bold text-[#7B7484]">
+              <label className="block text-[10px] uppercase tracking-[0.16em] font-bold text-[#7B7484] dark:text-[#A9A3AE]">
                 Name
                 <input 
                   value={name} 
                   onChange={(event) => setName(event.target.value)} 
                   autoComplete="name" 
-                  className="mt-1.5 w-full rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] px-3.5 py-2.5 text-sm normal-case tracking-normal font-normal text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]" 
+                  className="mt-1.5 w-full rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] px-3.5 py-2.5 text-sm normal-case tracking-normal font-normal text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#A9A3AE] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6]" 
                   placeholder="Your name" 
                 />
               </label>
             )}
 
-            <label className="block text-[10px] uppercase tracking-[0.16em] font-bold text-[#7B7484]">
+            <label className="block text-[10px] uppercase tracking-[0.16em] font-bold text-[#7B7484] dark:text-[#A9A3AE]">
               Email
               <input 
                 value={email} 
                 onChange={(event) => setEmail(event.target.value)} 
                 type="email" 
                 autoComplete="email" 
-                className="mt-1.5 w-full rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] px-3.5 py-2.5 text-sm normal-case tracking-normal font-normal text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]" 
+                className="mt-1.5 w-full rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] px-3.5 py-2.5 text-sm normal-case tracking-normal font-normal text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#A9A3AE] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6]" 
                 placeholder="you@example.com" 
               />
             </label>
 
-            <label className="block text-[10px] uppercase tracking-[0.16em] font-bold text-[#7B7484]">
+            <label className="block text-[10px] uppercase tracking-[0.16em] font-bold text-[#7B7484] dark:text-[#A9A3AE]">
               Password
               <input 
                 value={password} 
                 onChange={(event) => setPassword(event.target.value)} 
                 type="password" 
                 autoComplete={registering ? 'new-password' : 'current-password'} 
-                className="mt-1.5 w-full rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] px-3.5 py-2.5 text-sm normal-case tracking-normal font-normal text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]" 
+                className="mt-1.5 w-full rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] px-3.5 py-2.5 text-sm normal-case tracking-normal font-normal text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#A9A3AE] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6]" 
                 placeholder="At least 6 characters" 
               />
             </label>
 
             {registering && (
-              <label className="block text-[10px] uppercase tracking-[0.16em] font-bold text-[#7B7484]">
+              <label className="block text-[10px] uppercase tracking-[0.16em] font-bold text-[#7B7484] dark:text-[#A9A3AE]">
                 Confirm password
                 <input 
                   value={confirmPassword} 
                   onChange={(event) => setConfirmPassword(event.target.value)} 
                   type="password" 
                   autoComplete="new-password" 
-                  className="mt-1.5 w-full rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] px-3.5 py-2.5 text-sm normal-case tracking-normal font-normal text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]" 
+                  className="mt-1.5 w-full rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] px-3.5 py-2.5 text-sm normal-case tracking-normal font-normal text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#A9A3AE] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6]" 
                   placeholder="Repeat password" 
                 />
               </label>
@@ -165,28 +160,28 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ initialMessage, onAuthen
             <button 
               type="submit" 
               disabled={isSubmitting} 
-              className="w-full mt-3 bg-[#5E35B1] hover:bg-[#461599] text-white rounded-xl py-3 text-[10px] font-bold uppercase tracking-[0.2em] transition-all shadow-xs hover:shadow disabled:opacity-50 flex items-center justify-center gap-2 active:scale-98"
+              className="w-full mt-3 bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white rounded-lg py-2.5 text-xs font-semibold uppercase tracking-[0.16em] transition-all shadow-xs hover:shadow disabled:opacity-50 flex items-center justify-center gap-2 active:scale-98"
             >
               {isSubmitting ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin text-[#CEB8FF]" />
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
                   <span>Working...</span>
                 </>
               ) : (
                 <>
                   <span>{registering ? 'Create account' : 'Log in'}</span>
-                  <ArrowRight className="w-3.5 h-3.5 text-[#CEB8FF]" />
+                  <ArrowRight className="w-3.5 h-3.5 text-white" />
                 </>
               )}
             </button>
           </form>
 
-          <div className="mt-6 pt-5 border-t border-[#EDE7F3] text-xs text-[#55524E]">
+          <div className="mt-6 pt-5 border-t border-[#EDE7F3] dark:border-[#302B35] text-xs text-[#55524E] dark:text-[#A9A3AE]">
             {registering ? 'Already have an account?' : 'New to LazyLift?'}{' '}
             <button 
               type="button" 
               onClick={() => switchMode(registering ? 'login' : 'register')} 
-              className="font-bold text-[#5E35B1] hover:underline"
+              className="font-semibold text-[#6D28D9] dark:text-[#8B5CF6] hover:underline"
             >
               {registering ? 'Log in' : 'Create an account'}
             </button>

@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { ActiveTab, AdaptiveProposal, ScheduleBlock, UserAccount } from '../types';
-import { Bell, FileUp, LogOut, Settings } from 'lucide-react';
+import { Bell, FileUp, LogOut, Moon, Settings, Sun } from 'lucide-react';
 import { LazyLiftLogo } from './LazyLiftLogo';
 import { NotificationsPopover } from './NotificationsPopover';
 import { SettingsModal } from './SettingsModal';
+import { useTheme } from '../context/ThemeContext';
 
 interface HeaderProps {
   activeTab: ActiveTab;
@@ -30,6 +31,7 @@ export const Header: React.FC<HeaderProps> = ({
   adaptiveProposal = null,
   activeStudyBlock = null,
 }) => {
+  const { theme, toggleTheme } = useTheme();
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -55,7 +57,7 @@ export const Header: React.FC<HeaderProps> = ({
   const hasPendingItems = scheduleBlocks.some((b) => b.date === todayStr && !b.completed) || Boolean(adaptiveProposal) || Boolean(activeStudyBlock);
 
   return (
-    <header className="sticky top-0 z-30 bg-[#FAF8FC]/95 backdrop-blur-md border-b border-[#EDE7F3] px-6 py-3 transition-all">
+    <header className="sticky top-0 z-30 bg-[#FDFDFC]/95 dark:bg-[#111013]/95 backdrop-blur-md border-b border-[#EDE7F3] dark:border-[#302B35] px-6 py-3 transition-colors">
       <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
         
         {/* Brand Logo & Contextual Page Indicator */}
@@ -67,32 +69,31 @@ export const Header: React.FC<HeaderProps> = ({
             <LazyLiftLogo size="md" showWordmark showTagline={false} showBadge={false} />
           </div>
 
-          {/* Contextual Page Location (replaces duplicated top navigation) */}
-          <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-white border border-[#EDE7F3] text-[11px] font-medium text-[#55524E] shadow-2xs">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-[#7B7484] uppercase tracking-wider text-[9px] font-bold">Workspace</span>
-            <span className="text-[#D8CCE8]">/</span>
-            <span className="font-semibold text-[#461599]">{tabLabels[activeTab] || 'Study Space'}</span>
+          {/* Contextual Page Location */}
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-[#17151A] border border-[#EDE7F3] dark:border-[#302B35] text-[11px] font-medium text-[#55524E] dark:text-[#A9A3AE] shadow-2xs">
+            <span className="text-[#7B7484] dark:text-[#807A87] uppercase tracking-wider text-[9px] font-bold">Workspace</span>
+            <span className="text-[#D8CCE8] dark:text-[#4A4254]">/</span>
+            <span className="font-semibold text-[#6D28D9] dark:text-[#A78BFA]">{tabLabels[activeTab] || 'Study Space'}</span>
           </div>
 
           {/* Quick Focus Mode Shield Status Badge */}
           {activeFocusShieldCount > 0 && (
             <button
               onClick={onOpenFocusMode}
-              className="hidden md:inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[10px] font-bold text-[#461599] hover:bg-[#D8CCE8] transition-colors"
+              className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#EDE7F6] dark:bg-[#251E30] border border-[#D8CCE8] dark:border-[#3A3342] text-[10px] font-bold text-[#6D28D9] dark:text-[#A78BFA] hover:bg-[#D8CCE8] dark:hover:bg-[#30283E] transition-colors"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-[#5E35B1]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#6D28D9] dark:bg-[#8B5CF6]" />
               <span>Focus Shield Active ({activeFocusShieldCount})</span>
             </button>
           )}
         </div>
 
         {/* Right side controls */}
-        <div className="flex items-center space-x-2.5">
+        <div className="flex items-center space-x-2">
           {onOpenFocusMode && (
             <button
               onClick={onOpenFocusMode}
-              className="hidden sm:flex items-center space-x-1.5 px-3 py-2 rounded-lg border border-[#EDE7F3] hover:border-[#D8CCE8] bg-white text-[#461599] hover:bg-[#EDE7F6] text-[10px] font-bold uppercase tracking-wider transition-all shadow-2xs"
+              className="hidden sm:flex items-center space-x-1.5 px-3 py-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8] dark:hover:border-[#4B4454] bg-white dark:bg-[#17151A] text-[#461599] dark:text-[#A78BFA] hover:bg-[#EDE7F6] dark:hover:bg-[#251E30] text-[10px] font-bold uppercase tracking-wider transition-all shadow-2xs"
               title="Configure Focus Mode"
             >
               <span>Focus Mode</span>
@@ -101,11 +102,21 @@ export const Header: React.FC<HeaderProps> = ({
 
           <button 
             onClick={onOpenUpload}
-            className="flex items-center space-x-2 bg-[#5E35B1] hover:bg-[#461599] text-white px-3.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-[0.16em] transition-all shadow-xs hover:shadow active:scale-98"
+            className="flex items-center space-x-2 bg-[#6D28D9] dark:bg-[#8B5CF6] hover:bg-[#5B21B6] dark:hover:bg-[#7C3AED] text-white px-3.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-[0.16em] transition-all shadow-xs hover:shadow active:scale-98"
           >
             <FileUp className="w-3.5 h-3.5 text-white" />
             <span className="hidden sm:inline">Upload Document</span>
             <span className="sm:hidden">Upload</span>
+          </button>
+
+          {/* Theme Toggle Button (Light / Dark) */}
+          <button
+            onClick={toggleTheme}
+            className="p-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] hover:border-[#CEB8FF] dark:hover:border-[#4B4454] bg-white dark:bg-[#17151A] text-[#6B6575] dark:text-[#A9A3AE] hover:text-[#5E35B1] dark:hover:text-[#8B5CF6] transition-colors"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
 
           {/* Notifications Button & Popover */}
@@ -114,15 +125,15 @@ export const Header: React.FC<HeaderProps> = ({
               onClick={() => setIsNotificationsOpen((prev) => !prev)}
               className={`p-2 rounded-lg border transition-colors relative ${
                 isNotificationsOpen 
-                  ? 'border-[#5E35B1] bg-[#EDE7F6] text-[#461599]' 
-                  : 'border-[#EDE7F3] hover:border-[#CEB8FF] bg-white text-[#6B6575] hover:text-[#461599]'
+                  ? 'border-[#5E35B1] dark:border-[#8B5CF6] bg-[#EDE7F6] dark:bg-[#251E30] text-[#461599] dark:text-[#A78BFA]' 
+                  : 'border-[#EDE7F3] dark:border-[#302B35] hover:border-[#CEB8FF] dark:hover:border-[#4B4454] bg-white dark:bg-[#17151A] text-[#6B6575] dark:text-[#A9A3AE] hover:text-[#461599] dark:hover:text-[#8B5CF6]'
               }`}
               title="Notifications"
               aria-expanded={isNotificationsOpen}
             >
               <Bell className="w-4 h-4" />
               {hasPendingItems && (
-                <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-[#5E35B1] rounded-full" />
+                <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-[#5E35B1] dark:bg-[#8B5CF6] rounded-full" />
               )}
             </button>
 
@@ -139,7 +150,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Settings Button */}
           <button 
             onClick={() => setIsSettingsOpen(true)}
-            className="p-2 rounded-lg border border-[#EDE7F3] hover:border-[#CEB8FF] bg-white text-[#6B6575] hover:text-[#461599] transition-colors" 
+            className="p-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] hover:border-[#CEB8FF] dark:hover:border-[#4B4454] bg-white dark:bg-[#17151A] text-[#6B6575] dark:text-[#A9A3AE] hover:text-[#461599] dark:hover:text-[#8B5CF6] transition-colors" 
             title="Workspace Settings"
             aria-label="Open Workspace Settings"
           >
@@ -155,17 +166,17 @@ export const Header: React.FC<HeaderProps> = ({
           />
 
           {/* User Profile Avatar */}
-          <div className="flex items-center space-x-2.5 pl-2.5 border-l border-[#EDE7F3]">
-            <div className="w-8 h-8 rounded-full bg-[#EDE7F6] text-[#461599] border border-[#D8CCE8] flex items-center justify-center font-sans text-[11px] font-bold">
+          <div className="flex items-center space-x-2.5 pl-2.5 border-l border-[#EDE7F3] dark:border-[#302B35]">
+            <div className="w-8 h-8 rounded-full bg-[#EDE7F6] dark:bg-[#251E30] text-[#461599] dark:text-[#A78BFA] border border-[#D8CCE8] dark:border-[#3A3342] flex items-center justify-center font-sans text-[11px] font-bold">
               {initials}
             </div>
             <div className="hidden xl:block text-left text-xs">
-              <div className="font-bold text-[#1C1B1F] uppercase tracking-wider text-[11px] truncate max-w-[120px]">{identity}</div>
-              <div className="text-[9px] tracking-wider text-[#7B7484] truncate max-w-[120px]">{user.email}</div>
+              <div className="font-bold text-[#1C1B1F] dark:text-[#F5F3F7] uppercase tracking-wider text-[11px] truncate max-w-[120px]">{identity}</div>
+              <div className="text-[9px] tracking-wider text-[#7B7484] dark:text-[#A9A3AE] truncate max-w-[120px]">{user.email}</div>
             </div>
             <button 
               onClick={onLogout} 
-              className="p-2 rounded-lg border border-[#EDE7F3] hover:border-red-200 bg-white text-[#6B6575] hover:text-red-600 transition-colors" 
+              className="p-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] hover:border-red-200 dark:hover:border-red-900 bg-white dark:bg-[#17151A] text-[#6B6575] dark:text-[#A9A3AE] hover:text-red-600 dark:hover:text-red-400 transition-colors" 
               title="Log out"
             >
               <LogOut className="w-4 h-4" />
@@ -177,5 +188,3 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
-
-

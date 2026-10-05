@@ -1,27 +1,45 @@
 @import "tailwindcss";
 
+@variant dark (&:where(.dark, .dark *));
+
 @layer base {
   :root {
-    --color-surface: #FAF8FC;
-    --color-surface-elevated: #FFFFFF;
+    --color-bg: #FDFDFC;
+    --color-surface: #FFFFFF;
+    --color-surface-elevated: #FAF8FC;
     --color-border: #EDE7F3;
-    --color-primary: #5E35B1;
-    --color-primary-dark: #461599;
+    --color-primary: #6D28D9;
+    --color-primary-dark: #5B21B6;
     --color-primary-light: #EDE7F6;
     --color-lavender-accent: #CEB8FF;
-    --color-text-primary: #1C1B1F;
+    --color-text-primary: #17151A;
     --color-text-secondary: #55524E;
     --color-text-muted: #7B7484;
   }
 
+  :root.dark, html.dark {
+    --color-bg: #111013;
+    --color-surface: #17151A;
+    --color-surface-elevated: #1D1A21;
+    --color-border: #302B35;
+    --color-primary: #8B5CF6;
+    --color-primary-dark: #7C3AED;
+    --color-primary-light: #251E30;
+    --color-lavender-accent: #A78BFA;
+    --color-text-primary: #F5F3F7;
+    --color-text-secondary: #A9A3AE;
+    --color-text-muted: #807A87;
+  }
+
   body {
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background-color: #FAF8FC;
-    color: #1C1B1F;
+    background-color: var(--color-bg);
+    color: var(--color-text-primary);
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
 
   h1, h2, h3, .font-serif {
-    font-family: 'Playfair Display', 'Instrument Serif', Georgia, serif;
+    font-family: 'Instrument Serif', 'Playfair Display', Georgia, serif;
   }
 }
 
@@ -33,12 +51,21 @@
 ::-webkit-scrollbar-track {
   background: #FAF8FC;
 }
+html.dark ::-webkit-scrollbar-track {
+  background: #111013;
+}
 ::-webkit-scrollbar-thumb {
   background: #D8CCE8;
   border-radius: 9999px;
 }
+html.dark ::-webkit-scrollbar-thumb {
+  background: #302B35;
+}
 ::-webkit-scrollbar-thumb:hover {
   background: #5E35B1;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: #8B5CF6;
 }
 
 /* Keyframe Animations */
@@ -137,3 +164,156 @@
   white-space: nowrap;
   border-width: 0;
 }
+
+/* ==========================================================================
+   YOUR ASCENT — Mountain & Figure Motion System
+   ========================================================================== */
+
+/* 1. Subtle Idle Figure Breathing & Weight Shift */
+@keyframes figure-breathe {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-0.6px);
+  }
+}
+
+.ascent-figure-breathing {
+  animation: figure-breathe 4.8s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  transform-origin: 0 0;
+}
+
+/* 2. Figure Walking Articulation - Calm, dignified, straight-legged walk */
+@keyframes leg-walk-l {
+  0%, 100% {
+    transform: rotate(-3deg);
+  }
+  50% {
+    transform: rotate(3deg);
+  }
+}
+
+@keyframes leg-walk-r {
+  0%, 100% {
+    transform: rotate(3deg);
+  }
+  50% {
+    transform: rotate(-3deg);
+  }
+}
+
+@keyframes arm-walk-l {
+  0%, 100% {
+    transform: rotate(2deg);
+  }
+  50% {
+    transform: rotate(-2deg);
+  }
+}
+
+@keyframes arm-walk-r {
+  0%, 100% {
+    transform: rotate(-2deg);
+  }
+  50% {
+    transform: rotate(2deg);
+  }
+}
+
+.ascent-leg-left-walk {
+  animation: leg-walk-l 0.85s ease-in-out infinite;
+  transform-origin: 0px -19px;
+}
+
+.ascent-leg-right-walk {
+  animation: leg-walk-r 0.85s ease-in-out infinite;
+  transform-origin: 0px -19px;
+}
+
+.ascent-arm-left-walk {
+  animation: arm-walk-l 0.85s ease-in-out infinite;
+  transform-origin: 0px -28px;
+}
+
+.ascent-arm-right-walk {
+  animation: arm-walk-r 0.85s ease-in-out infinite;
+  transform-origin: 0px -28px;
+}
+
+/* 3. Living Atmospheric Cloud Drift */
+@keyframes cloud-drift-far {
+  0% {
+    transform: translateX(-40px);
+  }
+  50% {
+    transform: translateX(60px);
+  }
+  100% {
+    transform: translateX(-40px);
+  }
+}
+
+@keyframes cloud-drift-mid {
+  0% {
+    transform: translateX(40px);
+  }
+  50% {
+    transform: translateX(-50px);
+  }
+  100% {
+    transform: translateX(40px);
+  }
+}
+
+.ascent-cloud-drift-far {
+  animation: cloud-drift-far 110s ease-in-out infinite;
+}
+
+.ascent-cloud-drift-mid {
+  animation: cloud-drift-mid 75s ease-in-out infinite;
+}
+
+/* 4. Subtle Path Shimmer & Waypoint Pulse */
+@keyframes path-shimmer {
+  0%, 100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.ascent-path-shimmer {
+  animation: path-shimmer 6s ease-in-out infinite;
+}
+
+@keyframes destination-beacon {
+  0%, 100% {
+    r: 6px;
+    opacity: 0.9;
+  }
+  50% {
+    r: 10px;
+    opacity: 0.4;
+  }
+}
+
+.ascent-destination-beacon {
+  animation: destination-beacon 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ascent-figure-breathing,
+  .ascent-leg-left-walk,
+  .ascent-leg-right-walk,
+  .ascent-arm-left-walk,
+  .ascent-arm-right-walk,
+  .ascent-cloud-drift-far,
+  .ascent-cloud-drift-mid,
+  .ascent-path-shimmer,
+  .ascent-destination-beacon {
+    animation: none !important;
+  }
+}
+

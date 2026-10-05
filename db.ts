@@ -386,6 +386,16 @@ const MIGRATIONS: Migration[] = [
       if (!columns.includes('context_text')) db.run('ALTER TABLE questions ADD COLUMN context_text TEXT;');
     },
   },
+  {
+    version: 15,
+    name: 'schedule-block-missed-flag',
+    up: (db) => {
+      const columns = pragmaTableInfo(db, 'schedule_blocks').map((column) => column.name);
+      if (!columns.includes('missed')) {
+        db.run('ALTER TABLE schedule_blocks ADD COLUMN missed INTEGER NOT NULL DEFAULT 0;');
+      }
+    },
+  },
 ];
 
 function createMockExamTables(db: SqlJsDatabase) {
@@ -444,6 +454,9 @@ function repairSchema(db: SqlJsDatabase) {
   const columns = pragmaTableInfo(db, 'schedule_blocks').map((column) => column.name);
   if (!columns.includes('block_type')) {
     db.run("ALTER TABLE schedule_blocks ADD COLUMN block_type TEXT NOT NULL DEFAULT 'study';");
+  }
+  if (!columns.includes('missed')) {
+    db.run('ALTER TABLE schedule_blocks ADD COLUMN missed INTEGER NOT NULL DEFAULT 0;');
   }
   replaceLegacyMockExamTables(db);
   createMockExamTables(db);

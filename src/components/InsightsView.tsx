@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ScheduleBlock, AnalyticsSnapshot, LegacyAdaptiveProposal, ScheduleChange, StudyStreak } from '../types';
 import { safeNumber, formatDateStr } from '../utils/formatters';
-import { Sliders, CalendarCheck, Brain, CheckCircle2, XCircle, Clock, RefreshCw, AlertTriangle, BellOff, ShieldAlert } from 'lucide-react';
+import { CalendarCheck, CheckCircle2, XCircle, Clock, RefreshCw, AlertTriangle, BellOff, ShieldAlert } from 'lucide-react';
 
 interface InsightsViewProps {
   scheduleBlocks: ScheduleBlock[];
@@ -116,23 +116,20 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
   const uncompletedBlocks = scheduleBlocks.filter((b) => !b.completed);
 
   return (
-    <div className="max-w-5xl mx-auto py-8 px-4 sm:px-8 space-y-12 animate-fade-in pb-16">
+    <div className="max-w-6xl mx-auto py-8 sm:py-10 px-6 sm:px-8 space-y-8 animate-fade-in pb-16">
       {/* Title */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#EDE7F3] pb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#EDE7F3] dark:border-[#302B35] pb-6">
         <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[9px] uppercase tracking-[0.2em] font-bold text-[#461599] mb-3">
-            <Sliders className="w-3 h-3 text-[#5E35B1]" /> Adaptive Engine &bull; Schedule Insights
-          </div>
-          <h1 className="font-serif text-4xl sm:text-5xl italic font-normal text-[#1C1B1F]">
-            Adaptive Re-planner &amp; Audit
+          <h1 className="font-serif text-3xl sm:text-4xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">
+            Adaptive Insights &amp; Audit
           </h1>
-          <p className="text-xs text-[#7B7484] font-sans mt-2">
-            Request AI schedule adaptations based on learning friction and track change history.
+          <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] font-sans mt-1.5">
+            Request schedule adaptations based on study friction and inspect change history logs.
           </p>
         </div>
         <button
           onClick={fetchInsightsData}
-          className="p-3 rounded-xl border border-[#EDE7F3] bg-white hover:bg-[#FAF8FC] text-[#5E35B1] transition-colors shadow-2xs self-start sm:self-auto"
+          className="p-2.5 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#1D1A21] hover:bg-[#FAF8FC] dark:hover:bg-[#251E30] text-[#6D28D9] dark:text-[#8B5CF6] transition-colors shadow-2xs self-start sm:self-auto"
           title="Refresh Data"
         >
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -140,32 +137,31 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
       </div>
 
       {/* Study Streak Card */}
-      <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 sm:p-7 flex items-center justify-between gap-6 shadow-2xs">
+      <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 sm:p-7 flex items-center justify-between gap-6 shadow-2xs">
         <div className="space-y-1">
-          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">Study Streak</div>
-          <h2 className="font-serif text-3xl sm:text-4xl italic text-[#1C1B1F] flex items-center gap-2 mt-1">
-            <span role="img" aria-label="flame">🔥</span>
-            <span className="text-[#5E35B1] font-bold">{streak ? `${streak.current} ${streak.current === 1 ? 'day' : 'days'}` : '—'}</span>
+          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484] dark:text-[#7A7480]">Study Consistency</div>
+          <h2 className="font-serif text-3xl sm:text-4xl italic text-[#17151A] dark:text-[#F5F3F7] flex items-center gap-2 mt-1">
+            <span className="text-[#6D28D9] dark:text-[#A78BFA] font-bold">{streak ? `${streak.current} ${streak.current === 1 ? 'day' : 'days'}` : '—'}</span>
           </h2>
-          <p className="text-xs text-[#7B7484] font-sans mt-1">
+          <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] font-sans mt-1">
             {streak && streak.current > 0
               ? streak.current === 1
-                ? 'One day strong — keep the chain alive.'
-                : 'Consecutive days with a completed study session.'
-              : 'No active streak yet — complete a session today to start one.'}
+                ? 'One day complete — maintain your daily follow-through.'
+                : 'Consecutive days with completed commitments.'
+              : 'No active streak yet — complete a scheduled session today to begin.'}
           </p>
         </div>
-        <div className="text-right border-l border-[#EDE7F3] pl-6 sm:pl-8">
-          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484] mb-1">Longest</div>
-          <div className="font-serif text-3xl sm:text-4xl italic text-[#1C1B1F]">
+        <div className="text-right border-l border-[#EDE7F3] dark:border-[#302B35] pl-6 sm:pl-8">
+          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484] dark:text-[#7A7480] mb-1">Longest Record</div>
+          <div className="font-serif text-3xl sm:text-4xl italic text-[#17151A] dark:text-[#F5F3F7]">
             {streak ? `${streak.longest} ${streak.longest === 1 ? 'day' : 'days'}` : '—'}
           </div>
         </div>
       </div>
 
       {error && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-red-800 text-xs font-mono flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0 text-red-600" />
+        <div className="p-4 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 rounded-xl text-red-800 dark:text-red-300 text-xs font-mono flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 text-red-600 dark:text-red-400" />
           <span>{error}</span>
         </div>
       )}
@@ -173,21 +169,19 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
       {/* Grid: Adaptive Engine + Notification Status */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Adaptive Proposal Engine (2 cols) */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-[#EDE7F3] p-6 sm:p-8 space-y-6 shadow-2xs">
-          <div className="flex items-center justify-between border-b border-[#EDE7F3] pb-4">
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">Adaptive Re-planner</div>
-              <h2 className="font-serif text-3xl italic text-[#1C1B1F] mt-1">Request Adaptation Proposal</h2>
-            </div>
-            <Sliders className="w-5 h-5 text-[#5E35B1]" />
+        <div className="lg:col-span-2 bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 sm:p-8 space-y-6 shadow-2xs">
+          <div className="border-b border-[#EDE7F3] dark:border-[#302B35] pb-4">
+            <h2 className="font-sans text-sm font-semibold text-[#17151A] dark:text-[#F5F3F7]">
+              Request Adaptation Proposal
+            </h2>
           </div>
 
           {actionMessage && (
             <div
               className={`p-3.5 rounded-xl border text-xs font-mono ${
                 actionMessage.type === 'success'
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                  : 'bg-red-50 border-red-200 text-red-900'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-900 dark:text-emerald-300'
+                  : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/50 text-red-900 dark:text-red-300'
               }`}
             >
               <span>{actionMessage.text}</span>
@@ -196,13 +190,13 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
 
           <div className="space-y-5">
             <div>
-              <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] mb-2">
+              <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#7A7480] mb-2">
                 Select Schedule Block to Adapt
               </label>
               <select
                 value={selectedBlockId}
                 onChange={(e) => setSelectedBlockId(e.target.value)}
-                className="w-full p-3.5 text-xs bg-white rounded-xl border border-[#EDE7F3] focus:outline-none focus:border-[#5E35B1] focus:ring-2 focus:ring-[#5E35B1]/10 font-sans text-[#1C1B1F] transition-all"
+                className="w-full p-3 text-xs bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-lg border border-[#EDE7F3] dark:border-[#302B35] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] font-sans text-[#17151A] dark:text-[#F5F3F7] transition-colors"
               >
                 <option value="">-- Choose a Study Block --</option>
                 {uncompletedBlocks.map((b) => (
@@ -214,7 +208,7 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
             </div>
 
             <div>
-              <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] mb-2">
+              <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#7A7480] mb-2">
                 Adaptation Reason
               </label>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -228,10 +222,10 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
                     key={r.id}
                     type="button"
                     onClick={() => setReason(r.id as any)}
-                    className={`py-2.5 px-3 text-[10px] font-bold uppercase tracking-wider rounded-lg border transition-all ${
+                    className={`py-2 px-3 text-[10px] font-medium uppercase tracking-wider rounded-lg border transition-colors ${
                       reason === r.id
-                        ? 'border-[#5E35B1] bg-[#EDE7F6] text-[#461599]'
-                        : 'border-[#EDE7F3] bg-white text-[#7B7484] hover:border-[#D8CCE8]'
+                        ? 'border-[#6D28D9] dark:border-[#8B5CF6] bg-[#EDE7F6] dark:bg-[#251E30] text-[#6D28D9] dark:text-[#A78BFA]'
+                        : 'border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#1D1A21] text-[#7B7484] dark:text-[#7A7480] hover:border-[#D8CCE8] dark:hover:border-[#3E344A]'
                     }`}
                   >
                     {r.label}
@@ -243,25 +237,25 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
             <button
               onClick={handleGenerateProposal}
               disabled={!selectedBlockId || isGenerating}
-              className="w-full rounded-xl bg-[#5E35B1] hover:bg-[#461599] text-white py-3.5 px-4 text-[10px] font-bold uppercase tracking-[0.2em] transition-all flex items-center justify-center space-x-2 shadow-xs hover:shadow active:scale-98 disabled:opacity-50"
+              className="w-full rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white py-3 px-4 text-xs font-medium tracking-wider transition-colors flex items-center justify-center space-x-2 shadow-xs disabled:opacity-50"
             >
-              {isGenerating ? <RefreshCw className="w-4 h-4 animate-spin text-[#CEB8FF]" /> : <CalendarCheck className="w-4 h-4 text-white" />}
+              {isGenerating ? <RefreshCw className="w-4 h-4 animate-spin text-white/80" /> : <CalendarCheck className="w-4 h-4 text-white" />}
               <span>Generate Adaptive Proposal</span>
             </button>
           </div>
 
           {/* Proposal Preview Box */}
           {proposal && (
-            <div className="mt-6 p-6 rounded-xl border border-[#D8CCE8] bg-[#FAF8FC] space-y-4">
-              <div className="flex items-center justify-between border-b border-[#EDE7F3] pb-2">
-                <span className="text-[9px] font-bold uppercase tracking-[0.2em] bg-[#5E35B1] text-white px-2 py-0.5 rounded">
+            <div className="mt-6 p-6 rounded-xl border border-[#6D28D9] dark:border-[#8B5CF6] bg-[#FAF8FC] dark:bg-[#1D1A21] space-y-4">
+              <div className="flex items-center justify-between border-b border-[#EDE7F3] dark:border-[#302B35] pb-2">
+                <span className="text-[9px] font-medium uppercase tracking-[0.2em] bg-[#6D28D9] dark:bg-[#8B5CF6] text-white px-2.5 py-0.5 rounded">
                   Proposed Revision Block
                 </span>
-                <span className="text-[10px] font-mono text-[#7B7484]">Reason: {proposal.reason}</span>
+                <span className="text-[10px] font-mono text-[#7B7484] dark:text-[#7A7480]">Reason: {proposal.reason}</span>
               </div>
               <div>
-                <h3 className="font-serif text-2xl italic text-[#1C1B1F]">{proposal.title}</h3>
-                <div className="flex flex-wrap items-center gap-4 text-xs font-mono text-[#55524E] mt-1">
+                <h3 className="font-serif text-2xl italic text-[#17151A] dark:text-[#F5F3F7]">{proposal.title}</h3>
+                <div className="flex flex-wrap items-center gap-4 text-xs font-mono text-[#55524E] dark:text-[#A9A3AE] mt-1">
                   <span>Date: {proposal.date}</span>
                   <span>Time: {proposal.startTime}</span>
                   <span>Duration: {proposal.durationMinutes} mins</span>
@@ -271,13 +265,13 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
               <div className="flex items-center gap-3 pt-2">
                 <button
                   onClick={handleAcceptProposal}
-                  className="flex-1 py-2.5 rounded-lg bg-[#5E35B1] hover:bg-[#461599] text-white text-[10px] font-bold uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-1.5 shadow-2xs"
+                  className="flex-1 py-2.5 rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white text-xs font-medium tracking-wider transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
                 >
                   <CheckCircle2 className="w-4 h-4" /> Accept &amp; Schedule
                 </button>
                 <button
                   onClick={handleRejectProposal}
-                  className="flex-1 py-2.5 rounded-lg bg-white text-[#7B7484] border border-[#EDE7F3] hover:border-red-200 hover:text-red-700 text-[10px] font-bold uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-1.5"
+                  className="flex-1 py-2.5 rounded-lg bg-white dark:bg-[#1D1A21] text-[#7B7484] dark:text-[#7A7480] border border-[#EDE7F3] dark:border-[#302B35] hover:border-red-200 hover:text-red-700 text-xs font-medium tracking-wider transition-colors flex items-center justify-center gap-1.5"
                 >
                   <XCircle className="w-4 h-4" /> Reject Proposal
                 </button>
@@ -287,55 +281,54 @@ export const InsightsView: React.FC<InsightsViewProps> = ({ scheduleBlocks, onRe
         </div>
 
         {/* Notification Status (1 col) */}
-        <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 flex flex-col justify-between space-y-6 shadow-2xs">
+        <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 flex flex-col justify-between space-y-6 shadow-2xs">
           <div className="space-y-4">
-            <div className="flex items-center justify-between border-b border-[#EDE7F3] pb-3">
-              <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484]">Notifications</span>
-              <BellOff className="w-4 h-4 text-[#7B7484]" />
+            <div className="flex items-center justify-between border-b border-[#EDE7F3] dark:border-[#302B35] pb-3">
+              <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#7B7484] dark:text-[#7A7480]">Notifications</span>
+              <BellOff className="w-4 h-4 text-[#7B7484] dark:text-[#7A7480]" />
             </div>
 
-            <div className="p-4 rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] space-y-2">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#1C1B1F] flex items-center gap-1.5">
-                <ShieldAlert className="w-3.5 h-3.5 text-[#5E35B1]" />
+            <div className="p-4 rounded-xl bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] space-y-2">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#17151A] dark:text-[#F5F3F7] flex items-center gap-1.5">
+                <ShieldAlert className="w-3.5 h-3.5 text-[#6D28D9] dark:text-[#8B5CF6]" />
                 Infrastructure Status
               </div>
-              <p className="text-xs text-[#7B7484] leading-relaxed">
+              <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] leading-relaxed font-sans">
                 Automated email reminders and push notifications are currently disabled on the backend engine.
               </p>
             </div>
           </div>
 
-          <div className="p-3 rounded-lg bg-[#FAF8FC] border border-[#EDE7F3] text-[10px] font-mono text-[#7B7484] space-y-1">
-            <div className="font-bold text-[#1C1B1F] uppercase">Blocked Endpoint:</div>
+          <div className="p-3 rounded-lg bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] text-[10px] font-mono text-[#7B7484] dark:text-[#7A7480] space-y-1">
+            <div className="font-bold text-[#17151A] dark:text-[#F5F3F7] uppercase">Endpoint Status:</div>
             <div>POST /api/notifications/preferences</div>
           </div>
         </div>
       </div>
 
       {/* Schedule Change Audit Log */}
-      <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 sm:p-8 space-y-4 shadow-2xs">
-        <h2 className="font-serif text-3xl italic text-[#1C1B1F] flex items-center gap-2">
-          <Clock className="w-5 h-5 text-[#5E35B1]" />
+      <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 sm:p-8 space-y-4 shadow-2xs">
+        <h2 className="font-serif text-2xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">
           Schedule Adaptations Audit Log
         </h2>
         {scheduleChanges.length === 0 ? (
-          <div className="p-8 text-center text-xs font-serif italic text-[#7B7484] bg-[#FAF8FC] rounded-xl border border-[#EDE7F3]">
+          <div className="p-8 text-center text-xs font-serif italic text-[#7B7484] dark:text-[#7A7480] bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-xl border border-[#EDE7F3] dark:border-[#302B35]">
             No schedule adaptations recorded yet.
           </div>
         ) : (
-          <div className="divide-y divide-[#EDE7F3] border-t border-b border-[#EDE7F3]">
+          <div className="divide-y divide-[#EDE7F3] dark:divide-[#302B35] border-t border-b border-[#EDE7F3] dark:border-[#302B35]">
             {scheduleChanges.map((change) => (
               <div key={change.id} className="py-3.5 flex items-center justify-between text-xs">
                 <div className="space-y-1">
-                  <div className="flex items-center gap-2 font-bold text-[#1C1B1F]">
-                    <span className="px-2 py-0.5 rounded border border-[#D8CCE8] text-[9px] uppercase tracking-wider font-mono bg-[#EDE7F6] text-[#461599]">
+                  <div className="flex items-center gap-2 font-medium text-[#17151A] dark:text-[#F5F3F7]">
+                    <span className="px-2 py-0.5 rounded border border-[#D8CCE8] dark:border-[#3E344A] text-[9px] uppercase tracking-wider font-mono bg-[#EDE7F6] dark:bg-[#251E30] text-[#6D28D9] dark:text-[#A78BFA]">
                       {change.field}
                     </span>
                     <span>Reason: {change.reason || 'Manual'}</span>
                   </div>
-                  <div className="text-[10px] font-mono text-[#7B7484]">Block ID: {change.blockId}</div>
+                  <div className="text-[10px] font-mono text-[#7B7484] dark:text-[#7A7480]">Block ID: {change.blockId}</div>
                 </div>
-                <div className="text-[10px] text-[#7B7484] font-mono">
+                <div className="text-[10px] text-[#7B7484] dark:text-[#7A7480] font-mono">
                   {new Date(change.createdAt).toLocaleString()}
                 </div>
               </div>

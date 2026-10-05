@@ -110,31 +110,28 @@ export const StudyRoomView: React.FC = () => {
     await loadDetails(selectedRoomId);
   };
 
-  return <div className="max-w-6xl mx-auto py-10 px-6 sm:px-8 space-y-8 animate-fade-in pb-16">
-    <div className="border-b border-[#EDE7F3] pb-8 flex flex-col md:flex-row md:items-end justify-between gap-6">
+  return <div className="max-w-6xl mx-auto py-8 sm:py-10 px-6 sm:px-8 space-y-8 animate-fade-in pb-16">
+    <div className="border-b border-[#EDE7F3] dark:border-[#302B35] pb-6 flex flex-col md:flex-row md:items-end justify-between gap-6">
       <div>
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[9px] uppercase tracking-[0.2em] font-bold text-[#461599]">
-          <Users className="w-3.5 h-3.5 text-[#5E35B1]" /> Persistent Study Room
-        </div>
-        <h1 className="font-serif text-5xl italic mt-3 text-[#1C1B1F]">Study together, for real.</h1>
-        <p className="text-xs text-[#7B7484] mt-2">Rooms, membership, chat, and shared focus state are saved to your account.</p>
+        <h1 className="font-serif text-3xl sm:text-4xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">Collaborative Focus Rooms</h1>
+        <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-1.5 font-sans">Rooms, membership, reflections, and shared timers saved to your workspace.</p>
       </div>
       <button
         onClick={() => run(loadRooms)}
-        className="rounded-xl border border-[#EDE7F3] bg-white p-3 hover:bg-[#FAF8FC] text-[#5E35B1] transition-colors shadow-2xs"
+        className="rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#1D1A21] p-2.5 hover:bg-[#FAF8FC] dark:hover:bg-[#251E30] text-[#6D28D9] dark:text-[#8B5CF6] transition-colors shadow-2xs"
         aria-label="Refresh rooms"
       >
         <RefreshCw className="w-4 h-4" />
       </button>
     </div>
 
-    {error && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-xs font-mono text-red-800">{error}</div>}
+    {error && <div className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-4 text-xs font-mono text-red-800 dark:text-red-300">{error}</div>}
 
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <section className="bg-white rounded-2xl border border-[#EDE7F3] p-6 space-y-6 shadow-2xs">
+      <section className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-6 shadow-2xs">
         <div>
-          <h2 className="font-serif text-2xl italic text-[#1C1B1F]">Create a room</h2>
-          <p className="text-xs text-[#7B7484] mt-1">Host a dedicated session with peers</p>
+          <h2 className="font-sans text-sm font-semibold text-[#17151A] dark:text-[#F5F3F7]">Create a room</h2>
+          <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-1 font-sans">Host a focused session with peers</p>
         </div>
         <form onSubmit={createRoom} className="space-y-3">
           <input
@@ -142,43 +139,43 @@ export const StudyRoomView: React.FC = () => {
             value={roomName}
             onChange={(event) => setRoomName(event.target.value)}
             placeholder="Room name"
-            className="w-full rounded-xl border border-[#EDE7F3] bg-white p-3 text-xs text-[#1C1B1F] placeholder-[#A49AA9] focus:outline-none focus:border-[#5E35B1] focus:ring-2 focus:ring-[#5E35B1]/10 transition-all"
+            className="w-full rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] p-3 text-xs text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#7A7480] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] transition-colors"
           />
           <input
             value={roomTopic}
             onChange={(event) => setRoomTopic(event.target.value)}
             placeholder="Topic"
-            className="w-full rounded-xl border border-[#EDE7F3] bg-white p-3 text-xs text-[#1C1B1F] placeholder-[#A49AA9] focus:outline-none focus:border-[#5E35B1] focus:ring-2 focus:ring-[#5E35B1]/10 transition-all"
+            className="w-full rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] p-3 text-xs text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#7A7480] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] transition-colors"
           />
           <button
             disabled={loading}
-            className="w-full bg-[#5E35B1] hover:bg-[#461599] text-white rounded-xl p-3 text-[10px] font-bold uppercase tracking-widest transition-all shadow-xs hover:shadow active:scale-98 disabled:opacity-50 flex items-center justify-center gap-2"
+            className="w-full bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white rounded-lg p-2.5 text-xs font-medium tracking-wider transition-colors shadow-xs disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            <Plus className="w-4 h-4 text-[#CEB8FF]" />Create room
+            <Plus className="w-4 h-4 text-white/80" />Create room
           </button>
         </form>
 
-        <div className="border-t border-[#EDE7F3] pt-5 space-y-3">
-          <h2 className="font-serif text-2xl italic text-[#1C1B1F]">Browse rooms</h2>
-          {rooms.length === 0 && <p className="text-xs text-[#7B7484]">No rooms yet.</p>}
+        <div className="border-t border-[#EDE7F3] dark:border-[#302B35] pt-5 space-y-3">
+          <h2 className="font-sans text-sm font-semibold text-[#17151A] dark:text-[#F5F3F7]">Browse rooms</h2>
+          {rooms.length === 0 && <p className="text-xs text-[#7B7484] dark:text-[#7A7480] font-sans">No rooms yet.</p>}
           {rooms.map((room) => (
-            <div key={room.id} className="rounded-xl border border-[#EDE7F3] p-4 space-y-2 bg-[#FAF8FC] hover:border-[#D8CCE8] transition-colors">
+            <div key={room.id} className="rounded-xl border border-[#EDE7F3] dark:border-[#302B35] p-4 space-y-2 bg-[#FAF8FC] dark:bg-[#1D1A21] hover:border-[#D8CCE8] dark:hover:border-[#3E344A] transition-colors">
               <div className="flex justify-between gap-3">
-                <strong className="text-xs text-[#1C1B1F] truncate">{room.name}</strong>
-                <span className="text-[10px] text-[#5E35B1] font-bold shrink-0">{room.memberCount} member{room.memberCount === 1 ? '' : 's'}</span>
+                <strong className="text-xs text-[#17151A] dark:text-[#F5F3F7] truncate">{room.name}</strong>
+                <span className="text-[10px] text-[#6D28D9] dark:text-[#A78BFA] font-medium shrink-0">{room.memberCount} member{room.memberCount === 1 ? '' : 's'}</span>
               </div>
-              <p className="text-[10px] text-[#7B7484]">{room.topic} · hosted by {room.ownerName}</p>
+              <p className="text-[10px] text-[#7B7484] dark:text-[#7A7480] font-sans">{room.topic} · hosted by {room.ownerName}</p>
               {room.joined ? (
                 <button
                   onClick={() => setSelectedRoomId(room.id)}
-                  className="w-full rounded-lg border border-[#5E35B1] bg-white text-[#5E35B1] hover:bg-[#EDE7F6] p-2 text-[10px] font-bold uppercase tracking-wider transition-colors"
+                  className="w-full rounded-lg border border-[#6D28D9] dark:border-[#8B5CF6] bg-white dark:bg-[#17151A] text-[#6D28D9] dark:text-[#A78BFA] hover:bg-[#EDE7F6] dark:hover:bg-[#251E30] p-2 text-xs font-medium tracking-wider transition-colors"
                 >
                   Enter room
                 </button>
               ) : (
                 <button
                   onClick={() => run(() => joinRoom(room.id))}
-                  className="w-full rounded-lg bg-[#5E35B1] hover:bg-[#461599] text-white p-2 text-[10px] font-bold uppercase tracking-wider transition-colors shadow-2xs"
+                  className="w-full rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white p-2 text-xs font-medium tracking-wider transition-colors shadow-2xs"
                 >
                   Join room
                 </button>
@@ -188,34 +185,34 @@ export const StudyRoomView: React.FC = () => {
         </div>
       </section>
 
-      <section className="lg:col-span-2 bg-white rounded-2xl border border-[#EDE7F3] p-6 space-y-6 shadow-2xs">
+      <section className="lg:col-span-2 bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-6 shadow-2xs">
         {!selectedRoom || !details ? (
-          <div className="py-24 text-center text-xs text-[#7B7484]">
-            <Users className="w-8 h-8 text-[#D8CCE8] mx-auto mb-3" />
+          <div className="py-24 text-center text-xs text-[#7B7484] dark:text-[#7A7480]">
+            <Users className="w-8 h-8 text-[#6D28D9]/40 dark:text-[#8B5CF6]/40 mx-auto mb-3" />
             Create or join a room on the left to begin studying together.
           </div>
         ) : <>
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#EDE7F3] pb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#EDE7F3] dark:border-[#302B35] pb-4">
             <div>
-              <h2 className="font-serif text-3xl italic text-[#1C1B1F]">{selectedRoom.name}</h2>
-              <p className="text-xs text-[#7B7484] mt-1">{selectedRoom.topic} · {details.members.length} participant{details.members.length === 1 ? '' : 's'}</p>
+              <h2 className="font-serif text-3xl italic text-[#17151A] dark:text-[#F5F3F7]">{selectedRoom.name}</h2>
+              <p className="text-xs text-[#7B7484] dark:text-[#7A7480] mt-1 font-sans">{selectedRoom.topic} · {details.members.length} participant{details.members.length === 1 ? '' : 's'}</p>
             </div>
             <button
               onClick={() => run(leaveRoom)}
-              className="rounded-xl border border-[#EDE7F3] bg-white px-3 py-2 text-[10px] font-bold uppercase text-[#7B7484] hover:text-red-700 hover:border-red-200 transition-colors self-start sm:self-auto flex items-center gap-1.5"
+              className="rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#1D1A21] px-3 py-1.5 text-xs text-[#7B7484] dark:text-[#7A7480] hover:text-red-600 dark:hover:text-red-400 hover:border-red-200 dark:hover:border-red-900/50 transition-colors self-start sm:self-auto flex items-center gap-1.5"
             >
               <LogOut className="w-3.5 h-3.5" />Leave
             </button>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] p-4">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-[#7B7484]">Participants</div>
+            <div className="rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] p-4">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-[#7B7484] dark:text-[#7A7480]">Participants</div>
               <div className="mt-3 space-y-2">
                 {details.members.map((member) => (
                   <div key={member.id} className="text-xs flex justify-between items-center py-1">
-                    <span className="text-[#1C1B1F] font-medium">{member.displayName || member.email}</span>
-                    <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full font-bold ${member.id === selectedRoom.ownerId ? 'bg-[#EDE7F6] text-[#461599]' : 'text-[#7B7484]'}`}>
+                    <span className="text-[#17151A] dark:text-[#F5F3F7] font-medium">{member.displayName || member.email}</span>
+                    <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full font-medium ${member.id === selectedRoom.ownerId ? 'bg-[#EDE7F6] dark:bg-[#251E30] text-[#6D28D9] dark:text-[#A78BFA]' : 'text-[#7B7484] dark:text-[#7A7480]'}`}>
                       {member.id === selectedRoom.ownerId ? 'Host' : 'Member'}
                     </span>
                   </div>
@@ -223,30 +220,30 @@ export const StudyRoomView: React.FC = () => {
               </div>
             </div>
 
-            <div className="rounded-xl border border-[#461599] bg-[#461599] text-white p-5 shadow-sm flex flex-col justify-between">
+            <div className="rounded-xl border border-[#6D28D9] dark:border-[#8B5CF6] bg-[#6D28D9] dark:bg-[#1D1A21] text-white p-5 shadow-xs flex flex-col justify-between">
               <div>
-                <div className="text-[10px] font-bold uppercase tracking-widest text-[#CEB8FF]">Shared focus timer</div>
+                <div className="text-[10px] font-bold uppercase tracking-widest text-white/80 dark:text-[#A78BFA]">Shared focus timer</div>
                 <div className="font-mono text-4xl mt-3 font-bold tracking-tight text-white">{String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}</div>
               </div>
               <div className="flex gap-2 mt-4">
                 {details.session?.status === 'active' ? (
                   <button
                     onClick={() => run(() => updateSession('paused'))}
-                    className="rounded-lg border border-white/30 bg-white/10 hover:bg-white/20 px-3.5 py-1.5 text-[10px] uppercase font-bold tracking-wider text-white transition-colors flex items-center gap-1"
+                    className="rounded-lg border border-white/30 bg-white/10 hover:bg-white/20 px-3.5 py-1.5 text-xs font-medium tracking-wider text-white transition-colors flex items-center gap-1"
                   >
                     <Pause className="w-3 h-3" />Pause
                   </button>
                 ) : (
                   <button
                     onClick={() => run(() => updateSession('active'))}
-                    className="rounded-lg bg-white text-[#461599] hover:bg-[#EDE7F6] px-3.5 py-1.5 text-[10px] uppercase font-bold tracking-wider transition-colors flex items-center gap-1 shadow-2xs"
+                    className="rounded-lg bg-white text-[#6D28D9] hover:bg-[#FAF8FC] px-3.5 py-1.5 text-xs font-medium tracking-wider transition-colors flex items-center gap-1 shadow-2xs"
                   >
                     <Play className="w-3 h-3 fill-current" />Start
                   </button>
                 )}
                 <button
                   onClick={() => run(() => updateSession('stopped'))}
-                  className="rounded-lg border border-white/20 hover:bg-white/10 px-3.5 py-1.5 text-[10px] uppercase font-bold tracking-wider text-[#EDE7F6] transition-colors"
+                  className="rounded-lg border border-white/20 hover:bg-white/10 px-3.5 py-1.5 text-xs font-medium tracking-wider text-white/80 transition-colors"
                 >
                   Stop
                 </button>
@@ -254,30 +251,30 @@ export const StudyRoomView: React.FC = () => {
             </div>
           </div>
 
-          <div className="rounded-xl border border-[#EDE7F3] p-4 bg-white">
+          <div className="rounded-xl border border-[#EDE7F3] dark:border-[#302B35] p-4 bg-white dark:bg-[#17151A]">
             <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
               {details.messages.map((item) => (
-                <div key={item.id} className="border-b border-[#EDE7F3] pb-3 last:border-0">
-                  <div className="flex justify-between text-[10px] font-bold">
-                    <span className="text-[#461599]">{item.senderName}</span>
-                    <span className="text-[#7B7484]">{new Date(item.createdAt).toLocaleTimeString()}</span>
+                <div key={item.id} className="border-b border-[#EDE7F3] dark:border-[#302B35] pb-3 last:border-0">
+                  <div className="flex justify-between text-[10px] font-medium">
+                    <span className="text-[#6D28D9] dark:text-[#A78BFA]">{item.senderName}</span>
+                    <span className="text-[#7B7484] dark:text-[#7A7480]">{new Date(item.createdAt).toLocaleTimeString()}</span>
                   </div>
-                  <p className="text-xs mt-1 text-[#1C1B1F]">
-                    {item.isQuestion && <span className="inline-block bg-[#EDE7F6] text-[#461599] px-1.5 py-0.5 rounded text-[9px] font-bold mr-2 uppercase tracking-wide">Question</span>}
+                  <p className="text-xs mt-1 text-[#17151A] dark:text-[#F5F3F7]">
+                    {item.isQuestion && <span className="inline-block bg-[#EDE7F6] dark:bg-[#251E30] text-[#6D28D9] dark:text-[#A78BFA] px-1.5 py-0.5 rounded text-[9px] font-medium mr-2 uppercase tracking-wide">Question</span>}
                     {item.text}
                   </p>
                 </div>
               ))}
-              {details.messages.length === 0 && <p className="text-xs text-[#7B7484] py-4 text-center">No messages yet. Say hello!</p>}
+              {details.messages.length === 0 && <p className="text-xs text-[#7B7484] dark:text-[#7A7480] py-4 text-center font-sans">No messages yet. Say hello!</p>}
             </div>
 
-            <form onSubmit={sendMessage} className="border-t border-[#EDE7F3] mt-4 pt-4 space-y-3">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-[#7B7484] flex items-center cursor-pointer">
+            <form onSubmit={sendMessage} className="border-t border-[#EDE7F3] dark:border-[#302B35] mt-4 pt-4 space-y-3">
+              <label className="text-[10px] font-medium uppercase tracking-widest text-[#7B7484] dark:text-[#7A7480] flex items-center cursor-pointer">
                 <input
                   type="checkbox"
                   checked={isQuestion}
                   onChange={(event) => setIsQuestion(event.target.checked)}
-                  className="mr-2 accent-[#5E35B1] rounded"
+                  className="mr-2 accent-[#6D28D9] dark:accent-[#8B5CF6] rounded"
                 />
                 Mark as question
               </label>
@@ -287,13 +284,13 @@ export const StudyRoomView: React.FC = () => {
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
                   placeholder="Send a room message..."
-                  className="flex-1 rounded-xl border border-[#EDE7F3] bg-white p-3 text-xs text-[#1C1B1F] placeholder-[#A49AA9] focus:outline-none focus:border-[#5E35B1] focus:ring-2 focus:ring-[#5E35B1]/10 transition-all"
+                  className="flex-1 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] p-2.5 text-xs text-[#17151A] dark:text-[#F5F3F7] placeholder-[#7B7484] dark:placeholder-[#7A7480] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] transition-colors"
                 />
                 <button
-                  className="bg-[#5E35B1] hover:bg-[#461599] text-white rounded-xl px-4 flex items-center justify-center transition-all shadow-xs active:scale-95"
+                  className="bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white rounded-lg px-4 flex items-center justify-center transition-colors shadow-xs"
                   aria-label="Send message"
                 >
-                  <Send className="w-4 h-4 text-[#CEB8FF]" />
+                  <Send className="w-4 h-4 text-white" />
                 </button>
               </div>
             </form>

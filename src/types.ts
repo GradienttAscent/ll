@@ -128,6 +128,7 @@ export interface ScheduleBlock {
   startTime: string;
   durationMinutes: number;
   completed: boolean;
+  missed?: boolean;
   blockType: 'study' | 'revision';
   createdAt: string;
 }
@@ -461,3 +462,85 @@ export interface ActiveSessionState {
   accumulatedMs: number;    // total accumulated milliseconds of actual study time
   pausedAt: number | null;  // Date.now() when last paused, null if not paused
 }
+
+// --- YOUR ASCENT Progression System ---
+
+export type AscentStage = 'STARTING' | 'BUILDING' | 'CONSISTENT' | 'MOMENTUM' | 'MASTERY';
+
+export interface AscentStageInfo {
+  stage: AscentStage;
+  label: string;
+  elevation: string;
+  description: string;
+  minProgress: number;
+  maxProgress: number;
+}
+
+export interface TomorrowCommitmentSummary {
+  id: string;
+  title: string;
+  date: string;
+  startTime: string;
+  durationMinutes: number;
+  topicId: string;
+  topicName?: string;
+}
+
+export interface AscentState {
+  progress: number;
+  stage: AscentStage;
+  previousStage?: AscentStage;
+  elevationMeters: number;
+  totalCompleted: number;
+  totalMissed: number;
+  todayScheduledCount?: number;
+  todayCompletedCount?: number;
+  todayMissedCount?: number;
+  todayPendingCount?: number;
+  weekCompleted: number;
+  weekMissed: number;
+  followThroughRate: number;
+  momentumDays: number;
+  todayBlocks: ScheduleBlock[];
+  tomorrowCommitment: TomorrowCommitmentSummary | null;
+  lastAction?: 'completed' | 'missed' | 'recovered' | 'committed' | 'idle';
+  statusMessage?: string;
+}
+
+// --- Teacher's Exam Intelligence ("What to Study") ---
+
+export interface WhatToStudyOccurrence {
+  paperTitle: string;
+  examYear: string;
+  questionNumber: string;
+  subpart?: string;
+  label: string;
+  marks: number;
+  questionText: string;
+}
+
+export interface WhatToStudySourceMapping {
+  mapped: boolean;
+  documentId?: string;
+  documentTitle?: string;
+  slideRange?: string;
+  startSlide?: number;
+  endSlide?: number;
+  sectionTitle?: string;
+  slideSnippet?: string;
+  unmappedReason?: string;
+}
+
+export interface WhatToStudyItem {
+  id: string;
+  conceptTitle: string;
+  priorityTag: 'HIGH PRIORITY' | 'REPEATED FREQUENTLY' | 'APPEARED ACROSS MULTIPLE YEARS' | 'STRONG PAST-PAPER EVIDENCE';
+  appearanceCount: number;
+  distinctYearsCount: number;
+  occurrences: WhatToStudyOccurrence[];
+  unitTopic: string;
+  topicId?: string;
+  lectureSource: WhatToStudySourceMapping;
+  averageMarks: number;
+}
+

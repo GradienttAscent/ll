@@ -43,6 +43,7 @@ export type ScheduleBlockRow = {
   startTime: string;
   durationMinutes: number;
   completed: boolean;
+  missed?: boolean;
   blockType: 'study' | 'revision';
   createdAt: string;
 };
@@ -158,24 +159,33 @@ export function scheduleBlockRows(userId: string): ScheduleBlockRow[] {
   const rows = getDb().prepare(`
     SELECT b.id, b.topic_id AS topicId, t.name AS topicName, b.title, b.date,
       b.start_time AS startTime, b.duration_minutes AS durationMinutes,
-      CAST(b.completed AS INTEGER) AS completed, b.block_type AS blockType, b.created_at AS createdAt
+      CAST(b.completed AS INTEGER) AS completed,
+      CAST(COALESCE(b.missed, 0) AS INTEGER) AS missed,
+      b.block_type AS blockType, b.created_at AS createdAt
     FROM schedule_blocks b
     JOIN topics t ON t.id = b.topic_id AND t.user_id = b.user_id
     WHERE b.user_id = ?
     ORDER BY b.date ASC, b.start_time ASC
-  `).all(userId) as Array<Omit<ScheduleBlockRow, 'completed'> & { completed: number }>;
-  return rows.map((row) => ({ ...row, completed: Boolean(row.completed), blockType: row.blockType === 'revision' ? 'revision' : 'study' }));
+  `).all(userId) as Array<Omit<ScheduleBlockRow, 'completed' | 'missed'> & { completed: number; missed: number }>;
+  return rows.map((row) => ({
+    ...row,
+    completed: Boolean(row.completed),
+    missed: Boolean(row.missed),
+    blockType: row.blockType === 'revision' ? 'revision' : 'study',
+  }));
 }
 
 export function findOwnedScheduleBlock(userId: string, blockId: string) {
-  return getDb().prepare(`
+  const row = getDb().prepare(`
     SELECT b.id, b.topic_id AS topicId, b.title, b.date, b.start_time AS startTime,
       b.duration_minutes AS durationMinutes, CAST(b.completed AS INTEGER) AS completed,
+      CAST(COALESCE(b.missed, 0) AS INTEGER) AS missed,
       b.block_type AS blockType,
       b.created_at AS createdAt
     FROM schedule_blocks b
     WHERE b.id = ? AND b.user_id = ?
   `).get(blockId, userId) as any | undefined;
+  return row ? { ...row, completed: Boolean(row.completed), missed: Boolean(row.missed) } : undefined;
 }
 
 function minutesOfDay(startTime: string): number {
@@ -221,10 +231,10 @@ export function findOverlappingBlock(
 export function createScheduleBlock(userId: string, input: any) {
   const id = createId('block');
   getDb().prepare(`INSERT INTO schedule_blocks
-    (id, user_id, topic_id, title, date, start_time, duration_minutes, completed, block_type, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (id, user_id, topic_id, title, date, start_time, duration_minutes, completed, missed, block_type, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, userId, input.topicId, input.title, input.date, input.startTime,
-      Math.max(1, Number(input.durationMinutes)), input.completed ? 1 : 0,
+      Math.max(1, Number(input.durationMinutes)), input.completed ? 1 : 0, input.missed ? 1 : 0,
       input.blockType === 'revision' ? 'revision' : 'study', now());
   return findOwnedScheduleBlock(userId, id);
 }
@@ -308,6 +318,7 @@ export function updateScheduleBlock(userId: string, blockId: string, updates: {
   startTime?: string;
   durationMinutes?: number;
   completed?: number;
+  missed?: number;
   topicId?: string;
 }) {
   const assignments: string[] = [];
@@ -317,6 +328,7 @@ export function updateScheduleBlock(userId: string, blockId: string, updates: {
   if (updates.startTime !== undefined) { assignments.push('start_time = ?'); params.push(updates.startTime); }
   if (updates.durationMinutes !== undefined) { assignments.push('duration_minutes = ?'); params.push(updates.durationMinutes); }
   if (updates.completed !== undefined) { assignments.push('completed = ?'); params.push(updates.completed); }
+  if (updates.missed !== undefined) { assignments.push('missed = ?'); params.push(updates.missed); }
   if (updates.topicId !== undefined) { assignments.push('topic_id = ?'); params.push(updates.topicId); }
   if (assignments.length === 0) return;
   params.push(userId, blockId);
@@ -483,6 +495,20 @@ export function findOwnedDocument(userId: string, documentId: string): DocumentR
     SELECT id, title, doc_type AS docType, content, file_size AS fileSize, mime_type AS mimeType, extraction_method AS extractionMethod, created_at AS createdAt
     FROM documents WHERE id = ? AND user_id = ?
   `).get(documentId, userId) as DocumentRow | undefined;
+}
+
+export function findOwnedDocumentFileData(userId: string, documentId: string): { fileData?: Buffer | Uint8Array; mimeType: string; content?: string; title: string } | undefined {
+  const row = getDb().prepare(`
+    SELECT title, file_data AS fileData, mime_type AS mimeType, content
+    FROM documents WHERE id = ? AND user_id = ?
+  `).get(documentId, userId) as any;
+  if (!row) return undefined;
+  return {
+    title: row.title,
+    fileData: row.fileData ? Buffer.from(row.fileData) : undefined,
+    mimeType: row.mimeType || 'text/plain',
+    content: row.content || undefined,
+  };
 }
 
 export function createDocument(userId: string, input: any): DocumentRow {
@@ -1776,11 +1802,12 @@ export function computeAnalytics(userId: string): AnalyticsSnapshot {
   const today = todayKey();
   const rows = getDb().prepare(`
     SELECT b.id, b.date, b.duration_minutes AS durationMinutes, CAST(b.completed AS INTEGER) AS completed,
+      CAST(COALESCE(b.missed, 0) AS INTEGER) AS missed,
       b.topic_id AS topicId, t.name AS topicName
     FROM schedule_blocks b
     LEFT JOIN topics t ON t.id = b.topic_id AND t.user_id = b.user_id
     WHERE b.user_id = ?
-  `).all(userId) as Array<{ id: string; date: string; durationMinutes: number; completed: number; topicId: string; topicName: string | null }>;
+  `).all(userId) as Array<{ id: string; date: string; durationMinutes: number; completed: number; missed: number; topicId: string; topicName: string | null }>;
 
   let plannedMinutes = 0;
   let completedMinutes = 0;
@@ -1796,7 +1823,7 @@ export function computeAnalytics(userId: string): AnalyticsSnapshot {
     if (done) {
       completedCount += 1;
       completedMinutes += minutes;
-    } else if (String(row.date) < today) {
+    } else if (String(row.date) < today || row.missed === 1) {
       missedCount += 1;
     }
     if (!done && String(row.date) >= today) {
@@ -3016,4 +3043,757 @@ export function updateStudyRoomSession(userId: string, roomId: string, input: { 
       VALUES (?, ?, ?, ?, ?, ?)`).run(roomId, userId, timestamp, Math.max(1, Number(input.durationMinutes) || 25), input.status, timestamp);
   }
   return studyRoomSession(userId, roomId);
+}
+
+// --- YOUR ASCENT Progression System Service Logic ---
+
+export interface AscentStatePayload {
+  progress: number;
+  stage: 'STARTING' | 'BUILDING' | 'CONSISTENT' | 'MOMENTUM' | 'MASTERY';
+  elevationMeters: number;
+  totalCompleted: number;
+  totalMissed: number;
+  todayScheduledCount: number;
+  todayCompletedCount: number;
+  todayMissedCount: number;
+  todayPendingCount: number;
+  weekCompleted: number;
+  weekMissed: number;
+  followThroughRate: number;
+  momentumDays: number;
+  todayBlocks: ScheduleBlockRow[];
+  tomorrowCommitment: {
+    id: string;
+    title: string;
+    date: string;
+    startTime: string;
+    durationMinutes: number;
+    topicId: string;
+    topicName?: string;
+  } | null;
+}
+
+export function computeAscentState(userId: string, tzOffsetMinutes = 0): AscentStatePayload {
+  const today = currentLocalDateKey(tzOffsetMinutes);
+  const tomorrow = addDaysKey(today, 1);
+  const weekStart = addDaysKey(today, -6);
+
+  const blocks = scheduleBlockRows(userId);
+  const completedSessions = studySessionRows(userId).filter((s) => s.status === 'completed');
+  const sessionCompletedBlockIds = new Set(completedSessions.map((s) => s.scheduleBlockId));
+
+  let totalCompleted = 0;
+  let totalMissed = 0;
+  let weekCompleted = 0;
+  let weekMissed = 0;
+  const completedDays = new Set<string>();
+
+  for (const block of blocks) {
+    const isCompleted = block.completed || sessionCompletedBlockIds.has(block.id);
+    const isExplicitMissed = Boolean(block.missed);
+    const isPastMissed = !isCompleted && block.date < today;
+
+    if (isCompleted) {
+      totalCompleted += 1;
+      completedDays.add(block.date);
+      if (block.date >= weekStart && block.date <= today) {
+        weekCompleted += 1;
+      }
+    } else if (isExplicitMissed || isPastMissed) {
+      totalMissed += 1;
+      if (block.date >= weekStart && block.date <= today) {
+        weekMissed += 1;
+      }
+    }
+  }
+
+  for (const session of completedSessions) {
+    const day = localDateKey(session.endedAt || session.startedAt, tzOffsetMinutes);
+    if (day) completedDays.add(day);
+  }
+
+  const totalDue = totalCompleted + totalMissed;
+  const followThroughRate = totalDue > 0 ? Math.round((totalCompleted / totalDue) * 100) : 100;
+  const momentumDays = completedDays.size;
+
+  const rawProgress = 0.05 + (totalCompleted * 0.085) - (totalMissed * 0.065);
+  const progress = Math.max(0.04, Math.min(0.96, Number(rawProgress.toFixed(3))));
+
+  let stage: 'STARTING' | 'BUILDING' | 'CONSISTENT' | 'MOMENTUM' | 'MASTERY' = 'STARTING';
+  if (progress >= 0.85) stage = 'MASTERY';
+  else if (progress >= 0.65) stage = 'MOMENTUM';
+  else if (progress >= 0.40) stage = 'CONSISTENT';
+  else if (progress >= 0.20) stage = 'BUILDING';
+
+  const elevationMeters = Math.round(120 + progress * 2030);
+  const todayBlocks = blocks.filter((b) => b.date === today);
+
+  const todayScheduledCount = todayBlocks.length;
+  const todayCompletedCount = todayBlocks.filter((b) => b.completed || sessionCompletedBlockIds.has(b.id)).length;
+  const todayMissedCount = todayBlocks.filter((b) => Boolean(b.missed) || (!b.completed && b.date < today)).length;
+  const todayPendingCount = todayBlocks.filter((b) => !b.completed && !b.missed).length;
+
+  const upcomingIncomplete = blocks.filter((b) => !b.completed && !b.missed && b.date >= tomorrow);
+  const tomorrowBlock = upcomingIncomplete[0] || null;
+
+  return {
+    progress,
+    stage,
+    elevationMeters,
+    totalCompleted,
+    totalMissed,
+    todayScheduledCount,
+    todayCompletedCount,
+    todayMissedCount,
+    todayPendingCount,
+    weekCompleted,
+    weekMissed,
+    followThroughRate,
+    momentumDays,
+    todayBlocks,
+    tomorrowCommitment: tomorrowBlock ? {
+      id: tomorrowBlock.id,
+      title: tomorrowBlock.title,
+      date: tomorrowBlock.date,
+      startTime: tomorrowBlock.startTime,
+      durationMinutes: tomorrowBlock.durationMinutes,
+      topicId: tomorrowBlock.topicId,
+      topicName: tomorrowBlock.topicName,
+    } : null,
+  };
+}
+
+export function commitTomorrowScheduleBlock(
+  userId: string,
+  input: {
+    title: string;
+    startTime?: string;
+    durationMinutes?: number;
+    topicId?: string;
+    tzOffsetMinutes?: number;
+  },
+) {
+  const tz = input.tzOffsetMinutes ?? 0;
+  const today = currentLocalDateKey(tz);
+  const tomorrow = addDaysKey(today, 1);
+  const title = (input.title || '').trim() || 'Tomorrow Focus Commitment';
+  const startTime = input.startTime || '19:00';
+  const durationMinutes = Math.max(15, Math.min(240, Number(input.durationMinutes) || 60));
+
+  let topicId = input.topicId;
+  if (!topicId || !findOwnedTopic(userId, topicId)) {
+    const existing = findOwnedTopicByName(userId, 'Focus Commitment');
+    if (existing) {
+      topicId = existing.id;
+    } else {
+      const allTopics = topicRows(userId);
+      if (allTopics.length > 0) {
+        topicId = allTopics[0].id;
+      } else {
+        const createdTopics = saveTopics(userId, [{
+          name: 'Focus Commitment',
+          priority: 5,
+          weightage: 10,
+          source: 'user-commitment',
+        }]);
+        topicId = createdTopics[0].id;
+      }
+    }
+  }
+
+  const block = createScheduleBlock(userId, {
+    topicId,
+    title,
+    date: tomorrow,
+    startTime,
+    durationMinutes,
+    completed: false,
+    blockType: 'study',
+  });
+
+  return block;
+}
+
+export function markCommitmentCompleted(userId: string, blockId?: string) {
+  const blocks = scheduleBlockRows(userId);
+  let target: ScheduleBlockRow | undefined;
+  if (blockId) {
+    target = blocks.find((b) => b.id === blockId);
+  } else {
+    const today = currentLocalDateKey(0);
+    target = blocks.find((b) => b.date === today && !b.completed)
+      || blocks.find((b) => !b.completed);
+  }
+
+  if (target) {
+    updateScheduleBlock(userId, target.id, { completed: 1, missed: 0 });
+    recordScheduleChange(userId, target.id, 'completed', '0', '1', 'ascent-action');
+    return findOwnedScheduleBlock(userId, target.id);
+  }
+
+  const today = currentLocalDateKey(0);
+  let topicId = topicRows(userId)[0]?.id;
+  if (!topicId) {
+    const created = saveTopics(userId, [{ name: 'Daily Focus', priority: 5, weightage: 10 }]);
+    topicId = created[0].id;
+  }
+  const createdBlock = createScheduleBlock(userId, {
+    topicId,
+    title: 'Focus Commitment',
+    date: today,
+    startTime: '10:00',
+    durationMinutes: 45,
+    completed: true,
+    blockType: 'study',
+  });
+  return createdBlock;
+}
+
+export function markCommitmentMissed(userId: string, blockId?: string) {
+  const blocks = scheduleBlockRows(userId);
+  let target: ScheduleBlockRow | undefined;
+  if (blockId) {
+    target = blocks.find((b) => b.id === blockId);
+  } else {
+    const today = currentLocalDateKey(0);
+    target = blocks.find((b) => b.date === today && !b.completed && !b.missed)
+      || blocks.find((b) => !b.completed && !b.missed);
+  }
+
+  if (target) {
+    updateScheduleBlock(userId, target.id, { completed: 0, missed: 1 });
+    recordScheduleChange(userId, target.id, 'missed', '0', '1', 'ascent-action');
+    return findOwnedScheduleBlock(userId, target.id);
+  }
+
+  const today = currentLocalDateKey(0);
+  let topicId = topicRows(userId)[0]?.id;
+  if (!topicId) {
+    const created = saveTopics(userId, [{ name: 'Daily Focus', priority: 5, weightage: 10 }]);
+    topicId = created[0].id;
+  }
+  const createdBlock = createScheduleBlock(userId, {
+    topicId,
+    title: 'Missed Focus Commitment',
+    date: today,
+    startTime: '14:00',
+    durationMinutes: 45,
+    completed: false,
+    missed: 1,
+    blockType: 'study',
+  });
+  return createdBlock;
+}
+
+// ============================================================================
+// TEACHER'S EXAM INTELLIGENCE ("WHAT TO STUDY")
+// Multi-paper analysis, semantic question clustering, syllabus alignment,
+// and strict lecture slide / PPT / PDF mapping with zero hallucination.
+// ============================================================================
+
+export interface WhatToStudyOccurrence {
+  paperTitle: string;
+  examYear: string;
+  questionNumber: string;
+  subpart?: string;
+  label: string;
+  marks: number;
+  questionText: string;
+}
+
+export interface WhatToStudySourceMapping {
+  mapped: boolean;
+  documentId?: string;
+  documentTitle?: string;
+  slideRange?: string;
+  startSlide?: number;
+  endSlide?: number;
+  sectionTitle?: string;
+  slideSnippet?: string;
+  unmappedReason?: string;
+}
+
+export interface WhatToStudyItem {
+  id: string;
+  conceptTitle: string;
+  priorityTag: 'HIGH PRIORITY' | 'REPEATED FREQUENTLY' | 'APPEARED ACROSS MULTIPLE YEARS' | 'STRONG PAST-PAPER EVIDENCE';
+  appearanceCount: number;
+  distinctYearsCount: number;
+  occurrences: WhatToStudyOccurrence[];
+  unitTopic: string;
+  topicId?: string;
+  lectureSource: WhatToStudySourceMapping;
+  averageMarks: number;
+}
+
+interface LectureSlideChunk {
+  slideNumber: number;
+  title: string;
+  text: string;
+}
+
+function extractLectureSlides(content: string): LectureSlideChunk[] {
+  if (!content) return [];
+  // 1. Explicit Slide/Page markers: "Slide 1:", "Page 1:", "=== Slide 1 ===", "--- Slide 1 ---"
+  const slideRegex = /(?:^|\n)(?:(?:===+|---+)?\s*(?:Slide|Page)\s+(\d+)[:.\-]?\s*([^\n]*)|#+\s*(?:Slide|Page)\s+(\d+)[:.\-]?\s*([^\n]*))/gi;
+  const matches = [...content.matchAll(slideRegex)];
+
+  if (matches.length >= 2) {
+    const slides: LectureSlideChunk[] = [];
+    for (let i = 0; i < matches.length; i++) {
+      const match = matches[i];
+      const slideNum = parseInt(match[1] || match[3], 10);
+      const title = (match[2] || match[4] || '').trim();
+      const startIdx = match.index! + match[0].length;
+      const endIdx = i < matches.length - 1 ? matches[i + 1].index! : content.length;
+      const text = content.slice(startIdx, endIdx).trim();
+      slides.push({
+        slideNumber: slideNum,
+        title: title || `Slide ${slideNum}`,
+        text: `${title}\n${text}`.trim(),
+      });
+    }
+    return slides;
+  }
+
+  // 2. Form-feed page breaks (\f) typical in vector/PDF extractions
+  if (content.includes('\f')) {
+    const parts = content.split('\f').map((p) => p.trim()).filter(Boolean);
+    return parts.map((part, idx) => {
+      const firstLine = part.split('\n')[0].replace(/^[#\-*\s]+/, '').trim();
+      return {
+        slideNumber: idx + 1,
+        title: firstLine.length < 60 && firstLine.length > 2 ? firstLine : `Page ${idx + 1}`,
+        text: part,
+      };
+    });
+  }
+
+  // 3. Fallback: split by Markdown major headings (# or ##)
+  const headerBlocks = content.split(/\n(?=#{1,3}\s+)/g).map((b) => b.trim()).filter(Boolean);
+  if (headerBlocks.length >= 2) {
+    return headerBlocks.map((block, idx) => {
+      const firstLine = block.split('\n')[0].replace(/^[#\-*\s]+/, '').trim();
+      return {
+        slideNumber: idx + 1,
+        title: firstLine.length < 60 && firstLine.length > 2 ? firstLine : `Section ${idx + 1}`,
+        text: block,
+      };
+    });
+  }
+
+  // 4. Default: single cohesive chunk
+  return [{ slideNumber: 1, title: 'Lecture Slides', text: content }];
+}
+
+export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
+  const documents = documentRows(userId);
+  const allTopics = topicRows(userId);
+  const questions = questionRows(userId);
+
+  // Group questions by underlying academic concept
+  const conceptClusters = new Map<string, {
+    canonicalTitle: string;
+    conceptKey: string;
+    topicId?: string;
+    topicName?: string;
+    occurrences: WhatToStudyOccurrence[];
+  }>();
+
+  for (const q of questions) {
+    const doc = q.documentId ? documents.find((d) => d.id === q.documentId) : null;
+    const docTitle = doc?.title || 'Previous Exam Paper';
+    
+    // Extract exam year or session tag from document title
+    const yearMatch = /\b(20\d{2}(?:\s*(?:Supplementary|Mid-Term|Midterm|End-Semester|End-Sem|Spring|Fall|Summer))?)\b/i.exec(docTitle);
+    const examYear = yearMatch ? yearMatch[1] : (docTitle.replace(/\.(pdf|txt|docx|pptx)$/i, '') || 'Exam');
+
+    const label = `${examYear} · Q${q.questionNumber || '?'}${q.subpart ? `(${q.subpart})` : ''}`;
+    const cleanText = q.questionText.trim();
+    const tokens = academicTokens(cleanText);
+
+    // Identify semantic concept cluster
+    let conceptKey = '';
+    let canonicalTitle = '';
+
+    if (tokens.some((t) => t.includes('deadlock')) && tokens.some((t) => t.includes('detect'))) {
+      conceptKey = 'deadlock-detection';
+      canonicalTitle = 'Explain Deadlock Detection';
+    } else if (tokens.some((t) => t.includes('banker'))) {
+      conceptKey = 'bankers-algorithm';
+      canonicalTitle = "Banker's Algorithm";
+    } else if (tokens.some((t) => t.includes('deadlock')) && tokens.some((t) => t.includes('condition') || t.includes('prevention') || t.includes('character'))) {
+      conceptKey = 'deadlock-conditions';
+      canonicalTitle = 'Deadlock Conditions & Prevention';
+    } else if (tokens.some((t) => t.includes('knapsack'))) {
+      conceptKey = 'knapsack-dp';
+      canonicalTitle = '0/1 Knapsack Problem';
+    } else if (tokens.some((t) => t.includes('dijkstra'))) {
+      conceptKey = 'dijkstra-algorithm';
+      canonicalTitle = "Dijkstra's Shortest Path Algorithm";
+    } else if (tokens.some((t) => t.includes('master')) && tokens.some((t) => t.includes('theorem') || t.includes('recurren'))) {
+      conceptKey = 'master-theorem';
+      canonicalTitle = 'Master Theorem for Recurrences';
+    } else if (tokens.some((t) => t.includes('paging')) || (tokens.some((t) => t.includes('virtual')) && tokens.some((t) => t.includes('memory')))) {
+      conceptKey = 'paging-virtual-memory';
+      canonicalTitle = 'Paging & Virtual Memory Translation';
+    } else if (tokens.some((t) => t.includes('critical')) && tokens.some((t) => t.includes('section') || t.includes('semaphore') || t.includes('mutex'))) {
+      conceptKey = 'critical-section-synchronization';
+      canonicalTitle = 'Critical Section & Semaphores';
+    } else {
+      // General concept extraction: strip leading question words and take top keyphrase
+      const simplified = cleanText
+        .replace(/^(?:explain|describe|what is|how is|solve|state and prove|illustrate|analyze|define|discuss|compare)\s+/i, '')
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .slice(0, 5)
+        .join(' ');
+      conceptKey = tokens.slice(0, 3).sort().join('-') || 'general-topic';
+      canonicalTitle = simplified.charAt(0).toUpperCase() + simplified.slice(1);
+    }
+
+    if (!conceptClusters.has(conceptKey)) {
+      conceptClusters.set(conceptKey, {
+        canonicalTitle,
+        conceptKey,
+        topicId: q.topicId || undefined,
+        topicName: q.topicName || undefined,
+        occurrences: [],
+      });
+    }
+
+    const cluster = conceptClusters.get(conceptKey)!;
+    cluster.occurrences.push({
+      paperTitle: docTitle,
+      examYear,
+      questionNumber: q.questionNumber || '?',
+      subpart: q.subpart || undefined,
+      label,
+      marks: q.marks,
+      questionText: cleanText,
+    });
+    if (!cluster.topicId && q.topicId) {
+      cluster.topicId = q.topicId;
+      cluster.topicName = q.topicName;
+    }
+  }
+
+  // Find all lecture material documents (PPTs, PDFs, lecture notes)
+  const lectureDocs = documents.filter((d) => {
+    const t = d.docType.toLowerCase();
+    return t.includes('lecture') || t.includes('slide') || t.includes('note') || t.includes('presentation');
+  });
+
+  // Extract slide chunks from all lecture documents
+  const parsedLectures = lectureDocs.map((doc) => ({
+    doc,
+    slides: extractLectureSlides(doc.content || ''),
+  }));
+
+  const items: WhatToStudyItem[] = [];
+
+  for (const [key, cluster] of conceptClusters.entries()) {
+    const appearanceCount = cluster.occurrences.length;
+    const distinctYearsCount = new Set(cluster.occurrences.map((o) => o.examYear)).size;
+    const avgMarks = Math.round(cluster.occurrences.reduce((s, o) => s + o.marks, 0) / (appearanceCount || 1));
+
+    // Determine unit topic label
+    let unitTopic = cluster.topicName || 'Core Curriculum';
+    if (!unitTopic.toLowerCase().startsWith('unit') && allTopics.length > 0) {
+      const matchedTopic = allTopics.find((t) => t.id === cluster.topicId || t.name === cluster.topicName);
+      if (matchedTopic) {
+        unitTopic = matchedTopic.name.toLowerCase().startsWith('unit')
+          ? matchedTopic.name
+          : `Unit ${matchedTopic.priority || 1} · ${matchedTopic.name}`;
+      }
+    }
+
+    // MAP TO LECTURE MATERIAL (PPT / PDF) - STRICT TRACEABILITY
+    let lectureSource: WhatToStudySourceMapping = {
+      mapped: false,
+      unmappedReason: 'Source location not confidently mapped.',
+    };
+
+    const clusterKeywords: Record<string, string[]> = {
+      'deadlock-detection': ['detect'],
+      'bankers-algorithm': ['banker'],
+      'deadlock-conditions': ['condition', 'prevention', 'character'],
+      'knapsack-dp': ['knapsack'],
+      'dijkstra-algorithm': ['dijkstra'],
+      'master-theorem': ['master'],
+      'paging-virtual-memory': ['tlb', 'page fault', 'paging', 'virtual'],
+      'critical-section-synchronization': ['critical', 'semaphore', 'mutex'],
+    };
+
+    const specificTokens = clusterKeywords[key];
+    const generalTokens = Array.from(new Set(academicTokens(cluster.canonicalTitle)));
+
+    // Search lecture slides
+    for (const { doc, slides } of parsedLectures) {
+      const matchingSlides: LectureSlideChunk[] = [];
+      for (const slide of slides) {
+        const slideTokens = academicTokens(slide.title + ' ' + slide.text);
+        if (specificTokens && specificTokens.length > 0) {
+          const hasSpecific = specificTokens.some((st) => slideTokens.some((t) => t.includes(st)));
+          if (hasSpecific) {
+            matchingSlides.push(slide);
+          }
+        } else {
+          const matchCount = generalTokens.filter((ct) => slideTokens.includes(ct)).length;
+          if (matchCount >= 2 || (generalTokens.length === 1 && matchCount === 1)) {
+            matchingSlides.push(slide);
+          }
+        }
+      }
+
+      if (matchingSlides.length > 0) {
+        const slideNums = matchingSlides.map((s) => s.slideNumber).sort((a, b) => a - b);
+        const minSlide = slideNums[0];
+        const maxSlide = slideNums[slideNums.length - 1];
+        const slideRange = minSlide === maxSlide ? `Slide ${minSlide}` : `Slides ${minSlide}–${maxSlide}`;
+        
+        lectureSource = {
+          mapped: true,
+          documentId: doc.id,
+          documentTitle: doc.title.replace(/\.(pptx|pdf|txt|docx)$/i, ''),
+          slideRange,
+          startSlide: minSlide,
+          endSlide: maxSlide,
+          sectionTitle: matchingSlides[0].title || cluster.canonicalTitle,
+          slideSnippet: matchingSlides[0].text.slice(0, 240),
+        };
+        break; // Stop at first confident lecture source match
+      }
+    }
+
+    // Determine explainable priority tag
+    let priorityTag: WhatToStudyItem['priorityTag'] = 'HIGH PRIORITY';
+    if (appearanceCount >= 3 || (appearanceCount >= 2 && distinctYearsCount >= 2)) {
+      priorityTag = 'HIGH PRIORITY';
+    } else if (appearanceCount >= 2) {
+      priorityTag = 'REPEATED FREQUENTLY';
+    } else if (distinctYearsCount >= 2) {
+      priorityTag = 'APPEARED ACROSS MULTIPLE YEARS';
+    } else {
+      priorityTag = 'STRONG PAST-PAPER EVIDENCE';
+    }
+
+    items.push({
+      id: `wts-${key}`,
+      conceptTitle: cluster.canonicalTitle,
+      priorityTag,
+      appearanceCount,
+      distinctYearsCount,
+      occurrences: cluster.occurrences,
+      unitTopic,
+      topicId: cluster.topicId,
+      lectureSource,
+      averageMarks: avgMarks,
+    });
+  }
+
+  // Sort by priority and appearance count
+  const tagScore: Record<string, number> = {
+    'HIGH PRIORITY': 4,
+    'REPEATED FREQUENTLY': 3,
+    'APPEARED ACROSS MULTIPLE YEARS': 2,
+    'STRONG PAST-PAPER EVIDENCE': 1,
+  };
+
+  return items.sort((a, b) => {
+    const diffTag = (tagScore[b.priorityTag] || 0) - (tagScore[a.priorityTag] || 0);
+    if (diffTag !== 0) return diffTag;
+    const diffCount = b.appearanceCount - a.appearanceCount;
+    if (diffCount !== 0) return diffCount;
+    return b.distinctYearsCount - a.distinctYearsCount;
+  });
+}
+
+/**
+ * Loads a complete university course pack (Operating Systems):
+ * 1. Syllabus (5 units)
+ * 2. Lecture Slides with Slides 18–24 on Deadlock Detection & Slides 25–31 on Banker's Algorithm
+ * 3. Previous exam papers (2023, 2024, 2025 Midterm, 2025 Supplementary)
+ */
+export function loadSampleAcademicPack(userId: string) {
+  // 1. Ingest Course Syllabus
+  const syllabusContent = `
+COURSE SYLLABUS: CS304 - OPERATING SYSTEMS
+Unit 1: Introduction to Operating Systems, OS Structure, System Calls, and Dual-mode Operations.
+Unit 2: Process Management, Threads, CPU Scheduling Algorithms, and Multi-core Scheduling.
+Unit 3: Process Synchronization, Critical Section Problem, Mutex Locks, Semaphores, and Monitors.
+Unit 4: Deadlocks: Characterization, Prevention, Avoidance, Banker's Algorithm, Deadlock Detection, and Recovery.
+Unit 5: Memory Management: Paging, Page Fault Handling, Virtual Memory, Inverted Page Tables, and TLB Address Translation.
+`.trim();
+
+  ingestAcademicDocument(userId, {
+    title: 'Operating Systems Course Syllabus',
+    docType: 'Syllabus',
+    content: syllabusContent,
+  });
+
+  // 2. Ingest Professor's Lecture Slides with authentic slide numbering
+  const lectureSlidesContent = `
+=== Slide 1: Course Overview & Deadlock Introduction ===
+Operating Systems - Unit 4: Deadlocks
+Professor Academic Lecture Series.
+Overview of resource allocation, circular dependencies, and process stalls.
+
+=== Slide 2: The Deadlock Problem ===
+A set of blocked processes each holding a resource and waiting to acquire a resource held by another process in the set.
+Examples: System resources (disk drives, printers, memory segments).
+
+=== Slide 11: Deadlock Prevention Strategies ===
+Invalidating one of the four necessary conditions:
+1. Mutual Exclusion
+2. Hold and Wait
+3. No Preemption
+4. Circular Wait
+
+=== Slide 18: Deadlock Detection & Resource Allocation Graph ===
+Unit 4 · Deadlock Detection
+In an environment where deadlock prevention and avoidance are not used, deadlocks may occur.
+The operating system must provide:
+1. An algorithm that examines the system state to determine whether a deadlock has occurred.
+2. An algorithm to recover from the deadlock.
+
+=== Slide 19: Wait-For Graph Detection for Single Resource Instances ===
+If all resources have only a single instance, we can define a deadlock detection variant called a wait-for graph.
+Constructed by removing resource nodes from the Resource Allocation Graph and collapsing edges:
+- An edge from Pi to Pj in a wait-for graph indicates that process Pi is waiting for process Pj to release a resource.
+- An edge exists from Pi to Pj if and only if the corresponding RAG contains two directed edges Pi -> Rq and Rq -> Pj.
+A deadlock exists in the system if and only if the wait-for graph contains a directed cycle!
+Complexity: O(n^2) cycle detection using Depth-First Search (DFS).
+
+=== Slide 20: Deadlock Detection for Multiple Resource Instances ===
+When multiple instances of resource types exist, wait-for graphs cannot be used.
+We employ an algorithm that utilizes time-varying data structures:
+- Available: Vector of length m indicating available instances of each resource type.
+- Allocation: An n x m matrix defining instances currently allocated to each process.
+- Request: An n x m matrix indicating current request of each process.
+If Request[i][j] = k, process Pi is requesting k more instances of resource type Rj.
+
+=== Slide 21: Multi-Instance Detection Algorithm Steps ===
+1. Let Work and Finish be vectors of length m and n respectively.
+   Initialize Work = Available.
+   For i = 0, 1, ..., n-1:
+     If Allocation[i] != 0, Finish[i] = false; else Finish[i] = true.
+2. Find an index i such that both:
+     a. Finish[i] == false
+     b. Request[i] <= Work
+   If no such i exists, go to step 4.
+3. Work = Work + Allocation[i]
+   Finish[i] = true
+   Go to step 2.
+4. If Finish[i] == false for some 0 <= i < n, then the system is in deadlock!
+   Moreover, if Finish[i] == false, process Pi is deadlocked.
+
+=== Slide 24: Frequency of Detection Algorithm Invocation ===
+When should we invoke the detection algorithm?
+Depends on:
+- How often is a deadlock likely to occur?
+- How many processes will be affected by deadlock when it occurs?
+Invoking detection at every request provides immediate localization, but imposes severe CPU overhead. Periodic invocation (e.g., hourly or CPU utilization threshold drops below 40%) is preferred in practical kernels.
+
+=== Slide 25: Banker's Algorithm for Deadlock Avoidance ===
+Unit 4 · Banker's Algorithm
+When a process enters the system, it must declare the maximum number of instances of each resource type that it may need.
+This number cannot exceed total system resources.
+When a process gets all its resources it must return them in a finite amount of time.
+
+=== Slide 26: Banker's Algorithm Data Structures ===
+Available: Vector of length m.
+Max: n x m matrix defining maximum demand of each process.
+Allocation: n x m matrix defining resources currently allocated.
+Need: n x m matrix defining remaining resource need.
+Formula: Need[i][j] = Max[i][j] - Allocation[i][j].
+
+=== Slide 27: Safety Algorithm in Banker's Algorithm ===
+Algorithm for finding whether a system is in a safe state:
+1. Work = Available, Finish[i] = false for all i.
+2. Find i such that Finish[i] == false and Need[i] <= Work.
+3. Work = Work + Allocation[i], Finish[i] = true, repeat step 2.
+4. If Finish[i] == true for all i, system is in a safe state.
+
+=== Slide 31: Banker's Algorithm Example & Workload Evaluation ===
+Worked numerical example showing 5 processes P0 through P4 and 3 resource types A, B, C.
+Safe sequence: <P1, P3, P4, P0, P2>.
+
+=== Slide 32: Recovery from Deadlock ===
+Methods: Process Termination and Resource Preemption.
+`.trim();
+
+  ingestAcademicDocument(userId, {
+    title: 'Operating Systems Unit 4 - Deadlocks',
+    docType: 'Lecture Slides',
+    content: lectureSlidesContent,
+  });
+
+  // 3. Ingest Past Question Papers (2023, 2024, 2025 Midterm, 2025 Supplementary)
+  const paper2023 = `
+2023 End Semester Examination
+Subject: Operating Systems (CS304)
+Time Allowed: 3 Hours. Max Marks: 100.
+
+QUESTION 1 (10 Marks): Explain multi-level feedback queue scheduling algorithm with a neat diagram.
+QUESTION 4(a) (10 Marks): Explain Banker's algorithm for deadlock avoidance. How is system safety determined?
+QUESTION 4(b) (10 Marks): Explain deadlock detection algorithm in detail using resource allocation graph and wait-for graph.
+QUESTION 5(a) (10 Marks): Describe paging hardware with TLB address translation.
+`.trim();
+
+  ingestAcademicDocument(userId, {
+    title: '2023 End Semester Examination',
+    docType: 'Past Paper',
+    content: paper2023,
+  });
+
+  const paper2024 = `
+2024 End Semester Examination
+Subject: Operating Systems (CS304)
+Time Allowed: 3 Hours. Max Marks: 100.
+
+QUESTION 2 (10 Marks): Compare preemptive vs non-preemptive SJF CPU scheduling with Gantt charts.
+QUESTION 6(a) (10 Marks): Describe the deadlock detection algorithm with multiple instances of each resource type. State the steps.
+QUESTION 6(b) (10 Marks): Illustrate Banker's algorithm with an example allocation and request matrix. Find safe sequence.
+QUESTION 7(a) (8 Marks): Explain page fault handling routine with diagrams.
+`.trim();
+
+  ingestAcademicDocument(userId, {
+    title: '2024 End Semester Examination',
+    docType: 'Past Paper',
+    content: paper2024,
+  });
+
+  const paper2025Midterm = `
+2025 Mid-Term Examination
+Subject: Operating Systems (CS304)
+Time Allowed: 1.5 Hours. Max Marks: 50.
+
+QUESTION 1 (8 Marks): State the four necessary conditions for deadlock occurrence in a system.
+QUESTION 3(b) (10 Marks): How is deadlock detected in a system? State the detection algorithm.
+`.trim();
+
+  ingestAcademicDocument(userId, {
+    title: '2025 Mid-Term Examination',
+    docType: 'Past Paper',
+    content: paper2025Midterm,
+  });
+
+  const paper2025Supp = `
+2025 Supplementary Examination
+Subject: Operating Systems (CS304)
+Time Allowed: 3 Hours. Max Marks: 100.
+
+QUESTION 3 (10 Marks): Explain the producer-consumer problem using semaphores.
+QUESTION 5(a) (12 Marks): Explain deadlock detection with an example workload and wait-for graph cycle detection.
+QUESTION 5(b) (10 Marks): Explain the safety algorithm of Banker's algorithm with an example workload.
+`.trim();
+
+  ingestAcademicDocument(userId, {
+    title: '2025 Supplementary Examination',
+    docType: 'Past Paper',
+    content: paper2025Supp,
+  });
+
+  return getWhatToStudyRanking(userId);
 }

@@ -28,7 +28,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
           key="splash"
           initial={{ opacity: 1 }}
           exit={{ opacity: 0, transition: { duration: 0.5, ease: 'easeInOut' } }}
-          className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#FAF8FC] text-[#1C1B1F] select-none"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#FAF8FC] dark:bg-[#111013] text-[#1C1B1F] dark:text-[#F5F3F7] select-none"
         >
           {/* Subtle Ambient Background Grain/Glow */}
           <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,rgba(206,184,255,0.18)_0%,transparent_70%)]" />
@@ -36,7 +36,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
           {/* Skip button for quick student navigation */}
           <button
             onClick={handleSkip}
-            className="absolute top-6 right-6 text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] hover:text-[#461599] transition-colors px-3 py-1.5 rounded-full border border-[#EDE7F3] bg-white/70 backdrop-blur-xs"
+            className="absolute top-6 right-6 text-[10px] font-semibold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#A9A3AE] hover:text-[#6D28D9] dark:hover:text-[#8B5CF6] transition-colors px-3 py-1.5 rounded-full border border-[#EDE7F3] dark:border-[#302B35] bg-white/70 dark:bg-[#17151A]/80 backdrop-blur-xs"
           >
             Skip
           </button>
@@ -130,8 +130,8 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
               className="mt-4 flex items-baseline gap-1"
             >
               <span className="font-sans text-3xl font-extrabold tracking-tight">
-                <span className="text-[#1C1B1F]">Lazy</span>
-                <span className="text-[#5E35B1]">Lift</span>
+                <span className="text-[#1C1B1F] dark:text-[#F5F3F7]">Lazy</span>
+                <span className="text-[#6D28D9] dark:text-[#8B5CF6]">Lift</span>
               </span>
             </motion.div>
 
@@ -140,7 +140,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 1.7, duration: 0.6, ease: 'easeOut' }}
-              className="mt-1 font-sans text-xs font-medium text-[#7B7484] tracking-wider"
+              className="mt-1 font-sans text-xs font-medium text-[#7B7484] dark:text-[#A9A3AE] tracking-wider"
             >
               Your Academic Buddy
             </motion.p>

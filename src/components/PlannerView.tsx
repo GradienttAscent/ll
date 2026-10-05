@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Calendar, CalendarCheck, CheckCircle2, Circle, Loader2, Play, Send } from 'lucide-react';
+import { CalendarCheck, CheckCircle2, Circle, Loader2, Play, Send } from 'lucide-react';
 import { AdaptiveProposal, PersistedTopic, ScheduleBlock, SchedulingAssistantPreview } from '../types';
 
 interface PlannerViewProps {
@@ -270,28 +270,24 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
   const calendarDates = Array.from(new Set([...Object.keys(blocksByDate), ...Object.keys(ghostBlocksByDate)])).sort();
 
   return (
-    <div className="max-w-7xl mx-auto py-10 px-6 sm:px-8 space-y-10 animate-fade-in pb-16">
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-[#EDE7F3] pb-8">
+    <div className="max-w-6xl mx-auto py-8 sm:py-10 px-6 sm:px-8 space-y-8 animate-fade-in pb-16">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-[#EDE7F3] dark:border-[#302B35] pb-6">
         <div>
-          <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-[#EDE7F6] border border-[#D8CCE8] text-[10px] uppercase tracking-[0.2em] font-bold text-[#461599] mb-3">
-            <Calendar className="w-3.5 h-3.5 text-[#5E35B1]" />
-            <span>Persistent Study Calendar</span>
-          </div>
-          <h1 className="font-serif text-4xl sm:text-5xl italic font-normal text-[#1C1B1F]">
-            Day-Wise Personal Study Planner
+          <h1 className="font-serif text-3xl sm:text-4xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">
+            Study Planner
           </h1>
-          <p className="text-xs text-[#55524E] mt-2 max-w-xl">
-            Schedules are dynamically calculated from your stored extracted topics, their priority, and declared weightage.
+          <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-1.5 max-w-xl font-sans">
+            Schedules are dynamically calculated from your stored topics, priority scores, and declared weightage.
           </p>
         </div>
         <button
           onClick={handleGenerateSchedule}
           disabled={isGenerating}
-          className="rounded-xl bg-[#5E35B1] hover:bg-[#461599] text-white px-5 py-3 text-[10px] font-bold uppercase tracking-[0.16em] transition-all shadow-xs hover:shadow disabled:opacity-50 active:scale-98 flex items-center gap-2 self-start md:self-auto"
+          className="rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white px-4 py-2.5 text-xs font-medium tracking-wider transition-colors shadow-xs disabled:opacity-50 flex items-center gap-2 self-start md:self-auto"
         >
           {isGenerating ? (
             <>
-              <Loader2 className="w-4 h-4 animate-spin text-[#CEB8FF]" />
+              <Loader2 className="w-4 h-4 animate-spin text-white/80" />
               <span>Saving Schedule...</span>
             </>
           ) : (
@@ -304,17 +300,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
       </div>
 
       {statusMessage && (
-        <div className="rounded-xl border border-[#D8CCE8] bg-[#EDE7F6]/60 px-5 py-4 text-xs font-bold text-[#461599]">
+        <div className="rounded-xl border border-[#D8CCE8] dark:border-[#3E344A] bg-[#EDE7F6] dark:bg-[#251E30] px-5 py-4 text-xs font-medium text-[#6D28D9] dark:text-[#A78BFA]">
           {statusMessage}
         </div>
       )}
       {adaptiveMessage && !adaptiveProposal && (
-        <div className="rounded-xl border border-[#EDE7F3] bg-[#FAF8FC] px-5 py-4 text-xs font-bold text-[#55524E] flex flex-wrap items-center gap-3">
+        <div className="rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] px-5 py-4 text-xs font-medium text-[#55524E] dark:text-[#A9A3AE] flex flex-wrap items-center gap-3">
           <span>{adaptiveMessage}</span>
           {dismissedAdaptiveSessionId && (
             <button
               onClick={() => void onReconsiderAdaptiveProposal(dismissedAdaptiveSessionId)}
-              className="rounded-lg border border-[#D8CCE8] bg-white px-3 py-1.5 text-[9px] uppercase tracking-wider text-[#461599] hover:bg-[#EDE7F6]"
+              className="rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] px-3 py-1.5 text-xs text-[#6D28D9] dark:text-[#A78BFA] hover:bg-[#FAF8FC] dark:hover:bg-[#251E30]"
             >
               Generate another suggestion
             </button>
@@ -322,27 +318,27 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
         </div>
       )}
       {adaptiveProposal && (
-        <div className="rounded-2xl border-2 border-[#5E35B1] bg-[#FDF8FE] px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4 shadow-sm">
+        <div className="rounded-2xl border border-[#6D28D9] dark:border-[#8B5CF6] bg-white dark:bg-[#17151A] px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4 shadow-xs">
           <div className="flex-1">
-            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5E35B1]">Revision suggested</div>
-            <div className="font-serif text-2xl italic mt-1 text-[#1C1B1F]">{adaptiveProposal.topicName}</div>
-            <div className="text-xs text-[#7B7484] mt-1 font-mono">
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#6D28D9] dark:text-[#A78BFA]">Revision suggested</div>
+            <div className="font-serif text-2xl italic mt-1 text-[#17151A] dark:text-[#F5F3F7]">{adaptiveProposal.topicName}</div>
+            <div className="text-xs text-[#7B7484] dark:text-[#7A7480] mt-1 font-mono">
               {formatDate(adaptiveProposal.proposedDate)} · {adaptiveProposal.proposedStartTime}-{adaptiveProposal.proposedEndTime} · {adaptiveProposal.proposedDurationMinutes} minutes
             </div>
-            <p className="text-xs text-[#55524E] mt-2">{adaptiveProposal.reason}</p>
+            <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-2 font-sans">{adaptiveProposal.reason}</p>
           </div>
           <div className="flex gap-2">
             <button
               onClick={() => void applyAdaptiveProposal(true)}
               disabled={isApplyingProposal}
-              className="rounded-xl bg-[#5E35B1] text-white px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider hover:bg-[#461599] transition-all disabled:opacity-50"
+              className="rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white px-4 py-2 text-xs font-medium tracking-wider transition-colors disabled:opacity-50"
             >
               Accept
             </button>
             <button
               onClick={() => void applyAdaptiveProposal(false)}
               disabled={isApplyingProposal}
-              className="rounded-xl bg-white text-[#55524E] border border-[#EDE7F3] px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider hover:border-[#D8CCE8] transition-all disabled:opacity-50"
+              className="rounded-lg bg-white dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border border-[#EDE7F3] dark:border-[#302B35] px-4 py-2 text-xs font-medium hover:bg-[#FAF8FC] dark:hover:bg-[#251E30] transition-colors disabled:opacity-50"
             >
               Reject
             </button>
@@ -353,27 +349,27 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Column: Target Exam Parameters */}
         <div className="lg:col-span-3 space-y-6">
-          <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 space-y-5 shadow-2xs">
-            <h3 className="font-serif text-2xl italic text-[#1C1B1F]">Target Exam Parameters</h3>
-            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">
+          <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-5 shadow-2xs">
+            <h3 className="font-sans text-sm font-semibold text-[#17151A] dark:text-[#F5F3F7]">Target Exam Parameters</h3>
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#7A7480]">
               Course / Examination
               <input
                 value={examName}
                 onChange={(e) => setExamName(e.target.value)}
-                className="mt-1.5 w-full rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] px-3.5 py-2.5 text-xs text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]"
+                className="mt-1.5 w-full rounded-lg bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] px-3.5 py-2 text-xs text-[#17151A] dark:text-[#F5F3F7] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] transition-colors"
               />
             </label>
-            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#7A7480]">
               Final Exam Date
               <input
                 type="date"
                 min={dateKey(new Date())}
                 value={examDate}
                 onChange={(e) => setExamDate(e.target.value)}
-                className="mt-1.5 w-full rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] px-3.5 py-2.5 text-xs text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]"
+                className="mt-1.5 w-full rounded-lg bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] px-3.5 py-2 text-xs text-[#17151A] dark:text-[#F5F3F7] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] transition-colors"
               />
             </label>
-            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">
+            <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#7A7480]">
               Daily Available Hours: {dailyHours}
               <input
                 type="range"
@@ -382,20 +378,20 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
                 step={0.5}
                 value={dailyHours}
                 onChange={(e) => setDailyHours(Number(e.target.value))}
-                className="mt-2 w-full accent-[#5E35B1]"
+                className="mt-2 w-full accent-[#6D28D9] dark:accent-[#8B5CF6]"
               />
             </label>
           </div>
 
-          <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 space-y-3 shadow-2xs">
-            <h3 className="font-serif text-2xl italic text-[#1C1B1F]">Stored Topics ({topics.length})</h3>
+          <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-3 shadow-2xs">
+            <h3 className="font-sans text-sm font-semibold text-[#17151A] dark:text-[#F5F3F7]">Stored Topics ({topics.length})</h3>
             {topics.length === 0 ? (
-              <p className="text-xs text-[#7B7484]">Analyze text on the Past Papers page to populate planning topics.</p>
+              <p className="text-xs text-[#7B7484] dark:text-[#7A7480] font-sans">Analyze text on the Past Papers page to populate planning topics.</p>
             ) : (
               topics.map((topic) => (
-                <div key={topic.id} className="bg-[#FAF8FC] rounded-xl border border-[#EDE7F3] p-3 text-xs">
-                  <strong className="text-[#1C1B1F]">{topic.name}</strong>
-                  <div className="mt-1 text-[#7B7484]">
+                <div key={topic.id} className="bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-xl border border-[#EDE7F3] dark:border-[#302B35] p-3 text-xs">
+                  <strong className="text-[#17151A] dark:text-[#F5F3F7]">{topic.name}</strong>
+                  <div className="mt-1 text-[#7B7484] dark:text-[#7A7480]">
                     Priority {topic.priority}/10{topic.hasWeightage ? ` · Declared weightage ${topic.weightage}%` : ''}
                   </div>
                 </div>
@@ -406,52 +402,52 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
 
         {/* Center Column: Saved Calendar Blocks */}
         <div className="lg:col-span-6 space-y-6">
-          <div className="bg-white rounded-2xl border border-[#EDE7F3] p-6 sm:p-7 space-y-5 shadow-2xs">
-            <div className="flex items-center justify-between border-b border-[#EDE7F3] pb-4">
-              <h3 className="font-serif text-3xl italic text-[#1C1B1F]">Saved Calendar Blocks</h3>
-              <span className="text-[10px] font-mono font-bold text-[#461599] rounded-md bg-[#EDE7F6] px-2.5 py-1">
+          <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 sm:p-7 space-y-5 shadow-2xs">
+            <div className="flex items-center justify-between border-b border-[#EDE7F3] dark:border-[#302B35] pb-4">
+              <h3 className="font-serif text-2xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">Saved Calendar Blocks</h3>
+              <span className="text-[10px] font-mono font-medium text-[#6D28D9] dark:text-[#A78BFA] rounded-md bg-[#EDE7F6] dark:bg-[#251E30] px-2.5 py-1">
                 {scheduleBlocks.filter((block) => block.completed).length}/{scheduleBlocks.length} completed
               </span>
             </div>
 
             {calendarDates.length === 0 ? (
-              <p className="text-xs text-[#7B7484] py-4">No saved study blocks yet. Generate a schedule after storing topics.</p>
+              <p className="text-xs text-[#7B7484] dark:text-[#7A7480] py-4 font-sans">No saved study blocks yet. Generate a schedule after storing topics.</p>
             ) : (
               calendarDates.map((date) => (
                 <section key={date} className="space-y-3">
-                  <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] border-b border-[#EDE7F3] pb-2 text-[#7B7484]">
+                  <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] border-b border-[#EDE7F3] dark:border-[#302B35] pb-2 text-[#7B7484] dark:text-[#7A7480]">
                     {formatDate(date)}
                   </h4>
                   {(blocksByDate[date] || []).map((block) => (
                     <div
                       key={block.id}
-                      className={`bg-[#FAF8FC] rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center gap-4 transition-all ${
+                      className={`bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center gap-4 transition-all ${
                         block.completed
-                          ? 'border-[#EDE7F3] opacity-60'
+                          ? 'border-[#EDE7F3] dark:border-[#302B35] opacity-60'
                           : pendingBlockIds.has(block.id)
-                          ? 'border-2 border-dashed border-[#5E35B1] bg-[#EDE7F6]/30'
-                          : 'border-[#EDE7F3] hover:border-[#D8CCE8]'
+                          ? 'border-2 border-dashed border-[#6D28D9] dark:border-[#8B5CF6] bg-[#EDE7F6]/30 dark:bg-[#251E30]/30'
+                          : 'border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8] dark:hover:border-[#3E344A]'
                       }`}
                     >
                       <span title="Completion is recorded by the study session lifecycle">
                         {block.completed ? (
-                          <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                          <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
                         ) : (
-                          <Circle className="w-5 h-5 text-[#5E35B1]/50" />
+                          <Circle className="w-5 h-5 text-[#6D28D9]/40 dark:text-[#8B5CF6]/40" />
                         )}
                       </span>
                       <div className="flex-1">
-                        <div className="font-serif text-xl italic text-[#1C1B1F]">{block.title}</div>
-                        <div className="text-xs text-[#7B7484] mt-1 font-mono">
+                        <div className="font-serif text-xl italic text-[#17151A] dark:text-[#F5F3F7]">{block.title}</div>
+                        <div className="text-xs text-[#7B7484] dark:text-[#7A7480] mt-1 font-mono">
                           {block.startTime} · {block.durationMinutes} minutes · {block.completed ? 'Completed' : pendingBlockIds.has(block.id) ? 'Pending reassignment' : 'Planned'}
                         </div>
                       </div>
                       <button
                         onClick={() => void onStartStudy(block).catch((error) => setStatusMessage(error.message))}
                         disabled={block.completed}
-                        className="rounded-xl bg-[#5E35B1] text-white px-4 py-2 text-[10px] font-bold uppercase tracking-wider hover:bg-[#461599] transition-all disabled:opacity-40 flex items-center gap-1 shadow-2xs self-start sm:self-auto active:scale-98"
+                        className="rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white px-3.5 py-1.5 text-xs font-medium tracking-wider transition-colors disabled:opacity-40 flex items-center gap-1.5 shadow-2xs self-start sm:self-auto"
                       >
-                        <Play className="w-3.5 h-3.5 text-[#CEB8FF]" />
+                        <Play className="w-3.5 h-3.5 text-white/80" />
                         <span>Start Study</span>
                       </button>
                     </div>
@@ -459,16 +455,16 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
                   {(ghostBlocksByDate[date] || []).map((block) => (
                     <div
                       key={block.id}
-                      className="rounded-xl border-2 border-dashed border-[#5E35B1] bg-[#EDE7F6]/30 p-4 flex items-center gap-4"
+                      className="rounded-xl border-2 border-dashed border-[#6D28D9] dark:border-[#8B5CF6] bg-[#EDE7F6]/30 dark:bg-[#251E30]/30 p-4 flex items-center gap-4"
                     >
-                      <div className="w-5 h-5 rounded-full border border-dashed border-[#5E35B1]" />
+                      <div className="w-5 h-5 rounded-full border border-dashed border-[#6D28D9] dark:border-[#8B5CF6]" />
                       <div className="flex-1">
-                        <div className="font-serif text-xl italic text-[#1C1B1F]">{block.title}</div>
-                        <div className="text-xs text-[#7B7484] mt-1 font-mono">
+                        <div className="font-serif text-xl italic text-[#17151A] dark:text-[#F5F3F7]">{block.title}</div>
+                        <div className="text-xs text-[#7B7484] dark:text-[#7A7480] mt-1 font-mono">
                           {block.startTime} · {block.durationMinutes} minutes · Proposed {block.topicName} session
                         </div>
                       </div>
-                      <span className="rounded-md border border-[#D8CCE8] bg-white px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-[#461599]">
+                      <span className="rounded-md border border-[#D8CCE8] dark:border-[#3E344A] bg-white dark:bg-[#1D1A21] px-2 py-1 text-[9px] font-medium uppercase tracking-wider text-[#6D28D9] dark:text-[#A78BFA]">
                         Preview
                       </span>
                     </div>
@@ -480,11 +476,10 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
         </div>
 
         {/* Right Column: Conversational Scheduling Assistant */}
-        <aside className="lg:col-span-3 bg-white rounded-2xl border border-[#EDE7F3] p-5 flex flex-col min-h-[34rem] shadow-2xs">
-          <div className="border-b border-[#EDE7F3] pb-4">
-            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484]">Conversational Planning</div>
-            <h3 className="font-serif text-2xl italic mt-1 text-[#1C1B1F]">Scheduling Assistant</h3>
-            <p className="text-[10px] text-[#7B7484] mt-1">I can help rearrange your study plan using natural language.</p>
+        <aside className="lg:col-span-3 bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-5 flex flex-col min-h-[34rem] shadow-2xs">
+          <div className="border-b border-[#EDE7F3] dark:border-[#302B35] pb-4">
+            <h3 className="font-sans text-sm font-semibold text-[#17151A] dark:text-[#F5F3F7]">Scheduling Assistant</h3>
+            <p className="text-[10px] text-[#7B7484] dark:text-[#7A7480] mt-1 font-sans">Rearrange your study plan using natural language instructions.</p>
           </div>
 
           <div className="flex-1 space-y-3 py-4 overflow-y-auto max-h-[32rem]" aria-live="polite">
@@ -493,14 +488,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
                 key={chat.id}
                 className={
                   chat.role === 'user'
-                    ? 'ml-4 rounded-2xl rounded-br-xs bg-[#5E35B1] text-white p-3.5 text-xs shadow-2xs'
-                    : 'mr-2 rounded-2xl rounded-bl-xs bg-[#FAF8FC] border border-[#EDE7F3] text-[#1C1B1F] p-3.5 text-xs'
+                    ? 'ml-4 rounded-xl rounded-br-xs bg-[#6D28D9] dark:bg-[#8B5CF6] text-white p-3.5 text-xs shadow-2xs'
+                    : 'mr-2 rounded-xl rounded-bl-xs bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] text-[#17151A] dark:text-[#F5F3F7] p-3.5 text-xs'
                 }
               >
                 <div className="text-[9px] font-bold uppercase tracking-[0.16em] mb-1 opacity-70">
                   {chat.role === 'user' ? 'You' : 'Assistant'}
                 </div>
-                <p>{chat.text}</p>
+                <p className="font-sans leading-relaxed">{chat.text}</p>
                 {chat.preview?.matches && (
                   <div className="mt-3 space-y-2">
                     {chat.preview.matches.map((match) => (
@@ -508,20 +503,20 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
                         key={match.blockId}
                         onClick={() => void requestChatPreview(chat.sourceMessage!, match.blockId, `Use ${match.topicName}: ${match.date} at ${match.startTime}`)}
                         disabled={isChatLoading}
-                        className="w-full text-left rounded-xl border border-[#EDE7F3] bg-white hover:bg-[#EDE7F6] hover:border-[#D8CCE8] px-3 py-2 text-[10px] transition-colors disabled:opacity-50 text-[#1C1B1F]"
+                        className="w-full text-left rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] hover:bg-[#EDE7F6] dark:hover:bg-[#251E30] hover:border-[#D8CCE8] dark:hover:border-[#3E344A] px-3 py-2 text-[10px] transition-colors disabled:opacity-50 text-[#17151A] dark:text-[#F5F3F7]"
                       >
                         <strong>{match.topicName}</strong>
                         <br />
-                        <span className="text-[#7B7484]">{formatDate(match.date)} · {match.startTime} · {match.durationMinutes} min</span>
+                        <span className="text-[#7B7484] dark:text-[#7A7480]">{formatDate(match.date)} · {match.startTime} · {match.durationMinutes} min</span>
                       </button>
                     ))}
                   </div>
                 )}
                 {chat.preview && chat.preview.changes.length > 0 && activeChatPreview?.message === chat.sourceMessage && activeChatPreview.selectedBlockId === chat.selectedBlockId && (
-                  <div className="mt-3 border-t border-[#EDE7F3] pt-3 space-y-2">
+                  <div className="mt-3 border-t border-[#EDE7F3] dark:border-[#302B35] pt-3 space-y-2">
                     {chat.preview.changes.map((change) => (
-                      <div key={change.blockId} className="text-[10px] text-[#55524E]">
-                        <strong className="text-[#1C1B1F]">{change.topicName}</strong>
+                      <div key={change.blockId} className="text-[10px] text-[#55524E] dark:text-[#A9A3AE]">
+                        <strong className="text-[#17151A] dark:text-[#F5F3F7]">{change.topicName}</strong>
                         <br />
                         {change.original.date} {change.original.startTime} &rarr; {change.proposed.date} {change.proposed.startTime} ({change.proposed.durationMinutes} min)
                       </div>
@@ -530,14 +525,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
                       <button
                         onClick={() => void confirmChatPreview(chat.sourceMessage!, chat.preview!, chat.selectedBlockId)}
                         disabled={isChatLoading}
-                        className="rounded-lg bg-[#5E35B1] text-white px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider hover:bg-[#461599] disabled:opacity-50"
+                        className="rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white px-3 py-1.5 text-xs font-medium tracking-wider disabled:opacity-50 transition-colors"
                       >
                         Confirm
                       </button>
                       <button
                         onClick={() => void cancelChatPreview()}
                         disabled={isChatLoading}
-                        className="rounded-lg bg-white text-[#55524E] border border-[#EDE7F3] px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider hover:border-[#D8CCE8] disabled:opacity-50"
+                        className="rounded-lg bg-white dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border border-[#EDE7F3] dark:border-[#302B35] px-3 py-1.5 text-xs font-medium hover:bg-[#FAF8FC] dark:hover:bg-[#251E30] disabled:opacity-50 transition-colors"
                       >
                         Cancel
                       </button>
@@ -547,8 +542,8 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
               </div>
             ))}
             {isChatLoading && (
-              <div className="mr-2 rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] p-3 text-xs text-[#7B7484]">
-                <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-2 text-[#5E35B1]" />
+              <div className="mr-2 rounded-xl bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] p-3 text-xs text-[#7B7484] dark:text-[#7A7480]">
+                <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-2 text-[#6D28D9] dark:text-[#8B5CF6]" />
                 Checking your calendar...
               </div>
             )}
@@ -559,18 +554,18 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
               event.preventDefault();
               void sendChatMessage();
             }}
-            className="border-t border-[#EDE7F3] pt-4 flex gap-2"
+            className="border-t border-[#EDE7F3] dark:border-[#302B35] pt-4 flex gap-2"
           >
             <input
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
               placeholder="e.g. Move DBMS to tomorrow"
-              className="min-w-0 flex-1 rounded-xl bg-[#FAF8FC] border border-[#EDE7F3] px-3.5 py-2.5 text-xs text-[#1C1B1F] focus:outline-none focus:border-[#5E35B1]"
+              className="min-w-0 flex-1 rounded-lg bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] px-3.5 py-2 text-xs text-[#17151A] dark:text-[#F5F3F7] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] transition-colors"
             />
             <button
               type="submit"
               disabled={!chatInput.trim() || isChatLoading}
-              className="rounded-xl bg-[#5E35B1] text-white px-3.5 hover:bg-[#461599] disabled:opacity-50 flex items-center justify-center transition-all"
+              className="rounded-lg bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white px-3.5 disabled:opacity-50 flex items-center justify-center transition-colors"
               aria-label="Send message"
             >
               <Send className="w-4 h-4" />
