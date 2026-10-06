@@ -516,7 +516,7 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'room' && <StudyRoomView />}
+          {activeTab === 'room' && <StudyRoomView currentUserId={user?.id ?? ''} />}
 
         </main>
       </div>

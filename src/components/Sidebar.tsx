@@ -8,7 +8,8 @@ import {
   BookOpen, 
   Plus,
   Brain,
-  Shield
+  Shield,
+  Users
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -53,6 +54,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { tab: 'mock', label: 'Timed Mock Exam', icon: Layers },
     { tab: 'planner', label: 'Planner & Calendar', icon: Calendar },
     { tab: 'calendar', label: 'Full Calendar', icon: Calendar },
+    { tab: 'room', label: 'Study Room', icon: Users },
     { tab: 'memory', label: 'Memory Atlas', icon: Brain },
   ];
 

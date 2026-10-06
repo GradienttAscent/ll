@@ -157,6 +157,12 @@ export interface StudyRoom {
   id: string;
   name: string;
   topic: string;
+  description: string;
+  subject: string;
+  visibility: 'PUBLIC' | 'PRIVATE';
+  maxParticipants: number;
+  status: 'ACTIVE' | 'CLOSED';
+  expiresAt: string | null;
   ownerId: string;
   ownerName: string;
   memberCount: number;
@@ -164,11 +170,72 @@ export interface StudyRoom {
   createdAt: string;
 }
 
+export type FocusPhase = 'FOCUS' | 'SHORT_BREAK' | 'LONG_BREAK';
+
+/** `FOCUSING`/`ON_BREAK` follow the active session phase; `IN_ROOM` means not in the session. */
+export type FocusPresence = 'FOCUSING' | 'ON_BREAK' | 'IN_ROOM';
+
 export interface StudyRoomMember {
   id: string;
   displayName: string;
-  email: string;
   joinedAt: string;
+  isHost: boolean;
+  isSessionParticipant: boolean;
+  state: FocusPresence;
+}
+
+/**
+ * The countdown is derived, never stored: `remaining = endsAt - (serverNow + elapsedSinceFetch)`.
+ * `serverNow` lets the client correct for clock skew between browser and server.
+ */
+export interface FocusSession {
+  id: string;
+  roomId: string;
+  startedByUserId: string;
+  startedByName: string;
+  phase: FocusPhase;
+  durationSeconds: number;
+  startedAt: string;
+  endsAt: string;
+  status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+  serverNow: string;
+  participantCount: number;
+  currentParticipantCount: number;
+  focusingCount: number;
+  onBreakCount: number;
+  isParticipant: boolean;
+  participants: Array<{ userId: string; displayName: string; joinedAt: string; state: FocusPresence }>;
+}
+
+export interface StudyDoubtAnswer {
+  id: string;
+  userId: string;
+  authorName: string;
+  content: string;
+  isAccepted: boolean;
+  createdAt: string;
+}
+
+export interface StudyDoubt {
+  id: string;
+  roomId: string;
+  userId: string;
+  authorName: string;
+  title: string;
+  content: string;
+  status: 'OPEN' | 'RESOLVED';
+  acceptedAnswerId: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  answerCount: number;
+  answers: StudyDoubtAnswer[];
+}
+
+export interface StudyRoomDetail {
+  room: StudyRoom;
+  members: StudyRoomMember[];
+  focusSession: FocusSession | null;
+  doubts: StudyDoubt[];
 }
 
 export interface StudyRoomSession {
