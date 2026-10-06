@@ -165,6 +165,67 @@ Requires auth. `question` and a non-empty `studentAnswer` are mandatory (answers
 
 All require auth. At least one question is mandatory (max 25); each question needs `questionText`, and `marks` is clamped to [1, 100]. On submission, Gemini grades every question (1-based index) against its individual mark budget; blank answers always score 0. The report is recomputed server-side: per-question totals, overall percentage, grade (`A` ≥ 85, `B` ≥ 70, `C` ≥ 50, else `D`), per-topic breakdown, and overall advice. The attempt is persisted (`mock_exams` + `mock_exam_questions`) so results survive in History. Without `GEMINI_API_KEY` the route returns `503`.
 
+### Study Room
+Find or host a room, focus in it together, and ask the questions that come up. There is no
+`/api/study-tasks` surface and no socket: the shared state is polled, so every route below is a plain
+request/response call.
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| GET | `/api/study-rooms` | — | `{ "rooms" }` (newest first) |
+| POST | `/api/study-rooms` | `{ "name", "subject"?, "topic"?, "description"?, "visibility"?, "maxParticipants"?, "expiresAt"? }` | `201 { "room" }` |
+| GET | `/api/study-rooms/:id` | — | `{ "room", "members", "focusSession", "doubts", "messages", "session" }` |
+| POST | `/api/study-rooms/:id/join` | — | `{ "room" }` |
+| POST | `/api/study-rooms/:id/leave` | — | `{ "ok": true }` |
+| POST | `/api/study-rooms/:id/close` | — | `{ "ok": true }` |
+| POST | `/api/study-rooms/:id/sessions` | `{ "durationMinutes"? \| "durationSeconds"?, "phase"? }` | `201 { "session" }` |
+| GET | `/api/study-rooms/:id/sessions/current` | — | `{ "session": FocusSession \| null }` |
+| POST | `/api/study-rooms/:id/sessions/:sessionId/join` | — | `{ "session" }` |
+| POST | `/api/study-rooms/:id/sessions/:sessionId/leave` | — | `{ "session" }` |
+| GET | `/api/study-rooms/:id/doubts` | — | `{ "doubts" }` (open first) |
+| POST | `/api/study-rooms/:id/doubts` | `{ "title", "content" }` | `201 { "doubt" }` |
+| GET | `/api/study-doubts/:id` | — | `{ "doubt" }` |
+| POST | `/api/study-doubts/:id/answers` | `{ "content" }` | `201 { "doubt" }` |
+| POST | `/api/study-doubts/:id/accept-answer` | `{ "answerId" }` | `{ "doubt" }` |
+| POST | `/api/study-doubts/:id/resolve` | — | `{ "doubt" }` |
+
+All require auth.
+
+`GET /api/study-rooms` accepts `subject` and `topic` (case-insensitive substring) and `status`
+(default `ACTIVE`, so closed rooms stay out of discovery). `PUBLIC` rooms are listed for everyone;
+`PRIVATE` rooms only for their members. Each entry carries `memberCount`, `maxParticipants`,
+`ownerName`, and `joined`.
+
+Visibility follows the project-wide convention: a missing room or doubt is `404`, and a room the
+caller may not see is `403`. Creating a room also inserts the host as its first member. `409` means the
+room is closed, the caller has already joined, the room is full, or a focus session is already running.
+
+`GET /api/study-rooms/:id` is the whole room screen in one round trip: the room, the roster with
+derived `state` (`FOCUSING` / `ON_BREAK` / `IN_ROOM`), the active focus session, and the doubts.
+`messages` and `session` are the original chat feed and per-user timer; they stay on the payload for
+backward compatibility and the Study Room UI ignores them.
+
+A focus session is room-wide and shared: any member can start one, and `serverNow` is returned next to
+`endsAt` so clients compute `remaining = endsAt - (serverNow + timeSinceFetch)` instead of trusting a
+local clock. `phase` is `FOCUS`, `SHORT_BREAK`, or `LONG_BREAK` and applies to the whole room; duration
+must be 300–7200 seconds (5–120 minutes). The database enforces at most one `ACTIVE` session per room
+via a partial unique index, so a concurrent start returns `409`. Reading a room lazily marks an
+expired session `COMPLETED`, and closing a room cancels its session.
+
+Doubts are asked and answered by any member of an active room; only the asker may accept an answer or
+resolve the doubt (`403` otherwise), a doubt carries at most one accepted answer, and re-resolving a
+resolved doubt returns `409`. Acceptance and resolution are separate on purpose — accepting says which
+answer was right, resolving closes the question.
+
+### Study Room (legacy chat and timer)
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| POST | `/api/study-rooms/:id/messages` | `{ "text", "isQuestion"?, "topicTag"? }` | `201 { "message" }` |
+| PATCH | `/api/study-rooms/:id/session` | `{ "status" }` | `{ "session" }` |
+
+Superseded by the focus-session and doubt routes above, but still supported so existing clients keep
+working.
+
 ## Frontend fetch wrapper
 
 `src/api.ts` installs a global `fetch` wrapper (imported once from `src/main.tsx`, zero component edits):

@@ -12,7 +12,7 @@ Storage uses [sql.js](https://sql.js.org/) (SQLite compiled to WebAssembly) pers
 - A `meta` table stores `schema_version`.
 - `db.ts` runs an ordered list of `MIGRATIONS` (`{ version, name, up }`) once each in a transaction.
 - `PRAGMA foreign_keys = ON` is set **after** migrations run (it stays off during migration so legacy-schema rebuilds and `ADD COLUMN` fixes are permitted).
-- Current schema version: `6`
+- Current schema version: `16`
 
 ## Tables
 
@@ -207,7 +207,111 @@ History of every create / reschedule / complete event on a block.
 
 Enough to reconstruct: affected block (`block_id`), prior scheduling info (`old_value`), new scheduling info (`new_value`), owning user (`user_id`), timestamp (`created_at`), and trigger (`reason`).
 
-## Legacy data handling (migrations v1-v6)
+## Study Room
+
+A Study Room is a room you can find or host, focus in with other people, and ask questions in. It is
+not a chat log and it has no separate task concept: the room itself, its shared focus session, and its
+doubt board are the whole feature. There is deliberately **no `study_tasks` table** — a task board
+would be a second source of truth for what the shared timer is already doing.
+
+### `study_rooms`
+Created in v7, extended in v16 with discovery and lifecycle columns.
+| column | type | notes |
+| --- | --- | --- |
+| `id` | TEXT | PK |
+| `name` | TEXT | NOT NULL |
+| `topic` | TEXT | legacy free-text topic |
+| `subject` | TEXT | searchable subject, default `''` (v16) |
+| `description` | TEXT | default `''` (v16) |
+| `visibility` | TEXT | `PUBLIC` / `PRIVATE`, default `PUBLIC` (v16) |
+| `max_participants` | INTEGER | default `15`, 2–100 (v16) |
+| `status` | TEXT | `ACTIVE` / `CLOSED`, default `ACTIVE` (v16) |
+| `expires_at` | TEXT | nullable (v16); treated as `CLOSED` once passed |
+| `owner_id` | TEXT | FK → `users.id`; the host, who alone may close the room |
+| `created_at` | TEXT | |
+
+`PUBLIC` rooms are discoverable by anyone; `PRIVATE` rooms are visible only to their members. A room
+is "closed" when `status = 'CLOSED'` **or** `expires_at` has passed, so an abandoned timer can never
+advertise itself as active. Closed rooms stay readable as history for their members.
+
+### `study_room_memberships`
+| column | type | notes |
+| --- | --- | --- |
+| `room_id` | TEXT | FK → `study_rooms.id` (CASCADE) |
+| `user_id` | TEXT | FK → `users.id` (CASCADE) |
+| `joined_at` | TEXT | |
+| | | PK (`room_id`, `user_id`) |
+
+The host is inserted as a member when the room is created, so "is in the room" is a single question.
+`memberCount` is a `COUNT(*)` over this table, which is why `max_participants` is checked against it
+before a join rather than against a stored counter.
+
+### `study_room_messages`
+The original room chat, kept for API backward compatibility. The Study Room UI does not read it.
+
+### `study_room_sessions`
+The original per-user room timer, kept for API backward compatibility. Superseded by `focus_sessions`
+for anything room-wide; the UI does not read it.
+
+### `focus_sessions` (v16)
+One shared timer per room. Any member may start it; the phase is room-wide because the room is
+studying together, not independently.
+| column | type | notes |
+| --- | --- | --- |
+| `id` | TEXT | PK |
+| `room_id` | TEXT | FK → `study_rooms.id` (CASCADE) |
+| `started_by_user_id` | TEXT | FK → `users.id` (CASCADE) |
+| `phase` | TEXT | `FOCUS` / `SHORT_BREAK` / `LONG_BREAK` |
+| `duration_seconds` | INTEGER | 300–7200 |
+| `started_at` | TEXT | |
+| `ends_at` | TEXT | authoritative deadline; clients derive the countdown from it |
+| `status` | TEXT | `ACTIVE` / `COMPLETED` / `CANCELLED` |
+| `created_at` | TEXT | |
+
+`idx_focus_sessions_single_active` is a **partial unique index** on `room_id WHERE status = 'ACTIVE'`,
+so two concurrent starts cannot leave two timers running. Expiry is settled lazily: reading a room
+marks any session whose `ends_at` has passed as `COMPLETED`, which keeps it correct even if nobody
+polled while it was running. Closing a room cancels its active session.
+
+### `focus_session_participants` (v16)
+| column | type | notes |
+| --- | --- | --- |
+| `session_id` | TEXT | FK → `focus_sessions.id` (CASCADE) |
+| `user_id` | TEXT | FK → `users.id` (CASCADE) |
+| `joined_at` | TEXT | |
+| `left_at` | TEXT | nullable; set when someone steps away mid-session |
+| | | PK (`session_id`, `user_id`) |
+
+Presence is derived, never stored: a participant in a `FOCUS` phase is `FOCUSING`, in a break phase
+`ON_BREAK`, and any other member of the room is `IN_ROOM`. Leaving the room stamps `left_at` too, so
+a member who walks away stops counting as focusing immediately.
+
+### `study_doubts` (v16)
+| column | type | notes |
+| --- | --- | --- |
+| `id` | TEXT | PK |
+| `room_id` | TEXT | FK → `study_rooms.id` (CASCADE) |
+| `user_id` | TEXT | FK → `users.id` (CASCADE); the asker, who alone may accept or resolve |
+| `title` | TEXT | ≤ 200 chars |
+| `content` | TEXT | ≤ 5000 chars |
+| `status` | TEXT | `OPEN` / `RESOLVED` |
+| `created_at` | TEXT | |
+| `resolved_at` | TEXT | nullable |
+
+### `study_doubt_answers` (v16)
+| column | type | notes |
+| --- | --- | --- |
+| `id` | TEXT | PK |
+| `doubt_id` | TEXT | FK → `study_doubts.id` (CASCADE) |
+| `user_id` | TEXT | FK → `users.id` (CASCADE) |
+| `content` | TEXT | ≤ 5000 chars |
+| `is_accepted` | INTEGER | at most one accepted answer per doubt; the service clears the others in one transaction |
+| `created_at` | TEXT | |
+
+Accepting an answer and resolving the doubt are deliberately separate: accepting pins *which* answer
+was right, resolving says the question is done and drops it off the open list.
+
+## Legacy data handling (migrations v1-v16)
 
 If a pre-auth database exists:
 - `topics` is rebuilt to add `user_id` (legacy rows get an empty owner and are invisible until owned by a user).
@@ -219,3 +323,8 @@ If a pre-auth database exists:
 - v6 adds `study_sessions.active_since` and the dedicated `session_feedback` table.
 - v7-v11 add persistent study rooms, uploaded-document payload/extraction metadata, and schedule-block types.
 - v12 adds Gemini-graded mock exam persistence (`mock_exams`, `mock_exam_questions`). Practice evaluations persist into the existing `feedback` table with `source = 'gemini'`.
+- v13-v15 add document payload/extraction metadata, schedule-block types, and study-topic bookkeeping.
+- v16 turns `study_rooms` into a discoverable, closable room and adds `focus_sessions`,
+  `focus_session_participants`, `study_doubts`, and `study_doubt_answers`. The added columns are
+  `ALTER TABLE ... ADD COLUMN` with defaults, so existing rooms keep working and appear as active
+  public rooms.
