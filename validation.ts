@@ -126,3 +126,85 @@ export function validateQuestionText(questionText: unknown): string | null {
 }
 
 export const VALID_SESSION_STATUSES = ['active', 'paused', 'completed', 'stopped'];
+
+export const STUDY_ROOM_VISIBILITIES = ['PUBLIC', 'PRIVATE'];
+export const FOCUS_SESSION_PHASES = ['FOCUS', 'SHORT_BREAK', 'LONG_BREAK'];
+
+// Focus sessions are timestamp-derived, so the duration only fixes `ends_at` once. The bounds
+// keep a room usable (>= 5 minutes) and stop a client from parking a session open all day.
+export const MIN_FOCUS_SECONDS = 5 * 60;
+export const MAX_FOCUS_SECONDS = 120 * 60;
+export const DEFAULT_FOCUS_SECONDS = 25 * 60;
+export const DEFAULT_ROOM_MAX_PARTICIPANTS = 15;
+export const MAX_ROOM_PARTICIPANTS = 100;
+
+export function validateStudyRoomInput(body: any): string | null {
+  if (!body || typeof body !== 'object') return 'Request body is required.';
+  if (typeof body.name !== 'string' || !body.name.trim()) return 'Room name is required.';
+  if (body.name.trim().length > 120) return 'Room name must be 120 characters or fewer.';
+  for (const field of ['topic', 'subject', 'description']) {
+    if (body[field] !== undefined && typeof body[field] !== 'string') return `${field} must be a string.`;
+  }
+  if (body.visibility !== undefined && !STUDY_ROOM_VISIBILITIES.includes(body.visibility)) {
+    return `visibility must be one of: ${STUDY_ROOM_VISIBILITIES.join(', ')}.`;
+  }
+  if (body.maxParticipants !== undefined) {
+    const maxParticipants = Number(body.maxParticipants);
+    if (!Number.isInteger(maxParticipants) || maxParticipants < 2 || maxParticipants > MAX_ROOM_PARTICIPANTS) {
+      return `maxParticipants must be a whole number between 2 and ${MAX_ROOM_PARTICIPANTS}.`;
+    }
+  }
+  if (body.expiresAt !== undefined && body.expiresAt !== null) {
+    if (typeof body.expiresAt !== 'string' || !Number.isFinite(Date.parse(body.expiresAt))) {
+      return 'expiresAt must be an ISO timestamp.';
+    }
+    if (Date.parse(body.expiresAt) <= Date.now()) return 'expiresAt must be in the future.';
+  }
+  return null;
+}
+
+/**
+ * Resolves the requested focus length in seconds from either `durationSeconds` or
+ * `durationMinutes`, or `null` when the request is out of range. Callers use the same helper
+ * for validation and for the value handed to the service, so the timer can never be created
+ * from a duration the API would have rejected.
+ */
+export function focusDurationSeconds(body: any): number | null {
+  const requested =
+    body?.durationSeconds !== undefined && body?.durationSeconds !== null
+      ? Number(body.durationSeconds)
+      : body?.durationMinutes !== undefined && body?.durationMinutes !== null
+        ? Number(body.durationMinutes) * 60
+        : DEFAULT_FOCUS_SECONDS;
+  if (!Number.isFinite(requested) || !Number.isInteger(requested)) return null;
+  if (requested < MIN_FOCUS_SECONDS || requested > MAX_FOCUS_SECONDS) return null;
+  return requested;
+}
+
+export function validateFocusSessionInput(body: any): string | null {
+  if (!body || typeof body !== 'object') return 'Request body is required.';
+  if (body.phase !== undefined && !FOCUS_SESSION_PHASES.includes(body.phase)) {
+    return `phase must be one of: ${FOCUS_SESSION_PHASES.join(', ')}.`;
+  }
+  if (focusDurationSeconds(body) === null) {
+    const minutes = `${MIN_FOCUS_SECONDS / 60}-${MAX_FOCUS_SECONDS / 60}`;
+    return `duration must be a whole number of minutes between ${minutes}.`;
+  }
+  return null;
+}
+
+export function validateStudyDoubtInput(body: any): string | null {
+  if (!body || typeof body !== 'object') return 'Request body is required.';
+  if (typeof body.title !== 'string' || !body.title.trim()) return 'Doubt title is required.';
+  if (body.title.trim().length > 200) return 'Doubt title must be 200 characters or fewer.';
+  if (typeof body.content !== 'string' || !body.content.trim()) return 'Doubt question is required.';
+  if (body.content.length > 5000) return 'Doubt question must be 5000 characters or fewer.';
+  return null;
+}
+
+export function validateStudyDoubtAnswerInput(body: any): string | null {
+  if (!body || typeof body !== 'object') return 'Request body is required.';
+  if (typeof body.content !== 'string' || !body.content.trim()) return 'Answer content is required.';
+  if (body.content.length > 5000) return 'Answer must be 5000 characters or fewer.';
+  return null;
+}

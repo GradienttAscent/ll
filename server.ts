@@ -19,8 +19,13 @@ import {
   validateDocumentInput,
   validateEmail,
   validateFeedbackInput,
+  validateFocusSessionInput,
+  focusDurationSeconds,
   validateSessionFeedbackInput,
   validatePassword,
+  validateStudyDoubtAnswerInput,
+  validateStudyDoubtInput,
+  validateStudyRoomInput,
   VALID_SESSION_STATUSES,
 } from './validation';
 
@@ -130,15 +135,25 @@ app.post('/api/topics/bulk', (req, res) => {
 
 // ---- Persistent study rooms ----
 app.get('/api/study-rooms', (req, res) => {
-  return res.json({ rooms: services.listStudyRooms(userIdOf(req)) });
+  return res.json({ rooms: services.listStudyRooms(userIdOf(req), {
+    subject: typeof req.query.subject === 'string' ? req.query.subject : undefined,
+    topic: typeof req.query.topic === 'string' ? req.query.topic : undefined,
+    status: typeof req.query.status === 'string' ? req.query.status : 'ACTIVE',
+  }) });
 });
 
 app.post('/api/study-rooms', (req, res) => {
-  const name = req.body?.name;
-  const topic = req.body?.topic;
-  if (typeof name !== 'string' || !name.trim()) return sendError(res, 400, 'Room name is required.');
-  if (typeof topic !== 'string') return sendError(res, 400, 'Room topic is required.');
-  return res.status(201).json({ room: services.createStudyRoom(userIdOf(req), name, topic) });
+  const invalid = validateStudyRoomInput(req.body);
+  if (invalid) return sendError(res, 400, invalid);
+  return res.status(201).json({ room: services.createStudyRoom(userIdOf(req), {
+    name: req.body.name,
+    description: req.body.description,
+    subject: req.body.subject,
+    topic: req.body.topic,
+    visibility: req.body.visibility,
+    maxParticipants: req.body.maxParticipants,
+    expiresAt: req.body.expiresAt ?? null,
+  }) });
 });
 
 app.post('/api/study-rooms/:id/join', (req, res) => {
@@ -160,15 +175,132 @@ app.post('/api/study-rooms/:id/leave', (req, res) => {
   }
 });
 
+// One round trip for the whole room screen: room, presence, focus session, and doubts.
+// `messages`/`session` are the original room-chat timer and stay on the payload for API
+// backward compatibility; the Study Room UI itself reads only focusSession and doubts.
 app.get('/api/study-rooms/:id', (req, res) => {
   try {
     const roomId = req.params.id;
     return res.json({
       room: services.getStudyRoom(userIdOf(req), roomId),
       members: services.studyRoomMembers(userIdOf(req), roomId),
+      focusSession: services.currentFocusSession(userIdOf(req), roomId),
+      doubts: services.roomDoubts(userIdOf(req), roomId),
       messages: services.studyRoomMessages(userIdOf(req), roomId),
       session: services.studyRoomSession(userIdOf(req), roomId),
     });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.post('/api/study-rooms/:id/close', (req, res) => {
+  try {
+    services.closeStudyRoom(userIdOf(req), req.params.id);
+    return res.json({ ok: true });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.post('/api/study-rooms/:id/sessions', (req, res) => {
+  const invalid = validateFocusSessionInput(req.body);
+  if (invalid) return sendError(res, 400, invalid);
+  try {
+    return res.status(201).json({
+      session: services.startFocusSession(userIdOf(req), req.params.id, {
+        durationSeconds: focusDurationSeconds(req.body)!,
+        phase: req.body.phase ?? 'FOCUS',
+      })
+    });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.get('/api/study-rooms/:id/sessions/current', (req, res) => {
+  try {
+    return res.json({ session: services.currentFocusSession(userIdOf(req), req.params.id) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.post('/api/study-rooms/:id/sessions/:sessionId/join', (req, res) => {
+  try {
+    return res.json({ session: services.joinFocusSession(userIdOf(req), req.params.id, req.params.sessionId) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.post('/api/study-rooms/:id/sessions/:sessionId/leave', (req, res) => {
+  try {
+    return res.json({ session: services.leaveFocusSession(userIdOf(req), req.params.id, req.params.sessionId) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.get('/api/study-rooms/:id/doubts', (req, res) => {
+  try {
+    return res.json({ doubts: services.roomDoubts(userIdOf(req), req.params.id) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.post('/api/study-rooms/:id/doubts', (req, res) => {
+  const invalid = validateStudyDoubtInput(req.body);
+  if (invalid) return sendError(res, 400, invalid);
+  try {
+    return res.status(201).json({ doubt: services.createStudyDoubt(userIdOf(req), req.params.id, req.body.title, req.body.content) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.get('/api/study-doubts/:id', (req, res) => {
+  try {
+    return res.json({ doubt: services.getStudyDoubt(userIdOf(req), req.params.id) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.post('/api/study-doubts/:id/answers', (req, res) => {
+  const invalid = validateStudyDoubtAnswerInput(req.body);
+  if (invalid) return sendError(res, 400, invalid);
+  try {
+    return res.status(201).json({ doubt: services.answerStudyDoubt(userIdOf(req), req.params.id, req.body.content) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.post('/api/study-doubts/:id/accept-answer', (req, res) => {
+  if (typeof req.body?.answerId !== 'string' || !req.body.answerId) return sendError(res, 400, 'answerId is required.');
+  try {
+    return res.json({ doubt: services.acceptStudyDoubtAnswer(userIdOf(req), req.params.id, req.body.answerId) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    throw error;
+  }
+});
+
+app.post('/api/study-doubts/:id/resolve', (req, res) => {
+  try {
+    return res.json({ doubt: services.resolveStudyDoubt(userIdOf(req), req.params.id) });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     throw error;

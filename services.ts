@@ -1,6 +1,6 @@
 import { DatabaseWrapper, DEFAULT_COURSE_ID } from './db';
 import { createId, now } from './utils';
-import { HttpError, scheduleStartMinutes, validateBlockInput } from './validation';
+import { DEFAULT_ROOM_MAX_PARTICIPANTS, HttpError, scheduleStartMinutes, validateBlockInput } from './validation';
 import type { AssistantPeriod, SchedulingAssistantIntent } from './schedulingAssistant';
 
 let dbInstance: DatabaseWrapper | null = null;
@@ -2903,10 +2903,19 @@ export function confirmSchedulingAssistant(
   return scheduleBlockRows(userId);
 }
 
+export type StudyRoomVisibility = 'PUBLIC' | 'PRIVATE';
+export type StudyRoomStatus = 'ACTIVE' | 'CLOSED';
+
 export type StudyRoomRow = {
   id: string;
   name: string;
   topic: string;
+  description: string;
+  subject: string;
+  visibility: StudyRoomVisibility;
+  maxParticipants: number;
+  status: StudyRoomStatus;
+  expiresAt: string | null;
   ownerId: string;
   ownerName: string;
   memberCount: number;
@@ -2914,11 +2923,18 @@ export type StudyRoomRow = {
   createdAt: string;
 };
 
+/**
+ * Room roster entry. `state` collapses room membership and focus-session participation into the
+ * single distinction the room UI needs: who is in the room, who is in the active session, and
+ * whether that session is currently in a focus or break phase. Email is deliberately not exposed.
+ */
 export type StudyRoomMemberRow = {
   id: string;
   displayName: string;
-  email: string;
   joinedAt: string;
+  isHost: boolean;
+  isSessionParticipant: boolean;
+  state: FocusPresence;
 };
 
 export type StudyRoomMessageRow = {
@@ -2940,70 +2956,434 @@ export type StudyRoomSessionRow = {
   updatedAt: string;
 };
 
-function assertRoomMembership(userId: string, roomId: string) {
-  const room = getDb().prepare('SELECT id FROM study_rooms WHERE id = ?').get(roomId);
+export type FocusPhase = 'FOCUS' | 'SHORT_BREAK' | 'LONG_BREAK';
+export type FocusStatus = 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+export type FocusPresence = 'FOCUSING' | 'ON_BREAK' | 'IN_ROOM';
+
+export type FocusSessionParticipantRow = {
+  userId: string;
+  displayName: string;
+  joinedAt: string;
+  state: FocusPresence;
+};
+
+/**
+ * A focus session never stores a running timer: `startedAt`/`endsAt` plus `serverNow` are the
+ * whole contract. Clients render `endsAt - (serverNow + elapsedSinceFetch)`, so every participant
+ * sees the same countdown and a backgrounded tab resynchronises on refetch.
+ */
+export type FocusSessionRow = {
+  id: string;
+  roomId: string;
+  startedByUserId: string;
+  startedByName: string;
+  phase: FocusPhase;
+  durationSeconds: number;
+  startedAt: string;
+  endsAt: string;
+  status: FocusStatus;
+  serverNow: string;
+  participantCount: number;
+  currentParticipantCount: number;
+  focusingCount: number;
+  onBreakCount: number;
+  isParticipant: boolean;
+  participants: FocusSessionParticipantRow[];
+};
+
+export type StudyDoubtAnswerRow = {
+  id: string;
+  userId: string;
+  authorName: string;
+  content: string;
+  isAccepted: boolean;
+  createdAt: string;
+};
+
+export type StudyDoubtRow = {
+  id: string;
+  roomId: string;
+  userId: string;
+  authorName: string;
+  title: string;
+  content: string;
+  status: 'OPEN' | 'RESOLVED';
+  acceptedAnswerId: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  answerCount: number;
+  answers: StudyDoubtAnswerRow[];
+};
+
+const ROOM_COLUMNS = `
+  r.id, r.name, r.topic, r.description, r.subject, r.visibility,
+  r.max_participants AS maxParticipants, r.status, r.expires_at AS expiresAt,
+  r.owner_id AS ownerId, owner.display_name AS ownerName, r.created_at AS createdAt`;
+
+function presenceForPhase(phase: FocusPhase): FocusPresence {
+  return phase === 'FOCUS' ? 'FOCUSING' : 'ON_BREAK';
+}
+
+function isRoomClosed(row: { status: string; expiresAt?: string | null }): boolean {
+  if (row.status === 'CLOSED') return true;
+  return Boolean(row.expiresAt) && row.expiresAt! <= now();
+}
+
+function normalizeRoom(row: any): StudyRoomRow {
+  return {
+    ...row,
+    visibility: row.visibility === 'PRIVATE' ? 'PRIVATE' : 'PUBLIC',
+    maxParticipants: Number(row.maxParticipants),
+    memberCount: Number(row.memberCount),
+    status: isRoomClosed(row) ? 'CLOSED' : 'ACTIVE',
+    joined: Boolean(row.joined),
+  };
+}
+
+/** Single room row including its member count, which the capacity check below depends on. */
+function requireRoom(roomId: string) {
+  const room = getDb()
+    .prepare(`SELECT ${ROOM_COLUMNS},
+      (SELECT COUNT(*) FROM study_room_memberships count_members WHERE count_members.room_id = r.id) AS memberCount
+      FROM study_rooms r JOIN users owner ON owner.id = r.owner_id WHERE r.id = ?`)
+    .get(roomId) as any;
   if (!room) throw new HttpError(404, 'Study room not found.');
+  return normalizeRoom(room);
+}
+
+/** Read guard: the room must exist and the caller must be a member. */
+function assertRoomMember(userId: string, roomId: string): StudyRoomRow {
+  const room = requireRoom(roomId);
   const membership = getDb().prepare('SELECT room_id FROM study_room_memberships WHERE room_id = ? AND user_id = ?').get(roomId, userId);
   if (!membership) throw new HttpError(403, 'Join this study room before accessing it.');
+  return room;
 }
 
-export function listStudyRooms(userId: string): StudyRoomRow[] {
-  return getDb().prepare(`
-    SELECT r.id, r.name, r.topic, r.owner_id AS ownerId,
-      owner.display_name AS ownerName,
-      COUNT(DISTINCT m.user_id) AS memberCount,
-      EXISTS(SELECT 1 FROM study_room_memberships mine WHERE mine.room_id = r.id AND mine.user_id = ?) AS joined,
-      r.created_at AS createdAt
-    FROM study_rooms r
-    JOIN users owner ON owner.id = r.owner_id
-    LEFT JOIN study_room_memberships m ON m.room_id = r.id
-    GROUP BY r.id, r.name, r.topic, r.owner_id, owner.display_name, r.created_at
+/** Write guard: membership plus a room that still accepts new activity. */
+function assertActiveRoomMember(userId: string, roomId: string): StudyRoomRow {
+  const room = assertRoomMember(userId, roomId);
+  if (room.status === 'CLOSED') throw new HttpError(409, 'This study room is closed.');
+  return room;
+}
+
+/**
+ * Public rooms are discoverable by anyone; private rooms only by their members. An expired room is
+ * reported and filtered as CLOSED so a stale timer can never advertise itself as active.
+ */
+export function listStudyRooms(userId: string, filters: { subject?: string; topic?: string; status?: string } = {}): StudyRoomRow[] {
+  // Parameters are pushed in the exact textual order of the placeholders below: the `joined`
+  // probe, the visibility clause, then the filters. sql.js silently returns no rows when the
+  // binding order drifts, so this stays positional and explicit.
+  const params: any[] = [userId, 'PUBLIC', userId];
+  const clauses = ['(r.visibility = ? OR EXISTS(SELECT 1 FROM study_room_memberships mine WHERE mine.room_id = r.id AND mine.user_id = ?))'];
+  if (filters.subject) {
+    clauses.push('lower(r.subject) LIKE lower(?)');
+    params.push(`%${filters.subject.trim()}%`);
+  }
+  if (filters.topic) {
+    clauses.push('lower(r.topic) LIKE lower(?)');
+    params.push(`%${filters.topic.trim()}%`);
+  }
+  if (filters.status) {
+    clauses.push("CASE WHEN r.status = 'CLOSED' OR (r.expires_at IS NOT NULL AND r.expires_at <= ?) THEN 'CLOSED' ELSE r.status END = ?");
+    params.push(now(), filters.status);
+  }
+  return getDb()
+    .prepare(`
+    SELECT ${ROOM_COLUMNS},
+      (SELECT COUNT(*) FROM study_room_memberships count_members WHERE count_members.room_id = r.id) AS memberCount,
+      EXISTS(SELECT 1 FROM study_room_memberships mine2 WHERE mine2.room_id = r.id AND mine2.user_id = ?) AS joined
+    FROM study_rooms r JOIN users owner ON owner.id = r.owner_id
+    WHERE ${clauses.join(' AND ')}
     ORDER BY r.created_at DESC
-  `).all(userId).map((row: any) => ({ ...row, memberCount: Number(row.memberCount), joined: Boolean(row.joined) })) as StudyRoomRow[];
+  `)
+    .all(...params)
+    .map((row: any) => normalizeRoom(row));
 }
 
-export function createStudyRoom(userId: string, name: string, topic: string): StudyRoomRow {
+export function createStudyRoom(userId: string, input: {
+  name: string;
+  description?: string;
+  subject?: string;
+  topic?: string;
+  visibility?: string;
+  maxParticipants?: number;
+  expiresAt?: string | null;
+}): StudyRoomRow {
   const id = createId('room');
   const timestamp = now();
+  const maxParticipants = input.maxParticipants ?? DEFAULT_ROOM_MAX_PARTICIPANTS;
   getDb().transaction(() => {
-    getDb().prepare('INSERT INTO study_rooms (id, name, topic, owner_id, created_at) VALUES (?, ?, ?, ?, ?)').run(id, name.trim(), topic.trim(), userId, timestamp);
+    getDb()
+      .prepare(`INSERT INTO study_rooms (id, name, topic, description, subject, visibility, max_participants, status, expires_at, owner_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`)
+      .run(
+        id,
+        input.name.trim(),
+        (input.topic || '').trim(),
+        (input.description || '').trim(),
+        (input.subject || '').trim(),
+        input.visibility === 'PRIVATE' ? 'PRIVATE' : 'PUBLIC',
+        Math.floor(Number(maxParticipants)),
+        input.expiresAt || null,
+        userId,
+        timestamp
+      );
     getDb().prepare('INSERT INTO study_room_memberships (room_id, user_id, joined_at) VALUES (?, ?, ?)').run(id, userId, timestamp);
   })([]);
   return listStudyRooms(userId).find((room) => room.id === id)!;
 }
 
-export function joinStudyRoom(userId: string, roomId: string) {
-  const room = getDb().prepare('SELECT id FROM study_rooms WHERE id = ?').get(roomId);
-  if (!room) throw new HttpError(404, 'Study room not found.');
-  getDb().prepare('INSERT OR IGNORE INTO study_room_memberships (room_id, user_id, joined_at) VALUES (?, ?, ?)').run(roomId, userId, now());
-  return getStudyRoom(userId, roomId);
+export function joinStudyRoom(userId: string, roomId: string): StudyRoomRow {
+  const room = requireRoom(roomId);
+  if (room.status === 'CLOSED') throw new HttpError(409, 'This study room is closed.');
+  const existing = getDb().prepare('SELECT room_id FROM study_room_memberships WHERE room_id = ? AND user_id = ?').get(roomId, userId);
+  if (existing) throw new HttpError(409, 'You are already a member of this room.');
+  if (room.memberCount >= room.maxParticipants) throw new HttpError(409, 'This study room is full.');
+  getDb().prepare('INSERT INTO study_room_memberships (room_id, user_id, joined_at) VALUES (?, ?, ?)').run(roomId, userId, now());
+  return listStudyRooms(userId).find((item) => item.id === roomId)!;
 }
 
 export function leaveStudyRoom(userId: string, roomId: string) {
-  assertRoomMembership(userId, roomId);
+  assertRoomMember(userId, roomId);
   const owner = getDb().prepare('SELECT owner_id AS ownerId FROM study_rooms WHERE id = ?').get(roomId) as any;
   if (owner.ownerId === userId) throw new HttpError(409, 'The room owner cannot leave the room.');
-  getDb().prepare('DELETE FROM study_room_memberships WHERE room_id = ? AND user_id = ?').run(roomId, userId);
+  getDb().transaction(() => {
+    getDb().prepare('DELETE FROM study_room_memberships WHERE room_id = ? AND user_id = ?').run(roomId, userId);
+    // A member who leaves stops counting as focusing immediately, without waiting for the session.
+    getDb()
+      .prepare(`UPDATE focus_session_participants SET left_at = ?
+        WHERE user_id = ? AND left_at IS NULL
+          AND session_id IN (SELECT id FROM focus_sessions WHERE room_id = ? AND status = 'ACTIVE')`)
+      .run(now(), userId, roomId);
+  })([]);
 }
 
-export function getStudyRoom(userId: string, roomId: string) {
-  assertRoomMembership(userId, roomId);
-  return listStudyRooms(userId).find((room) => room.id === roomId)!;
+export function getStudyRoom(userId: string, roomId: string): StudyRoomRow {
+  assertRoomMember(userId, roomId);
+  return requireRoom(roomId);
+}
+
+/** Host-only. Closing a room cancels its focus session so no timer outlives the room. */
+export function closeStudyRoom(userId: string, roomId: string) {
+  assertActiveRoomMember(userId, roomId);
+  const owner = getDb().prepare('SELECT owner_id AS ownerId FROM study_rooms WHERE id = ?').get(roomId) as any;
+  if (owner.ownerId !== userId) throw new HttpError(403, 'Only the room host can close this room.');
+  getDb().transaction(() => {
+    getDb().prepare("UPDATE study_rooms SET status = 'CLOSED' WHERE id = ?").run(roomId);
+    getDb().prepare("UPDATE focus_sessions SET status = 'CANCELLED' WHERE room_id = ? AND status = 'ACTIVE'").run(roomId);
+  })([]);
+}
+
+/**
+ * Settles expired sessions before anyone reads them. Timestamps are ISO-8601 UTC strings, so the
+ * lexicographic comparison is a valid chronological one and a session completes even when no client
+ * has polled since it ended.
+ */
+function completeExpiredFocusSessions(roomId: string) {
+  getDb()
+    .prepare("UPDATE focus_sessions SET status = 'COMPLETED' WHERE room_id = ? AND status = 'ACTIVE' AND ends_at <= ?")
+    .run(roomId, now());
+}
+
+function focusParticipants(sessionId: string): FocusSessionParticipantRow[] {
+  return getDb()
+    .prepare(`SELECT p.user_id AS userId, COALESCE(NULLIF(u.display_name, ''), u.email) AS displayName, p.joined_at AS joinedAt
+      FROM focus_session_participants p JOIN users u ON u.id = p.user_id
+      WHERE p.session_id = ? AND p.left_at IS NULL ORDER BY p.joined_at ASC`)
+    .all(sessionId) as any[];
+}
+
+function focusSessionRow(sessionId: string, userId: string): FocusSessionRow | null {
+  const row = getDb()
+    .prepare(`SELECT s.id, s.room_id AS roomId, s.started_by_user_id AS startedByUserId,
+      COALESCE(NULLIF(u.display_name, ''), u.email) AS startedByName,
+      s.phase, s.duration_seconds AS durationSeconds, s.started_at AS startedAt, s.ends_at AS endsAt, s.status
+      FROM focus_sessions s JOIN users u ON u.id = s.started_by_user_id WHERE s.id = ?`)
+    .get(sessionId) as any;
+  if (!row) return null;
+  const participants = focusParticipants(sessionId);
+  const presence = presenceForPhase(row.phase);
+  const state = (participant: FocusSessionParticipantRow) => ({ ...participant, state: presence });
+  return {
+    ...row,
+    durationSeconds: Number(row.durationSeconds),
+    status: row.status as FocusStatus,
+    serverNow: now(),
+    participantCount: Number(getDb().prepare('SELECT COUNT(*) AS count FROM focus_session_participants WHERE session_id = ?').get(sessionId)?.count || 0),
+    currentParticipantCount: participants.length,
+    focusingCount: row.phase === 'FOCUS' ? participants.length : 0,
+    onBreakCount: row.phase === 'FOCUS' ? 0 : participants.length,
+    isParticipant: participants.some((participant) => participant.userId === userId),
+    participants: participants.map(state),
+  };
+}
+
+export function currentFocusSession(userId: string, roomId: string): FocusSessionRow | null {
+  assertRoomMember(userId, roomId);
+  completeExpiredFocusSessions(roomId);
+  const row = getDb()
+    .prepare("SELECT id FROM focus_sessions WHERE room_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1")
+    .get(roomId) as any;
+  return row ? focusSessionRow(row.id, userId) : null;
+}
+
+/** Any member may start a session, but a room never holds two active ones. */
+export function startFocusSession(userId: string, roomId: string, input: { durationSeconds: number; phase: FocusPhase }): FocusSessionRow {
+  assertActiveRoomMember(userId, roomId);
+  completeExpiredFocusSessions(roomId);
+  const active = getDb().prepare("SELECT id FROM focus_sessions WHERE room_id = ? AND status = 'ACTIVE'").get(roomId);
+  if (active) throw new HttpError(409, 'This room already has an active focus session.');
+  const startedAt = now();
+  const endsAt = new Date(Date.parse(startedAt) + input.durationSeconds * 1000).toISOString();
+  const id = createId('focus');
+  getDb().transaction(() => {
+    getDb()
+      .prepare(`INSERT INTO focus_sessions (id, room_id, started_by_user_id, phase, duration_seconds, started_at, ends_at, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`)
+      .run(id, roomId, userId, input.phase, input.durationSeconds, startedAt, endsAt, startedAt);
+    getDb().prepare('INSERT INTO focus_session_participants (session_id, user_id, joined_at) VALUES (?, ?, ?)').run(id, userId, startedAt);
+  })([]);
+  return focusSessionRow(id, userId)!;
+}
+
+export function joinFocusSession(userId: string, roomId: string, sessionId: string): FocusSessionRow {
+  assertActiveRoomMember(userId, roomId);
+  completeExpiredFocusSessions(roomId);
+  const session = getDb().prepare("SELECT id FROM focus_sessions WHERE id = ? AND room_id = ? AND status = 'ACTIVE'").get(sessionId, roomId);
+  if (!session) throw new HttpError(404, 'Active focus session not found.');
+  getDb()
+    .prepare(`INSERT INTO focus_session_participants (session_id, user_id, joined_at) VALUES (?, ?, ?)
+      ON CONFLICT(session_id, user_id) DO UPDATE SET joined_at = excluded.joined_at, left_at = NULL`)
+    .run(sessionId, userId, now());
+  return focusSessionRow(sessionId, userId)!;
+}
+
+/** Scoped to the caller's own participation, and to a session that belongs to this room. */
+export function leaveFocusSession(userId: string, roomId: string, sessionId: string): FocusSessionRow {
+  assertActiveRoomMember(userId, roomId);
+  const session = getDb().prepare('SELECT id FROM focus_sessions WHERE id = ? AND room_id = ?').get(sessionId, roomId);
+  if (!session) throw new HttpError(404, 'Focus session not found.');
+  const result = getDb()
+    .prepare('UPDATE focus_session_participants SET left_at = ? WHERE session_id = ? AND user_id = ? AND left_at IS NULL')
+    .run(now(), sessionId, userId);
+  if (!result.changes) throw new HttpError(404, 'Session participation not found.');
+  return focusSessionRow(sessionId, userId)!;
 }
 
 export function studyRoomMembers(userId: string, roomId: string): StudyRoomMemberRow[] {
-  assertRoomMembership(userId, roomId);
-  return getDb().prepare(`
-    SELECT u.id, u.display_name AS displayName, u.email, m.joined_at AS joinedAt
-    FROM study_room_memberships m JOIN users u ON u.id = m.user_id
-    WHERE m.room_id = ? ORDER BY m.joined_at ASC
-  `).all(roomId) as StudyRoomMemberRow[];
+  const room = assertRoomMember(userId, roomId);
+  completeExpiredFocusSessions(roomId);
+  const session = getDb()
+    .prepare("SELECT id, phase FROM focus_sessions WHERE room_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1")
+    .get(roomId) as any;
+  const participating = new Set(session ? focusParticipants(session.id).map((participant) => participant.userId) : []);
+  const presence = session ? presenceForPhase(session.phase) : 'IN_ROOM';
+  return getDb()
+    .prepare(`SELECT u.id, COALESCE(NULLIF(u.display_name, ''), u.email) AS displayName, m.joined_at AS joinedAt
+      FROM study_room_memberships m JOIN users u ON u.id = m.user_id
+      WHERE m.room_id = ? ORDER BY m.joined_at ASC`)
+    .all(roomId)
+    .map((row: any) => ({
+      ...row,
+      isHost: row.id === room.ownerId,
+      isSessionParticipant: participating.has(row.id),
+      state: participating.has(row.id) ? presence : 'IN_ROOM',
+    })) as StudyRoomMemberRow[];
+}
+
+function doubtAnswers(doubtId: string): StudyDoubtAnswerRow[] {
+  return getDb()
+    .prepare(`SELECT a.id, a.user_id AS userId, COALESCE(NULLIF(u.display_name, ''), u.email) AS authorName,
+      a.content, a.is_accepted AS isAccepted, a.created_at AS createdAt
+      FROM study_doubt_answers a JOIN users u ON u.id = a.user_id
+      WHERE a.doubt_id = ? ORDER BY a.is_accepted DESC, a.created_at ASC`)
+    .all(doubtId)
+    .map((row: any) => ({ ...row, isAccepted: Boolean(row.isAccepted) })) as StudyDoubtAnswerRow[];
+}
+
+function doubtsForRoom(roomId: string): StudyDoubtRow[] {
+  return getDb()
+    .prepare(`SELECT d.id, d.room_id AS roomId, d.user_id AS userId,
+      COALESCE(NULLIF(u.display_name, ''), u.email) AS authorName,
+      d.title, d.content, d.status, d.created_at AS createdAt, d.resolved_at AS resolvedAt
+      FROM study_doubts d JOIN users u ON u.id = d.user_id
+      WHERE d.room_id = ? ORDER BY (d.status = 'OPEN') DESC, d.created_at DESC`)
+    .all(roomId)
+    .map((row: any) => {
+      const answers = doubtAnswers(row.id);
+      // Acceptance lives on the answer, so the doubt surfaces which one it settled on.
+      return {
+        ...row,
+        answerCount: answers.length,
+        answers,
+        acceptedAnswerId: answers.find((answer) => answer.isAccepted)?.id ?? null,
+      };
+    }) as StudyDoubtRow[];
+}
+
+export function roomDoubts(userId: string, roomId: string): StudyDoubtRow[] {
+  assertRoomMember(userId, roomId);
+  return doubtsForRoom(roomId);
+}
+
+export function createStudyDoubt(userId: string, roomId: string, title: string, content: string): StudyDoubtRow {
+  assertActiveRoomMember(userId, roomId);
+  const id = createId('doubt');
+  getDb()
+    .prepare('INSERT INTO study_doubts (id, room_id, user_id, title, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, roomId, userId, title.trim(), content.trim(), 'OPEN', now());
+  return doubtsForRoom(roomId).find((doubt) => doubt.id === id)!;
+}
+
+function requireDoubt(doubtId: string) {
+  const doubt = getDb().prepare('SELECT id, room_id AS roomId, user_id AS userId, status FROM study_doubts WHERE id = ?').get(doubtId) as any;
+  if (!doubt) throw new HttpError(404, 'Doubt not found.');
+  return doubt;
+}
+
+export function getStudyDoubt(userId: string, doubtId: string): StudyDoubtRow {
+  const doubt = requireDoubt(doubtId);
+  assertRoomMember(userId, doubt.roomId);
+  return doubtsForRoom(doubt.roomId).find((item) => item.id === doubtId)!;
+}
+
+export function answerStudyDoubt(userId: string, doubtId: string, content: string): StudyDoubtRow {
+  const doubt = requireDoubt(doubtId);
+  assertActiveRoomMember(userId, doubt.roomId);
+  getDb()
+    .prepare('INSERT INTO study_doubt_answers (id, doubt_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(createId('answer'), doubtId, userId, content.trim(), now());
+  return getStudyDoubt(userId, doubtId);
+}
+
+/** Accepting is the doubt author's call, and a doubt carries at most one accepted answer. */
+export function acceptStudyDoubtAnswer(userId: string, doubtId: string, answerId: string): StudyDoubtRow {
+  const doubt = requireDoubt(doubtId);
+  assertActiveRoomMember(userId, doubt.roomId);
+  if (doubt.userId !== userId) throw new HttpError(403, 'Only the doubt author can accept an answer.');
+  const answer = getDb().prepare('SELECT id FROM study_doubt_answers WHERE id = ? AND doubt_id = ?').get(answerId, doubtId);
+  if (!answer) throw new HttpError(404, 'Answer not found.');
+  getDb().transaction(() => {
+    getDb().prepare('UPDATE study_doubt_answers SET is_accepted = 0 WHERE doubt_id = ?').run(doubtId);
+    getDb().prepare('UPDATE study_doubt_answers SET is_accepted = 1 WHERE id = ?').run(answerId);
+  })([]);
+  return getStudyDoubt(userId, doubtId);
+}
+
+export function resolveStudyDoubt(userId: string, doubtId: string): StudyDoubtRow {
+  const doubt = requireDoubt(doubtId);
+  assertActiveRoomMember(userId, doubt.roomId);
+  if (doubt.userId !== userId) throw new HttpError(403, 'Only the doubt author can resolve this doubt.');
+  if (doubt.status === 'RESOLVED') throw new HttpError(409, 'This doubt is already resolved.');
+  getDb().prepare("UPDATE study_doubts SET status = 'RESOLVED', resolved_at = ? WHERE id = ?").run(now(), doubtId);
+  return getStudyDoubt(userId, doubtId);
 }
 
 export function studyRoomMessages(userId: string, roomId: string): StudyRoomMessageRow[] {
-  assertRoomMembership(userId, roomId);
+  assertRoomMember(userId, roomId);
   return getDb().prepare(`
-    SELECT message.id, message.user_id AS senderId, u.display_name AS senderName,
+    SELECT message.id, message.user_id AS senderId, COALESCE(NULLIF(u.display_name, ''), u.email) AS senderName,
       message.text, CAST(message.is_question AS INTEGER) AS isQuestion,
       message.topic_tag AS topicTag, message.created_at AS createdAt
     FROM study_room_messages message JOIN users u ON u.id = message.user_id
@@ -3012,7 +3392,7 @@ export function studyRoomMessages(userId: string, roomId: string): StudyRoomMess
 }
 
 export function createStudyRoomMessage(userId: string, roomId: string, input: { text: string; isQuestion?: boolean; topicTag?: string }) {
-  assertRoomMembership(userId, roomId);
+  assertRoomMember(userId, roomId);
   const id = createId('room-message');
   getDb().prepare(`INSERT INTO study_room_messages (id, room_id, user_id, text, is_question, topic_tag, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, roomId, userId, input.text.trim(), input.isQuestion ? 1 : 0, input.topicTag || null, now());
@@ -3020,9 +3400,9 @@ export function createStudyRoomMessage(userId: string, roomId: string, input: { 
 }
 
 export function studyRoomSession(userId: string, roomId: string): StudyRoomSessionRow | null {
-  assertRoomMembership(userId, roomId);
+  assertRoomMember(userId, roomId);
   const row = getDb().prepare(`
-    SELECT session.started_by AS startedBy, u.display_name AS startedByName,
+    SELECT session.started_by AS startedBy, COALESCE(NULLIF(u.display_name, ''), u.email) AS startedByName,
       session.started_at AS startedAt, session.duration_minutes AS durationMinutes,
       session.status, session.updated_at AS updatedAt
     FROM study_room_sessions session JOIN users u ON u.id = session.started_by
@@ -3032,7 +3412,7 @@ export function studyRoomSession(userId: string, roomId: string): StudyRoomSessi
 }
 
 export function updateStudyRoomSession(userId: string, roomId: string, input: { status: 'active' | 'paused' | 'stopped'; durationMinutes?: number }) {
-  assertRoomMembership(userId, roomId);
+  assertRoomMember(userId, roomId);
   const timestamp = now();
   const existing = getDb().prepare('SELECT room_id FROM study_room_sessions WHERE room_id = ?').get(roomId);
   if (existing) {
