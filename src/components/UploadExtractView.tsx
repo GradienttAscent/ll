@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActiveTab, PastPaper, ExtractedTopic, QuestionItem, WhatToStudyItem } from '../types';
 import { FileUp, FileText, CheckCircle2, ArrowRight, Loader2, BookOpen, Calendar, Clock, ExternalLink, X, Plus } from 'lucide-react';
+import { filterQuestionBank } from '../utils/questionBankFilters';
 
 interface UploadExtractViewProps {
   papers: PastPaper[];
@@ -8,6 +9,7 @@ interface UploadExtractViewProps {
   questions: QuestionItem[];
   onAcademicUpdated: () => Promise<void>;
   setActiveTab: (tab: ActiveTab) => void;
+  openUploaderRequest?: number;
 }
 
 export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
@@ -16,6 +18,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   questions,
   onAcademicUpdated,
   setActiveTab,
+  openUploaderRequest,
 }) => {
   const [whatToStudyItems, setWhatToStudyItems] = useState<WhatToStudyItem[]>([]);
   const [isLoadingWts, setIsLoadingWts] = useState(false);
@@ -26,9 +29,17 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [fileError, setFileError] = useState('');
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [isSampleMode, setIsSampleMode] = useState(false);
+  const [materialFiles, setMaterialFiles] = useState<Record<'syllabus' | 'lecture' | 'past_paper', File[]>>({ syllabus: [], lecture: [], past_paper: [] });
   const [showUploadForm, setShowUploadForm] = useState(false);
+  const [materialAnalysis, setMaterialAnalysis] = useState<any>(null);
+  const [sourceLocation, setSourceLocation] = useState<any>(null);
+  const [questionFilter, setQuestionFilter] = useState('');
+  const [yearFilter, setYearFilter] = useState('');
+  const [paperFilter, setPaperFilter] = useState('');
+  const [marksFilter, setMarksFilter] = useState('');
+  const [difficultyFilter, setDifficultyFilter] = useState('');
+  const [sourceFilter, setSourceFilter] = useState('');
+  const uploadFormRef = useRef<HTMLElement | null>(null);
 
   // Source Slide Viewer Modal State
   const [activeSourceItem, setActiveSourceItem] = useState<WhatToStudyItem | null>(null);
@@ -46,6 +57,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   const [scheduleSuccessMsg, setScheduleSuccessMsg] = useState('');
 
   const hasSyllabusTopics = topics.some((topic) => topic.syllabusEvidence);
+  const visibleQuestions = filterQuestionBank(questions, { topic: questionFilter, year: yearFilter, paper: paperFilter, marks: marksFilter, difficulty: difficultyFilter, source: sourceFilter });
 
   const fetchWhatToStudy = async () => {
     setIsLoadingWts(true);
@@ -66,6 +78,39 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     void fetchWhatToStudy();
   }, [papers.length, questions.length, topics.length]);
 
+  useEffect(() => {
+    if (openUploaderRequest) setShowUploadForm(true);
+  }, [openUploaderRequest]);
+
+  useEffect(() => {
+    if (showUploadForm) uploadFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [showUploadForm]);
+
+  useEffect(() => {
+    fetch('/api/materials/analysis').then(async (response) => response.ok ? response.json() : null)
+      .then((data) => setMaterialAnalysis(data?.analysis || null)).catch(() => setMaterialAnalysis(null));
+  }, [papers.length, questions.length, topics.length]);
+
+  const openOccurrence = async (occurrence: any) => {
+    const document = materialAnalysis?.documents?.find((item: any) => item.id === occurrence.documentId);
+    if (!document) return;
+    if (document.mimeType === 'application/pdf') {
+      const response = await fetch(`/api/documents/${document.id}/file`);
+      if (!response.ok) throw new Error('Unable to open the selected PDF page.');
+      const pdfUrl = URL.createObjectURL(await response.blob());
+      setSourceLocation({ document, location: { ...occurrence, locationStart: occurrence.locationStart, locationEnd: occurrence.locationEnd }, pdfUrl });
+      return;
+    }
+    const response = await fetch(`/api/materials/${document.id}/locations`);
+    const data = await response.json();
+    const location = data.locations?.find((item: any) => item.locationStart === occurrence.locationStart) || data.locations?.[0];
+    if (location?.locationType === 'slide') {
+      const rendered = await fetch(`/api/materials/${document.id}/slides/${location.locationStart}.svg`);
+      if (!rendered.ok) throw new Error('Unable to render the selected slide.');
+      setSourceLocation({ document, location, slideUrl: URL.createObjectURL(await rendered.blob()) });
+    } else setSourceLocation({ document, location });
+  };
+
   const fileAsBase64 = async (file: File) => {
     const bytes = new Uint8Array(await file.arrayBuffer());
     let binary = '';
@@ -76,8 +121,9 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   };
 
   const handleRunAnalysis = async () => {
-    if (!uploadedFile && !inputText.trim() && !selectedPaper) {
-      alert('Please enter document content or select an uploaded paper.');
+    const allFiles = Object.values(materialFiles).flat();
+    if (allFiles.length === 0) {
+      alert('Choose at least one course material file.');
       return;
     }
     if (fileError) return;
@@ -85,23 +131,11 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     setIsAnalyzing(true);
     setAnalysisResult(null);
 
-    const contentToAnalyze = inputText || selectedPaper?.parsedContent || '';
-    const nameToAnalyze = docName || selectedPaper?.title || 'Academic Paper';
-
     try {
-      const res = await fetch(uploadedFile ? '/api/academic-documents/upload' : '/api/academic-documents/analyze', {
+      const res = await fetch('/api/materials/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(uploadedFile ? {
-          title: uploadedFile.name,
-          docType,
-          base64: await fileAsBase64(uploadedFile),
-          mimeType: uploadedFile.type || undefined,
-        } : {
-          title: nameToAnalyze,
-          docType: isSampleMode ? 'Past Paper (Sample)' : docType,
-          content: contentToAnalyze,
-        }),
+        body: JSON.stringify({ files: await Promise.all((['syllabus', 'lecture', 'past_paper'] as const).flatMap((category) => materialFiles[category].map(async (file) => ({ title: file.name, category, base64: await fileAsBase64(file), mimeType: file.type || undefined })))) }),
       });
 
       const json = await res.json();
@@ -109,52 +143,26 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
       const analysis = json.analysis;
       setAnalysisResult({
         title: 'Academic document saved',
-        summary: `${analysis.createdQuestionCount} questions were persisted from ${isSampleMode ? 'the sample paper' : 'the uploaded document'}. Topic evidence and marks were calculated from those stored questions.`,
+        summary: `${json.results.filter((item: any) => item.reparsed).length} new files analyzed; ${json.results.filter((item: any) => item.status === 'duplicate').length} duplicates skipped.`,
       });
       await onAcademicUpdated();
       await fetchWhatToStudy();
       setInputText('');
-      setUploadedFile(null);
+      setMaterialFiles({ syllabus: [], lecture: [], past_paper: [] });
       setDocName('');
       setShowUploadForm(false);
     } catch (err) {
       console.error('Failed to run AI document analysis:', err);
-      alert('Error analyzing document. Please try again.');
+      alert(err instanceof Error ? err.message : 'Unable to analyze the selected materials.');
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  const handleLoadSamplePack = async () => {
-    setIsAnalyzing(true);
-    try {
-      const res = await fetch('/api/academic/load-sample-pack', { method: 'POST' });
-      if (!res.ok) throw new Error('Failed to load sample course pack');
-      const data = await res.json();
-      setWhatToStudyItems(data.whatToStudy || []);
-      await onAcademicUpdated();
-      setAnalysisResult({
-        title: 'Sample Course Pack Loaded',
-        summary: 'Operating Systems syllabus, lecture slides with Slides 18–24 on Deadlocks, and 4 past papers were loaded successfully.',
-      });
-    } catch (err) {
-      console.error('Failed to load sample pack:', err);
-      alert('Failed to load sample academic course pack.');
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setDocName(file.name);
-      setSelectedPaper(null);
-      setUploadedFile(file);
-      setIsSampleMode(false);
-      setFileError('');
-      setInputText('');
-    }
+  const handleFileUpload = (category: 'syllabus' | 'lecture' | 'past_paper', files: FileList | null) => {
+    if (!files) return;
+    setMaterialFiles((current) => ({ ...current, [category]: [...current[category], ...Array.from(files)] }));
+    setFileError('');
   };
 
   const handleScheduleStudySubmit = async (e: React.FormEvent) => {
@@ -230,15 +238,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
 
         <div className="flex flex-wrap items-center gap-2.5">
           <button
-            onClick={() => void handleLoadSamplePack()}
-            disabled={isAnalyzing}
-            className="rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] hover:border-[#D8CCE8] dark:hover:border-[#4B4454] px-3.5 py-2 text-[10px] font-bold uppercase tracking-[0.14em] transition-all shadow-2xs active:scale-98 disabled:opacity-50"
-            title="Load Operating Systems Syllabus, Lecture Slides 18–24, and 4 Past Papers"
-          >
-            {isAnalyzing ? 'Loading Course Pack...' : 'Load Sample Course Pack'}
-          </button>
-
-          <button
             onClick={() => setShowUploadForm(!showUploadForm)}
             className="rounded-lg bg-[#6D28D9] dark:bg-[#8B5CF6] hover:bg-[#5B21B6] dark:hover:bg-[#7C3AED] text-white px-3.5 py-2 text-[10px] font-bold uppercase tracking-[0.14em] transition-all shadow-2xs active:scale-98 flex items-center gap-1.5"
           >
@@ -309,12 +308,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
               </p>
             </div>
             <div className="pt-2 flex justify-center gap-3">
-              <button
-                onClick={() => void handleLoadSamplePack()}
-                className="px-4 py-2 rounded-lg bg-[#6D28D9] dark:bg-[#8B5CF6] text-white text-[10px] font-bold uppercase tracking-wider hover:bg-[#5B21B6] transition"
-              >
-                Load Sample Course Pack
-              </button>
               <button
                 onClick={() => setShowUploadForm(true)}
                 className="px-4 py-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] text-[10px] font-bold uppercase tracking-wider hover:border-[#D8CCE8] transition"
@@ -446,11 +439,23 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
         )}
       </section>
 
+      {materialAnalysis && materialAnalysis.topics?.length > 0 && (
+        <section className="space-y-4">
+          <div className="border-b border-[#EDE7F3] dark:border-[#302B35] pb-3"><h2 className="font-serif text-2xl italic">Topic to Source/Page Map</h2><p className="text-xs text-[#7B7484]">Every deterministic occurrence. Best Match is highlighted; possible matches remain visible.</p></div>
+          {materialAnalysis.topics.map((topic: any) => <div key={topic.id} className="rounded-xl border border-[#EDE7F3] dark:border-[#302B35] p-4 space-y-2">
+            <div className="flex justify-between"><strong>{topic.name}</strong><span className="text-xs">Priority {topic.priority}/100 · {topic.trend}</span></div>
+            <div className="flex flex-wrap gap-2">{topic.occurrences.map((occurrence: any) => <button key={occurrence.id || `${occurrence.documentId}-${occurrence.locationStart}`} onClick={() => void openOccurrence(occurrence)} className={`text-xs rounded border px-2 py-1 ${occurrence.isBestMatch ? 'border-[#6D28D9] text-[#6D28D9]' : 'border-[#EDE7F3]'}`}>
+              {occurrence.title} · {occurrence.locationType === 'section' ? `${occurrence.sectionTitle || 'Section'} · Paragraphs` : occurrence.locationType === 'slide' ? 'Slide' : occurrence.locationType === 'line' ? 'Lines' : 'Page'} {occurrence.locationStart}{occurrence.locationEnd !== occurrence.locationStart ? `–${occurrence.locationEnd}` : ''} {occurrence.isBestMatch ? '[Best Match]' : occurrence.confidence < .7 ? `Possible match · ${Math.round(occurrence.confidence * 100)}%` : ''}
+            </button>)}</div>
+          </div>)}
+        </section>
+      )}
+
       {/* ========================================================================= */}
       {/* 2. UPLOAD & INGESTION FORM (COLLAPSIBLE OR ACCORDION) */}
       {/* ========================================================================= */}
       {showUploadForm && (
-        <section className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-5 shadow-2xs animate-fade-in">
+        <section ref={uploadFormRef} className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-5 shadow-2xs animate-fade-in">
           <div className="flex items-center justify-between border-b border-[#EDE7F3] dark:border-[#302B35] pb-3">
             <h3 className="font-serif text-2xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">
               Upload Academic Material
@@ -464,103 +469,18 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
           </div>
 
           <div className="space-y-4">
-            {/* Document Type Selector (3 Types) */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
-                Document Type
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDocType('Past Paper')}
-                  className={`py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
-                    docType === 'Past Paper'
-                      ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-[#6D28D9] dark:border-[#8B5CF6] shadow-2xs'
-                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8]'
-                  }`}
-                >
-                  Past Question Paper
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDocType('Lecture Slides')}
-                  className={`py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
-                    docType === 'Lecture Slides'
-                      ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-[#6D28D9] dark:border-[#8B5CF6] shadow-2xs'
-                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8]'
-                  }`}
-                >
-                  Lecture Slides / PPT / Notes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDocType('Syllabus')}
-                  className={`py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
-                    docType === 'Syllabus'
-                      ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-[#6D28D9] dark:border-[#8B5CF6] shadow-2xs'
-                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8]'
-                  }`}
-                >
-                  Course Syllabus
-                </button>
-              </div>
-            </div>
-
-            {/* Document Title */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
-                Document Title
-              </label>
-              <input
-                type="text"
-                value={docName}
-                onChange={(e) => setDocName(e.target.value)}
-                placeholder="e.g. 2024 End Semester Exam, OS Unit 4 Slides, Course Syllabus..."
-                className="w-full text-xs px-3 py-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] placeholder:text-[#9E94AB] focus:outline-none focus:border-[#6D28D9]"
-              />
-            </div>
-
-            {/* File Upload Box */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
-                Upload PDF / PPTX / Text File
-              </label>
-              <div className="p-4 rounded-xl border border-dashed border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] text-center space-y-2">
-                <input
-                  type="file"
-                  id="academic-file-input"
-                  onChange={handleFileUpload}
-                  accept=".pdf,.txt,.pptx,.docx"
-                  className="hidden"
-                />
-                <label
-                  htmlFor="academic-file-input"
-                  className="cursor-pointer inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-xs font-semibold text-[#17151A] dark:text-[#F5F3F7] hover:border-[#D8CCE8]"
-                >
-                  <FileUp className="w-3.5 h-3.5 text-[#6D28D9] dark:text-[#8B5CF6]" />
-                  <span>{uploadedFile ? uploadedFile.name : 'Choose File (PDF, PPTX, TXT)'}</span>
+            {([['syllabus', 'Course Syllabus', '.pdf,.jpg,.jpeg,.png'], ['lecture', 'Lecture Materials', '.pdf,.ppt,.pptx,.docx,.txt,.jpg,.jpeg,.png'], ['past_paper', 'Past Papers', '.pdf,.jpg,.jpeg,.png']] as const).map(([category, label, accept]) => (
+              <div className="space-y-1.5" key={category}>
+                <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">{label}</label>
+                <input id={`material-${category}`} type="file" multiple accept={accept} onChange={(event) => handleFileUpload(category, event.target.files)} className="sr-only" />
+                <label htmlFor={`material-${category}`} className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-[#6D28D9] bg-[#F5F0FF] px-3 py-2 text-xs font-bold text-[#5B21B6] hover:bg-[#EDE7F6] dark:bg-[#251E30] dark:text-[#C4B5FD]">
+                  <FileUp className="w-4 h-4" /> Choose files
                 </label>
-                {uploadedFile && (
-                  <p className="text-[10px] text-[#7B7484] dark:text-[#807A87]">
-                    Size: {(uploadedFile.size / 1024).toFixed(1)} KB
-                  </p>
-                )}
+                <p className="text-[10px] text-[#7B7484]">{category === 'syllabus' ? 'PDF, JPG or PNG' : accept.replaceAll('.', '').replaceAll(',', ', ').toUpperCase()}</p>
+                {materialFiles[category].length > 0 && <p className="text-[10px] text-[#7B7484]">{materialFiles[category].map((file) => file.name).join(', ')}</p>}
               </div>
-            </div>
+            ))}
 
-            {/* Content Textarea (Optional if uploading file) */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
-                Or Paste Content Directly
-              </label>
-              <textarea
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder="Paste exam questions, slide text, or syllabus units here..."
-                rows={5}
-                className="w-full text-xs font-mono p-3 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] placeholder:text-[#9E94AB] focus:outline-none focus:border-[#6D28D9]"
-              />
-            </div>
 
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -573,7 +493,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
               <button
                 type="button"
                 onClick={handleRunAnalysis}
-                disabled={isAnalyzing || (!uploadedFile && !inputText.trim())}
+                disabled={isAnalyzing || (Object.values(materialFiles) as File[][]).every((files) => files.length === 0)}
                 className="px-4 py-2 rounded-lg bg-[#6D28D9] dark:bg-[#8B5CF6] hover:bg-[#5B21B6] text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50 transition"
               >
                 {isAnalyzing ? 'Analyzing...' : 'Save & Analyze'}
@@ -599,6 +519,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
                 ? 'Derived from course syllabus and past exam evidence.'
                 : 'PYQ frequency trends. Uploading a syllabus will align these with course units.'}
             </p>
+            <p className="text-[10px] text-[#7B7484] mt-1">Priority /100 = syllabus weightage 25% + PYQ frequency 25% + PYQ marks 25% + recurrence 15% + lecture coverage 10%.</p>
           </div>
 
           <div className="space-y-3">
@@ -644,16 +565,19 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
               <ArrowRight className="w-3 h-3" />
             </button>
           </div>
+          <div className="grid grid-cols-2 gap-2"><select aria-label="Filter topic" value={questionFilter} onChange={(event) => setQuestionFilter(event.target.value)} className="text-xs rounded border border-[#EDE7F3] p-2">
+            <option value="">All topics</option>{[...new Set(questions.map((question) => question.topic))].map((topic) => <option key={topic} value={topic}>{topic}</option>)}
+          </select><select aria-label="Filter year" value={yearFilter} onChange={(event) => setYearFilter(event.target.value)} className="text-xs rounded border border-[#EDE7F3] p-2"><option value="">All years</option>{[...new Set(questions.map((question) => question.year).filter(Boolean))].map((year) => <option key={year} value={year}>{year}</option>)}</select><select aria-label="Filter paper" value={paperFilter} onChange={(event) => setPaperFilter(event.target.value)} className="text-xs rounded border border-[#EDE7F3] p-2"><option value="">All papers</option>{papers.map((paper) => <option key={paper.id} value={paper.id}>{paper.title}</option>)}</select><select aria-label="Filter marks" value={marksFilter} onChange={(event) => setMarksFilter(event.target.value)} className="text-xs rounded border border-[#EDE7F3] p-2"><option value="">All marks</option>{[...new Set(questions.map((question) => String(question.marks)))].map((marks) => <option key={marks} value={marks}>{marks} marks</option>)}</select><select aria-label="Filter difficulty" value={difficultyFilter} onChange={(event) => setDifficultyFilter(event.target.value)} className="text-xs rounded border border-[#EDE7F3] p-2"><option value="">All difficulty</option>{[...new Set(questions.map((question) => question.type))].map((difficulty) => <option key={difficulty} value={difficulty}>{difficulty}</option>)}</select><select aria-label="Filter source" value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="text-xs rounded border border-[#EDE7F3] p-2"><option value="">All sources</option><option value="past_paper">Real PYQ</option><option value="ai_generated">AI Generated</option></select></div>
 
           <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-            {questions.length === 0 ? (
+            {visibleQuestions.length === 0 ? (
               <p className="text-xs text-[#7B7484] dark:text-[#A9A3AE] py-4">No questions extracted yet.</p>
             ) : (
-              questions.slice(0, 8).map((q) => (
+              visibleQuestions.slice(0, 50).map((q) => (
                 <div key={q.id} className="p-2.5 rounded-xl bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] space-y-1">
                   <div className="flex items-center justify-between text-[9.5px] uppercase tracking-wider text-[#7B7484] dark:text-[#807A87]">
-                    <span className="font-semibold text-[#6D28D9] dark:text-[#8B5CF6]">{q.topic || 'General'}</span>
-                    <span>{q.questionNumber ? `Q${q.questionNumber} ` : ''}&bull; {q.marks} Marks</span>
+                    <span className="font-semibold text-[#6D28D9] dark:text-[#8B5CF6]">{q.topic || 'General'} · {q.sourceType === 'ai_generated' ? 'AI Generated' : 'Real PYQ'}</span>
+                    <span>{q.questionNumber ? `Q${q.questionNumber}${q.subpart ? `(${q.subpart})` : ''} ` : ''}&bull; {q.marks} Marks {q.year ? `· ${q.year}` : ''} {q.pageNumber ? `· p.${q.pageNumber}` : ''}</span>
                   </div>
                   <p className="text-xs text-[#17151A] dark:text-[#F5F3F7] line-clamp-2">
                     {q.questionText}
@@ -669,6 +593,12 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
       {/* ========================================================================= */}
       {/* 4. MODAL: SOURCE MATERIAL / SLIDE VIEWER */}
       {/* ========================================================================= */}
+      {sourceLocation && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"><div className="max-w-3xl w-full max-h-[80vh] overflow-auto bg-white dark:bg-[#17151A] rounded-xl p-6 space-y-3">
+          <div className="flex justify-between"><div><strong>{sourceLocation.document.title}</strong><p className="text-xs">{sourceLocation.location.locationType === 'slide' ? 'Slide' : sourceLocation.location.locationType === 'line' ? 'Lines' : 'Page'} {sourceLocation.location.locationStart}{sourceLocation.location.locationEnd !== sourceLocation.location.locationStart ? `–${sourceLocation.location.locationEnd}` : ''}</p></div><button onClick={() => { if (sourceLocation.pdfUrl) URL.revokeObjectURL(sourceLocation.pdfUrl); setSourceLocation(null); }}>Close</button></div>
+          {sourceLocation.pdfUrl ? <iframe title={`PDF page ${sourceLocation.location.locationStart}`} className="w-full h-[65vh] rounded-lg border border-[#EDE7F3]" src={`${sourceLocation.pdfUrl}#page=${sourceLocation.location.locationStart}`} /> : sourceLocation.location.locationType === 'slide' ? <img className="w-full rounded-lg border border-[#EDE7F3]" alt={`Rendered slide ${sourceLocation.location.locationStart}`} src={sourceLocation.slideUrl} /> : <div className={sourceLocation.location.locationType === 'section' ? 'border-l-4 border-[#6D28D9] bg-[#FAF8FC] p-4' : ''}><p className="text-xs font-semibold mb-2">{sourceLocation.location.sectionTitle || ''}{sourceLocation.location.locationType === 'section' ? ` · Paragraphs ${sourceLocation.location.locationStart}–${sourceLocation.location.locationEnd}` : ''}</p><pre className="whitespace-pre-wrap text-xs leading-relaxed">{sourceLocation.location.text}</pre></div>}
+        </div></div>
+      )}
       {activeSourceItem && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
           <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] shadow-xl max-w-2xl w-full p-6 sm:p-8 space-y-6 relative max-h-[85vh] flex flex-col">

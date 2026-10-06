@@ -1,6 +1,10 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
+import { inflateRawSync } from 'zlib';
+import { localOcr } from './localOcr';
+import { renderSlideSvg } from './pptRender';
 import dotenv from 'dotenv';
 import { pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
@@ -709,6 +713,126 @@ app.post('/api/academic-documents/analyze', (req, res) => {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 400, error instanceof Error ? error.message : 'Unable to analyze academic document.');
   }
+});
+
+type MaterialCategory = 'syllabus' | 'lecture' | 'past_paper';
+const MATERIAL_ACCEPT: Record<MaterialCategory, Set<string>> = {
+  syllabus: new Set(['pdf', 'jpg', 'jpeg', 'png']),
+  lecture: new Set(['pdf', 'ppt', 'pptx', 'docx', 'txt', 'jpg', 'jpeg', 'png']),
+  past_paper: new Set(['pdf', 'jpg', 'jpeg', 'png']),
+};
+
+function extensionOf(title: string) { return path.extname(title).slice(1).toLowerCase(); }
+function zipOfficeText(payload: Buffer, docx = false): string {
+  // OOXML is a ZIP of XML parts. Decode only textual document/slide parts, never execute content.
+  const parts: string[] = [];
+  // Read the ZIP central directory rather than walking local headers: entries with general-purpose
+  // bit 3 store their sizes in a trailing data descriptor, but the central directory is definitive.
+  let eocd = -1;
+  for (let index = payload.length - 22; index >= Math.max(0, payload.length - 0xffff - 22); index--) {
+    if (payload.readUInt32LE(index) === 0x06054b50) { eocd = index; break; }
+  }
+  if (eocd < 0) return '';
+  const entries = payload.readUInt16LE(eocd + 10);
+  let cursor = payload.readUInt32LE(eocd + 16);
+  for (let entry = 0; entry < entries && cursor + 46 <= payload.length && payload.readUInt32LE(cursor) === 0x02014b50; entry++) {
+    const method = payload.readUInt16LE(cursor + 10); const compressedSize = payload.readUInt32LE(cursor + 20);
+    const nameLength = payload.readUInt16LE(cursor + 28); const extraLength = payload.readUInt16LE(cursor + 30); const commentLength = payload.readUInt16LE(cursor + 32);
+    const localOffset = payload.readUInt32LE(cursor + 42); const name = payload.subarray(cursor + 46, cursor + 46 + nameLength).toString('utf8').replace(/\\/g, '/');
+    if (localOffset + 30 > payload.length || payload.readUInt32LE(localOffset) !== 0x04034b50) { cursor += 46 + nameLength + extraLength + commentLength; continue; }
+    const localNameLength = payload.readUInt16LE(localOffset + 26); const localExtraLength = payload.readUInt16LE(localOffset + 28);
+    const start = localOffset + 30 + localNameLength + localExtraLength; const data = payload.subarray(start, start + compressedSize);
+    if (/^(?:word\/document|ppt\/slides\/slide\d+)\.xml$/i.test(name)) {
+      const xml = method === 8 ? inflateRawSync(data).toString('utf8') : data.toString('utf8');
+      if (docx) {
+        const paragraphs = [...xml.matchAll(/<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g)].map((match) => {
+          const paragraph = match[1];
+          const style = /<w:pStyle[^>]*w:val="([^"]+)"/i.exec(paragraph)?.[1] || '';
+          const text = [...paragraph.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((item) => item[1]).join('').replace(/&amp;/g, '&').trim();
+          return text ? (/^heading\d*$/i.test(style) ? `[[HEADING:${text}]]` : text) : '';
+        }).filter(Boolean);
+        parts.push(paragraphs.join('\n'));
+      } else parts.push(xml.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim());
+    }
+    cursor += 46 + nameLength + extraLength + commentLength;
+  }
+  return parts.join('\f').trim();
+}
+
+async function deterministicMaterialText(payload: Buffer, title: string): Promise<{ content: string; extractionMethod: string }> {
+  const extension = extensionOf(title);
+  if (extension === 'pdf') {
+    try {
+      const content = extractPdfText(payload);
+      if (!extractionIsLowQuality(content)) return { content, extractionMethod: 'embedded-pdf-text' };
+    } catch { /* OCR fallback below. */ }
+    const ocr = await localOcr(payload, 'pdf');
+    if (!ocr.text) throw new HttpError(422, `${title} could not be read by local OCR.`);
+    return { content: ocr.text, extractionMethod: 'local-windows-ocr' };
+  }
+  if (extension === 'txt') return { content: payload.toString('utf8').trim(), extractionMethod: 'utf8-text' };
+  if (extension === 'pptx' || extension === 'docx') return { content: zipOfficeText(payload, extension === 'docx'), extractionMethod: 'ooxml-text' };
+  if (extension === 'jpg' || extension === 'jpeg' || extension === 'png') {
+    const ocr = await localOcr(payload, extension);
+    if (!ocr.text) throw new HttpError(422, `${title} could not be read by local OCR.`);
+    return { content: ocr.text, extractionMethod: 'local-windows-ocr' };
+  }
+  throw new HttpError(422, 'This file type has no deterministic local extractor.');
+}
+
+// Deterministic, idempotent multi-file ingestion. This route intentionally never calls Gemini.
+app.post('/api/materials/analyze', async (req, res) => {
+  const files = req.body?.files;
+  if (!Array.isArray(files) || files.length === 0 || files.length > 30) return sendError(res, 400, 'files must contain 1 to 30 material files.');
+  try {
+    const results: any[] = [];
+    for (const item of files) {
+      const title = typeof item?.title === 'string' ? path.basename(item.title).trim() : '';
+      const category = item?.category as MaterialCategory;
+      if (!title || !['syllabus', 'lecture', 'past_paper'].includes(category) || typeof item?.base64 !== 'string') throw new HttpError(400, 'Each file requires a safe title, category, and base64 payload.');
+      const extension = extensionOf(title);
+      if (!MATERIAL_ACCEPT[category].has(extension)) throw new HttpError(415, `${title} is not supported for ${category}.`);
+      if (!/^[A-Za-z0-9+/=\r\n]+$/.test(item.base64)) throw new HttpError(400, `${title} has invalid base64.`);
+      const payload = Buffer.from(item.base64, 'base64');
+      if (!payload.length || payload.length > 15 * 1024 * 1024) throw new HttpError(413, `${title} must be between 1 byte and 15 MB.`);
+      const contentHash = createHash('sha256').update(payload).digest('hex');
+      const duplicate = services.findDocumentByHash(userIdOf(req), contentHash);
+      if (duplicate) { results.push({ title, document: duplicate, status: 'duplicate', reparsed: false }); continue; }
+      const extracted = await deterministicMaterialText(payload, title);
+      if (!extracted.content || extractionIsLowQuality(extracted.content)) throw new HttpError(422, `${title} has insufficient readable text after local OCR.`);
+      const docType = category === 'past_paper' ? 'Past Paper' : category === 'syllabus' ? 'Syllabus' : 'Lecture Materials';
+      const analysis = services.ingestAcademicDocument(userIdOf(req), { title, docType, content: extracted.content, fileSize: `${payload.length} bytes`, fileData: payload, mimeType: item.mimeType || 'application/octet-stream', extractionMethod: extracted.extractionMethod, contentHash, category, status: 'parsed' } as any);
+      services.persistMaterialAnalysis(userIdOf(req), analysis.document.id, category, extracted.content);
+      results.push({ title, document: analysis.document, status: 'analyzed', reparsed: true, createdQuestionCount: analysis.createdQuestionCount });
+    }
+    return res.status(201).json({ results, analysis: services.materialAnalysis(userIdOf(req)) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 422, error instanceof Error ? error.message : 'Unable to analyze materials.');
+  }
+});
+
+app.get('/api/materials/analysis', (req, res) => res.json({ analysis: services.materialAnalysis(userIdOf(req)) }));
+app.get('/api/materials/:id/locations', (req, res) => {
+  try { return res.json({ locations: services.documentSourceLocations(userIdOf(req), req.params.id) }); }
+  catch (error) { return sendError(res, error instanceof HttpError ? error.status : 400, error instanceof Error ? error.message : 'Unable to load source locations.'); }
+});
+app.get('/api/materials/:id/slides/:slide.svg', (req, res) => {
+  try {
+    const slide = Number(req.params.slide);
+    const document = services.findOwnedDocument(userIdOf(req), req.params.id);
+    if (!document || !Number.isInteger(slide) || slide < 1) return sendError(res, 404, 'Slide not found.');
+    const location = services.documentSourceLocations(userIdOf(req), document.id)
+      .find((item: any) => item.locationType === 'slide' && item.locationStart === slide) as any;
+    if (!location) return sendError(res, 404, 'Rendered slide not found.');
+    res.type('image/svg+xml').send(renderSlideSvg(document.title, slide, location.text));
+  } catch (error) {
+    return sendError(res, error instanceof HttpError ? error.status : 422, 'Slide rendering failed.');
+  }
+});
+app.delete('/api/materials/:id', (req, res) => {
+  try { return res.json({ ranking: services.removeAcademicDocument(userIdOf(req), req.params.id) }); }
+  catch (error) { return sendError(res, error instanceof HttpError ? error.status : 400, error instanceof Error ? error.message : 'Unable to remove material.'); }
 });
 
 type TopicMapping = { questionText: string; topicName: string; confidence: number };

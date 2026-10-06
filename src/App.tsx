@@ -12,7 +12,6 @@ import { CalendarView } from './components/CalendarView';
 import { InsightsView } from './components/InsightsView';
 import { HistoryView } from './components/HistoryView';
 import { StudyRoomView } from './components/StudyRoomView';
-import { UploadModal } from './components/UploadModal';
 import { SessionFeedbackCard } from './components/SessionFeedbackCard';
 import { AuthScreen } from './components/AuthScreen';
 import { MemoryAtlasView } from './components/MemoryAtlasView';
@@ -40,7 +39,7 @@ export default function App() {
   const [dismissedAdaptiveSessionId, setDismissedAdaptiveSessionId] = useState<string | null>(null);
   const [adaptiveMessage, setAdaptiveMessage] = useState('');
   const [sessionMessage, setSessionMessage] = useState('');
-  const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
+  const [academicUploadRequest, setAcademicUploadRequest] = useState(0);
   const [isFocusModalOpen, setIsFocusModalOpen] = useState<boolean>(false);
   const [focusConfig, setFocusConfig] = useState<FocusModeConfig | null>(null);
 
@@ -66,7 +65,6 @@ export default function App() {
     setDismissedAdaptiveSessionId(null);
     setAdaptiveMessage('');
     setSessionMessage('');
-    setIsUploadModalOpen(false);
     setPapers([]);
     setTopics([]);
     setQuestions([]);
@@ -202,6 +200,9 @@ export default function App() {
       context: question.context,
       marks: question.marks,
       source: question.source,
+      sourceType: question.sourceType,
+      year: question.examYear,
+      pageNumber: question.pageNumber,
       type: 'Short Answer',
       suggestedTimeMinutes: question.suggestedTimeMinutes,
       documentId: question.documentId,
@@ -424,7 +425,7 @@ export default function App() {
       <Header
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        onOpenUpload={() => setIsUploadModalOpen(true)}
+        onOpenUpload={() => { setActiveTab('upload'); setAcademicUploadRequest((value) => value + 1); }}
         user={user}
         onLogout={handleLogout}
         onOpenFocusMode={() => setIsFocusModalOpen(true)}
@@ -440,7 +441,7 @@ export default function App() {
         <Sidebar
           activeTab={activeTab}
           setActiveTab={setActiveTab}
-          onOpenUpload={() => setIsUploadModalOpen(true)}
+          onOpenUpload={() => { setActiveTab('upload'); setAcademicUploadRequest((value) => value + 1); }}
           focusTimerSeconds={focusTimerSeconds}
           isTimerRunning={isTimerRunning}
           toggleTimer={() => void toggleTimer()}
@@ -472,6 +473,7 @@ export default function App() {
               questions={questions}
               onAcademicUpdated={refreshAcademicData}
               setActiveTab={setActiveTab}
+              openUploaderRequest={academicUploadRequest}
             />
           )}
 
@@ -522,11 +524,6 @@ export default function App() {
       </div>
 
       {/* Quick Upload Paper Modal */}
-      <UploadModal
-        isOpen={isUploadModalOpen}
-        onClose={() => setIsUploadModalOpen(false)}
-        onAcademicUpdated={refreshAcademicData}
-      />
 
       {/* Focus Mode & Distraction Shield Modal */}
       <FocusModeModal

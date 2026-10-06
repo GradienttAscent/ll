@@ -111,7 +111,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const greeting = useMemo(() => {
     const hour = new Date().getHours();
-    const displayName = user?.name || user?.email?.split('@')[0] || 'Student';
+    const displayName = user?.displayName?.trim() || 'Student';
     const capitalized = displayName.charAt(0).toUpperCase() + displayName.slice(1);
     if (hour < 12) return `Good morning, ${capitalized}.`;
     if (hour < 17) return `Good afternoon, ${capitalized}.`;

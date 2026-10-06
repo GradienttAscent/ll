@@ -52,7 +52,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { tab: 'practice', label: 'AI Practice Mode', icon: BookOpen },
     { tab: 'mock', label: 'Timed Mock Exam', icon: Layers },
     { tab: 'planner', label: 'Planner & Calendar', icon: Calendar },
-    { tab: 'calendar', label: 'Full Calendar', icon: Calendar },
+    { tab: 'calendar', label: 'Weekly Schedule', icon: Calendar },
     { tab: 'memory', label: 'Memory Atlas', icon: Brain },
   ];
 

@@ -9,6 +9,8 @@ export interface ExtractedTopic {
   frequencyCount: number;
   syllabusEvidence?: boolean;
   source?: string;
+  sourceType?: 'past_paper' | 'ai_generated';
+  pageNumber?: number | null;
   sourceDocumentIds?: string[];
   difficulty: 'Easy' | 'Medium' | 'Hard';
   highYield: boolean;
@@ -26,6 +28,9 @@ export interface QuestionItem {
   context?: string | null;
   marks: number;
   source?: string;
+  sourceType?: 'past_paper' | 'ai_generated';
+  pageNumber?: number | null;
+  difficulty?: string | null;
   year?: string;
   type: 'Short Answer' | 'Long Proof' | 'Code/Algorithm' | 'Numerical';
   suggestedTimeMinutes: number;

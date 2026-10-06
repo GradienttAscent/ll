@@ -396,6 +396,42 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 16,
+    name: 'material-library-provenance-and-incremental-analysis',
+    up: (db) => {
+      const documentColumns = pragmaTableInfo(db, 'documents').map((column) => column.name);
+      if (!documentColumns.includes('content_hash')) db.run("ALTER TABLE documents ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''; ");
+      if (!documentColumns.includes('category')) db.run("ALTER TABLE documents ADD COLUMN category TEXT NOT NULL DEFAULT 'past_paper';");
+      if (!documentColumns.includes('status')) db.run("ALTER TABLE documents ADD COLUMN status TEXT NOT NULL DEFAULT 'analyzed';");
+      if (!documentColumns.includes('metadata_json')) db.run("ALTER TABLE documents ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';");
+      db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_user_hash ON documents(user_id, content_hash) WHERE content_hash != \'\';');
+      const questionColumns = pragmaTableInfo(db, 'questions').map((column) => column.name);
+      if (!questionColumns.includes('source_type')) db.run("ALTER TABLE questions ADD COLUMN source_type TEXT NOT NULL DEFAULT 'past_paper';");
+      if (!questionColumns.includes('page_number')) db.run('ALTER TABLE questions ADD COLUMN page_number INTEGER;');
+      if (!questionColumns.includes('exam_year')) db.run('ALTER TABLE questions ADD COLUMN exam_year TEXT;');
+      if (!questionColumns.includes('exam_label')) db.run('ALTER TABLE questions ADD COLUMN exam_label TEXT;');
+      if (!questionColumns.includes('difficulty')) db.run('ALTER TABLE questions ADD COLUMN difficulty TEXT;');
+      db.run(`CREATE TABLE IF NOT EXISTS document_chunks (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL, text TEXT NOT NULL, location_type TEXT NOT NULL,
+        location_start INTEGER, location_end INTEGER, section_title TEXT, created_at TEXT NOT NULL
+      );`);
+      db.run(`CREATE TABLE IF NOT EXISTS topic_occurrences (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        chunk_id TEXT REFERENCES document_chunks(id) ON DELETE CASCADE,
+        confidence REAL NOT NULL, is_best_match INTEGER NOT NULL DEFAULT 0, evidence TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL
+      );`);
+      db.run(`CREATE TABLE IF NOT EXISTS question_topic_mappings (
+        question_id TEXT NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+        topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+        confidence REAL NOT NULL, evidence TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(question_id, topic_id)
+      );`);
+    },
+  },
 ];
 
 function createMockExamTables(db: SqlJsDatabase) {

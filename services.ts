@@ -67,6 +67,11 @@ export type QuestionRow = {
   marks: number;
   questionType: string;
   source: string;
+  sourceType?: 'past_paper' | 'ai_generated';
+  pageNumber?: number | null;
+  examYear?: string | null;
+  examLabel?: string | null;
+  difficulty?: string | null;
   suggestedTimeMinutes: number;
   mappingScore: number | null;
   mappingEvidence: string[];
@@ -480,21 +485,26 @@ export type DocumentRow = {
   fileSize: string;
   mimeType?: string;
   extractionMethod?: string;
+  contentHash?: string;
+  category?: string;
+  status?: string;
+  metadata?: Record<string, unknown>;
   createdAt: string;
 };
 
 export function documentRows(userId: string): DocumentRow[] {
   return getDb().prepare(`
-    SELECT id, title, doc_type AS docType, content, file_size AS fileSize, mime_type AS mimeType, extraction_method AS extractionMethod, created_at AS createdAt
+    SELECT id, title, doc_type AS docType, content, file_size AS fileSize, mime_type AS mimeType, extraction_method AS extractionMethod, content_hash AS contentHash, category, status, metadata_json AS metadata, created_at AS createdAt
     FROM documents WHERE user_id = ? ORDER BY created_at DESC
-  `).all(userId) as DocumentRow[];
+  `).all(userId).map((row: any) => ({ ...row, metadata: safeJsonObject(row.metadata) })) as DocumentRow[];
 }
 
 export function findOwnedDocument(userId: string, documentId: string): DocumentRow | undefined {
-  return getDb().prepare(`
-    SELECT id, title, doc_type AS docType, content, file_size AS fileSize, mime_type AS mimeType, extraction_method AS extractionMethod, created_at AS createdAt
+  const row = getDb().prepare(`
+    SELECT id, title, doc_type AS docType, content, file_size AS fileSize, mime_type AS mimeType, extraction_method AS extractionMethod, content_hash AS contentHash, category, status, metadata_json AS metadata, created_at AS createdAt
     FROM documents WHERE id = ? AND user_id = ?
-  `).get(documentId, userId) as DocumentRow | undefined;
+  `).get(documentId, userId) as any;
+  return row ? { ...row, metadata: safeJsonObject(row.metadata) } : undefined;
 }
 
 export function findOwnedDocumentFileData(userId: string, documentId: string): { fileData?: Buffer | Uint8Array; mimeType: string; content?: string; title: string } | undefined {
@@ -513,12 +523,36 @@ export function findOwnedDocumentFileData(userId: string, documentId: string): {
 
 export function createDocument(userId: string, input: any): DocumentRow {
   const id = createId('document');
-  getDb().prepare(`INSERT INTO documents (id, user_id, title, doc_type, content, file_size, file_data, mime_type, extraction_method, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  getDb().prepare(`INSERT INTO documents (id, user_id, title, doc_type, content, file_size, file_data, mime_type, extraction_method, content_hash, category, status, metadata_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, userId, String(input.title).trim(), String(input.docType || 'Past Paper'),
       typeof input.content === 'string' && input.content ? input.content : null,
-      String(input.fileSize || ''), input.fileData || null, String(input.mimeType || 'text/plain'), String(input.extractionMethod || 'provided-text'), now());
+      String(input.fileSize || ''), input.fileData || null, String(input.mimeType || 'text/plain'), String(input.extractionMethod || 'provided-text'), String(input.contentHash || ''), String(input.category || 'past_paper'), String(input.status || 'analyzed'), JSON.stringify(input.metadata || {}), now());
   return findOwnedDocument(userId, id)!;
+}
+
+function safeJsonObject(value: unknown): Record<string, unknown> {
+  try { return value ? JSON.parse(String(value)) : {}; } catch { return {}; }
+}
+
+export function findDocumentByHash(userId: string, contentHash: string): DocumentRow | undefined {
+  if (!contentHash) return undefined;
+  return getDb().prepare('SELECT id FROM documents WHERE user_id = ? AND content_hash = ?').get(userId, contentHash)
+    ? documentRows(userId).find((document) => document.contentHash === contentHash) : undefined;
+}
+
+export function removeAcademicDocument(userId: string, documentId: string) {
+  if (!findOwnedDocument(userId, documentId)) throw new HttpError(404, 'Document not found.');
+  getDb().prepare('DELETE FROM documents WHERE id = ? AND user_id = ?').run(documentId, userId);
+  // Derived priorities are recomputed from the remaining persisted evidence.
+  return rankedTopicRows(userId);
+}
+
+export function documentSourceLocations(userId: string, documentId: string) {
+  if (!findOwnedDocument(userId, documentId)) throw new HttpError(404, 'Document not found.');
+  return getDb().prepare(`SELECT id, ordinal, text, location_type AS locationType, location_start AS locationStart,
+    location_end AS locationEnd, section_title AS sectionTitle FROM document_chunks
+    WHERE user_id = ? AND document_id = ? ORDER BY ordinal`).all(userId, documentId);
 }
 
 function academicTokens(value: string): string[] {
@@ -950,7 +984,7 @@ export function extractSyllabusTopics(content: string): Array<{ name: string; we
     const candidates = withoutWeightage.includes(':') ? withoutWeightage.split(':').slice(1) : [withoutWeightage];
     for (const candidate of candidates.flatMap((item) => item.split(/[;,\u2022|]/))) {
       const name = stripMarkdownNoise(candidate).replace(/^[-\s]+/, '').trim();
-      if (name.length < 3 || name.length > 80 || /^(course|syllabus|unit|module)$/i.test(name)) continue;
+      if (!isCredibleAcademicTopic(name)) continue;
       topics.set(name.toLowerCase(), { name, weightage: weightageMatch ? Number(weightageMatch[1]) : undefined });
     }
   }
@@ -1110,6 +1144,21 @@ function mapQuestionToTopic(questionText: string, topics: TopicRow[]) {
     }
   }
   return best ?? null;
+}
+
+// OCR/PDF artifacts often look superficially like headings. Only automatically-derived
+// topics are subject to this gate; manually created course topics are never removed.
+function isCredibleAcademicTopic(name: string): boolean {
+  if (name.length < 4 || name.length > 80 || /^(course|syllabus|unit|module)$/i.test(name)) return false;
+  if (/[^\x20-\x7e]/.test(name) || /(?:\d{4}|o['’]reilly|blackem)/i.test(name) || /^(?:suite|to)\b/i.test(name)) return false;
+  if ((name.match(/[A-Za-z]/g) || []).length / name.length < 0.45) return false;
+  if (/[#]/.test(name)) return false;
+  return true;
+}
+
+function mapQuestionToTopics(questionText: string, topics: TopicRow[]) {
+  return topics.map((topic) => mapQuestionToTopic(questionText, [topic]))
+    .filter((mapping): mapping is { topic: TopicRow; score: number; evidence: string[] } => Boolean(mapping && mapping.score >= 0.6));
 }
 
 export type AcademicQuestionRow = QuestionRow;
@@ -1273,6 +1322,13 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
       const marks = item.marks;
       insert.run(id, userId, document.id, mapping?.topic.id || null, questionText, normalizedText, item.questionNumber || null, item.subpart || null, item.context || null, marks, 'Subjective', 'pyq', Math.max(5, marks * 2),
         mapping?.score || null, JSON.stringify(mapping?.evidence || []), mapping ? 'mapped' : 'unmatched', now());
+      const rawPosition = input.content.toLowerCase().indexOf(questionText.toLowerCase());
+      const pageNumber = rawPosition < 0 ? 1 : input.content.slice(0, rawPosition).split('\f').length;
+      getDb().prepare('UPDATE questions SET page_number = ? WHERE id = ? AND user_id = ?').run(pageNumber, id, userId);
+      const allMappings = mapQuestionToTopics(questionClassificationText(item), persistedSyllabusTopics);
+      const mappings = allMappings.length > 0 ? allMappings : mapping ? [mapping] : [];
+      for (const topicMapping of mappings) getDb().prepare(`INSERT OR REPLACE INTO question_topic_mappings (question_id, topic_id, confidence, evidence) VALUES (?, ?, ?, ?)`)
+        .run(id, topicMapping.topic.id, topicMapping.score, JSON.stringify(topicMapping.evidence));
       createdQuestionIds.push(id);
       existing.push(normalizedText);
     });
@@ -1288,6 +1344,94 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
     questions,
     ranking,
   };
+}
+
+export const TOPIC_PRIORITY_WEIGHTS = { syllabus: 25, pyqFrequency: 25, pyqMarks: 25, recurrence: 15, lectureCoverage: 10 } as const;
+
+/** Persists bounded source chunks and all deterministic topic evidence for one new file. */
+export function persistMaterialAnalysis(userId: string, documentId: string, category: 'syllabus' | 'lecture' | 'past_paper', content: string) {
+  const document = findOwnedDocument(userId, documentId);
+  if (!document) throw new HttpError(404, 'Document not found.');
+  const isDocx = /\.docx$/i.test(document.title);
+  const isPpt = /\.pptx?$/i.test(document.title);
+  const sourceUnits = content.replace(/\r/g, '').split('\f').map((text) => text.trim()).filter(Boolean);
+  const units = (locationType: string) => sourceUnits.flatMap((text, sourceIndex) => {
+    if (locationType === 'line') {
+      const lines = text.split('\n');
+      const slices: Array<{ text: string; start: number; end: number }> = [];
+      for (let start = 0; start < lines.length; start += 30) slices.push({ text: lines.slice(start, start + 30).join('\n').trim(), start: start + 1, end: Math.min(lines.length, start + 30) });
+      return slices.filter((slice) => slice.text);
+    }
+    if (locationType === 'section') {
+      const paragraphs = text.split(/\n+/).map((paragraph) => paragraph.trim()).filter(Boolean);
+      const sections: Array<{ text: string; start: number; end: number; sectionTitle: string }> = [];
+      let sectionTitle = 'Document section'; let start = 1; let pending: string[] = [];
+      const commit = (end: number) => { if (pending.length) sections.push({ text: pending.join('\n'), start, end, sectionTitle }); };
+      paragraphs.forEach((paragraph, index) => {
+        const ooxmlHeading = /^\[\[HEADING:(.*)\]\]$/.exec(paragraph);
+        const heading = Boolean(ooxmlHeading) || (paragraph.length < 120 && (/^(?:\d+(?:\.\d+)*\s+)?[A-Z][A-Za-z0-9 ,:&/-]+$/.test(paragraph) || /^heading\b/i.test(paragraph)));
+        const visibleParagraph = ooxmlHeading ? ooxmlHeading[1] : paragraph;
+        if (heading) { commit(index); sectionTitle = visibleParagraph; start = index + 1; pending = [visibleParagraph]; } else pending.push(visibleParagraph);
+      });
+      commit(paragraphs.length);
+      return sections.length ? sections : [{ text, start: 1, end: paragraphs.length, sectionTitle }];
+    }
+    return [{ text, start: sourceIndex + 1, end: sourceIndex + 1, sectionTitle: null }];
+  });
+  const insertChunk = getDb().prepare(`INSERT INTO document_chunks (id, user_id, document_id, ordinal, text, location_type, location_start, location_end, section_title, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const locationType = document.mimeType?.startsWith('image/') ? 'image' : document.mimeType === 'text/plain' ? 'line' : isDocx ? 'section' : isPpt ? 'slide' : 'page';
+  const chunks = units(locationType).map((unit, index) => ({ id: createId('chunk'), text: unit.text, ordinal: index + 1, start: unit.start, end: unit.end, sectionTitle: ('sectionTitle' in unit ? unit.sectionTitle : null) || null }));
+  getDb().transaction((items: typeof chunks) => items.forEach((chunk) => insertChunk.run(chunk.id, userId, documentId, chunk.ordinal, chunk.text, locationType, chunk.start, chunk.end, chunk.sectionTitle, now())))(chunks);
+  const topics = topicRows(userId);
+  const insertOccurrence = getDb().prepare(`INSERT INTO topic_occurrences (id, user_id, topic_id, document_id, chunk_id, confidence, is_best_match, evidence, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const chunk of chunks) {
+    const mapping = mapQuestionToTopic(chunk.text, topics);
+    if (!mapping) continue;
+    insertOccurrence.run(createId('occurrence'), userId, mapping.topic.id, documentId, chunk.id, Math.min(1, mapping.score), 0, JSON.stringify(mapping.evidence), now());
+  }
+  // Mark one strongest occurrence per topic/document as the UI's best match.
+  getDb().prepare(`UPDATE topic_occurrences SET is_best_match = 1 WHERE id IN (
+    SELECT id FROM topic_occurrences WHERE user_id = ? AND document_id = ? GROUP BY topic_id HAVING MAX(confidence)
+  )`).run(userId, documentId);
+  const year = /(?:19|20)\d{2}/.exec(document.title)?.[0] || null;
+  const examLabel = /(?:mid\s*sem(?:ester)?|end\s*sem(?:ester)?|final|supplementary)/i.exec(document.title)?.[0] || null;
+  getDb().prepare(`UPDATE questions SET page_number = COALESCE(page_number, 1), exam_year = COALESCE(exam_year, ?),
+    exam_label = COALESCE(exam_label, ?), source_type = CASE WHEN ? = 'past_paper' THEN 'past_paper' ELSE source_type END
+    WHERE user_id = ? AND document_id = ?`).run(year, examLabel, category, userId, documentId);
+  return materialAnalysis(userId);
+}
+
+export function materialAnalysis(userId: string) {
+  // Keep historical records intact, but do not render unmistakable OCR corruption as a
+  // syllabus topic. Deleting here can break existing questions/sessions that reference it.
+  const topicList = topicRows(userId);
+  const invalidTopicIds = new Set(topicList
+    .filter((topic) => topic.source === 'syllabus' && !isCredibleAcademicTopic(topic.name))
+    .map((topic) => topic.id));
+  const documents = documentRows(userId);
+  const occurrences = getDb().prepare(`SELECT o.topic_id AS topicId, o.document_id AS documentId, o.confidence, o.is_best_match AS isBestMatch,
+    o.evidence, d.title, c.location_type AS locationType, c.location_start AS locationStart, c.location_end AS locationEnd, c.section_title AS sectionTitle
+    FROM topic_occurrences o JOIN documents d ON d.id = o.document_id JOIN document_chunks c ON c.id = o.chunk_id
+    WHERE o.user_id = ? ORDER BY o.confidence DESC`).all(userId) as any[];
+  const questions = questionRows(userId);
+  const baseRanking = rankedTopicRows(userId).filter((topic) => !invalidTopicIds.has(topic.id));
+  const allCounts = baseRanking.map((item) => item.mappedQuestionCount);
+  const allMarks = baseRanking.map((item) => item.totalMarks);
+  const allYears = baseRanking.map((item) => new Set(questions.filter((q) => q.topicId === item.id && q.examYear).map((q) => q.examYear)).size);
+  const allLecture = baseRanking.map((item) => occurrences.filter((o) => o.topicId === item.id && documents.find((d) => d.id === o.documentId)?.category === 'lecture').length);
+  const ranked = baseRanking.map((topic) => {
+    const evidence = occurrences.filter((item) => item.topicId === topic.id);
+    const paperQuestions = questions.filter((question) => question.topicId === topic.id && question.sourceType === 'past_paper');
+    const years = new Set(paperQuestions.map((question) => question.examYear).filter(Boolean));
+    const lectureCount = evidence.filter((item) => documents.find((doc) => doc.id === item.documentId)?.category === 'lecture').length;
+    const max = (values: number[]) => Math.max(1, ...values);
+    const components = { syllabus: topic.hasWeightage ? (topic.weightage / 100) * TOPIC_PRIORITY_WEIGHTS.syllabus : 0, pyqFrequency: (paperQuestions.length / max(allCounts)) * TOPIC_PRIORITY_WEIGHTS.pyqFrequency, pyqMarks: (topic.totalMarks / max(allMarks)) * TOPIC_PRIORITY_WEIGHTS.pyqMarks, recurrence: (years.size / max(allYears)) * TOPIC_PRIORITY_WEIGHTS.recurrence, lectureCoverage: (lectureCount / max(allLecture)) * TOPIC_PRIORITY_WEIGHTS.lectureCoverage };
+    const priority = Math.round(Object.values(components).reduce((sum, value) => sum + value, 0));
+    return { ...topic, priority, components, yearsAppeared: [...years], trend: years.size >= 2 ? 'recurs across years' : paperQuestions.length ? 'appeared in available papers' : 'no past-paper evidence', occurrences: evidence };
+  });
+  return { documents, topics: ranked.sort((a, b) => b.priority - a.priority), questions, weights: TOPIC_PRIORITY_WEIGHTS };
 }
 
 // Maps an AI-classified topic name to an exact syllabus topic name, or to the closest one via
@@ -1402,7 +1546,7 @@ export function questionRows(userId: string, documentId?: string): QuestionRow[]
   return getDb().prepare(`
     SELECT q.id, q.topic_id AS topicId, q.document_id AS documentId, q.question_text AS questionText,
       q.question_number AS questionNumber, q.subpart, q.context_text AS context, q.marks,
-      q.question_type AS questionType, q.source, q.suggested_time_minutes AS suggestedTimeMinutes,
+      q.question_type AS questionType, q.source, q.source_type AS sourceType, q.page_number AS pageNumber, q.exam_year AS examYear, q.exam_label AS examLabel, q.difficulty, q.suggested_time_minutes AS suggestedTimeMinutes,
       q.mapping_score AS mappingScore, q.mapping_evidence AS mappingEvidence, q.mapping_status AS mappingStatus,
       q.created_at AS createdAt, t.name AS topicName
     FROM questions q
@@ -1416,7 +1560,7 @@ export function findOwnedQuestion(userId: string, questionId: string): QuestionR
   const row = getDb().prepare(`
     SELECT q.id, q.topic_id AS topicId, q.document_id AS documentId, q.question_text AS questionText,
       q.question_number AS questionNumber, q.subpart, q.context_text AS context, q.marks,
-      q.question_type AS questionType, q.source, q.suggested_time_minutes AS suggestedTimeMinutes,
+      q.question_type AS questionType, q.source, q.source_type AS sourceType, q.page_number AS pageNumber, q.exam_year AS examYear, q.exam_label AS examLabel, q.difficulty, q.suggested_time_minutes AS suggestedTimeMinutes,
       q.mapping_score AS mappingScore, q.mapping_evidence AS mappingEvidence, q.mapping_status AS mappingStatus,
       q.created_at AS createdAt, t.name AS topicName
     FROM questions q
