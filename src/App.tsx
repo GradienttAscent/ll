@@ -88,15 +88,22 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     const restoreAuthentication = async () => {
-      const hadStoredSession = hasStoredSession();
-      const restoredUser = await restoreSession();
-      if (cancelled) return;
-      if (restoredUser) {
-        setUser(restoredUser);
-        setAuthState('authenticated');
-      } else {
-        setAuthMessage(hadStoredSession ? 'Your session has expired. Please log in again.' : '');
-        setAuthState('unauthenticated');
+      try {
+        const hadStoredSession = hasStoredSession();
+        const restoredUser = await restoreSession();
+        if (cancelled) return;
+        if (restoredUser) {
+          setUser(restoredUser);
+          setAuthState('authenticated');
+        } else {
+          setAuthMessage(hadStoredSession ? 'Your session has expired. Please log in again.' : '');
+          setAuthState('unauthenticated');
+        }
+      } catch (err) {
+        console.error('Failed to restore authentication:', err);
+        if (!cancelled) {
+          setAuthState('unauthenticated');
+        }
       }
     };
     void restoreAuthentication();
@@ -403,22 +410,17 @@ export default function App() {
     void logoutSession();
   };
 
-  if (authState === 'checking') {
-    return <SplashScreen onComplete={() => setShowSplash(false)} />;
-  }
-
-  if (authState === 'unauthenticated' || !user) {
-    return (
-      <>
-        {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
-        <AuthScreen initialMessage={authMessage} onAuthenticated={handleAuthenticated} />
-      </>
-    );
-  }
-
   return (
-    <div key={user.id} className="min-h-screen bg-[#FDFDFC] dark:bg-[#111013] text-[#17151A] dark:text-[#F5F3F7] flex flex-col font-sans selection:bg-[#EDE7F6] dark:selection:bg-[#251E30] selection:text-[#6D28D9] dark:selection:text-[#8B5CF6] transition-colors duration-200">
+    <>
       {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
+      {authState === 'checking' ? (
+        <div className="min-h-screen flex items-center justify-center bg-[#FAF8FC] dark:bg-[#111013]">
+          <div className="w-8 h-8 border-2 border-[#6D28D9] border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : authState === 'unauthenticated' || !user ? (
+        <AuthScreen initialMessage={authMessage} onAuthenticated={handleAuthenticated} />
+      ) : (
+        <div key={user.id} className="min-h-screen bg-[#FDFDFC] dark:bg-[#111013] text-[#17151A] dark:text-[#F5F3F7] flex flex-col font-sans selection:bg-[#EDE7F6] dark:selection:bg-[#251E30] selection:text-[#6D28D9] dark:selection:text-[#8B5CF6] transition-colors duration-200">
       
       {/* Top Header */}
       <Header
@@ -546,6 +548,8 @@ export default function App() {
       {/* Scroll To Top Button */}
       <ScrollToTopButton />
 
-    </div>
+        </div>
+      )}
+    </>
   );
 }

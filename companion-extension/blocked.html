@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Focus Shield • LazyLift</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #0f0d13;
+      color: #f5f3f7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .card {
+      background-color: #17151a;
+      border: 1px solid #302b35;
+      border-radius: 1.25rem;
+      max-width: 480px;
+      width: 100%;
+      padding: 2.5rem 2rem;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background-color: #251e30;
+      border: 1px solid #3e3846;
+      color: #a78bfa;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      margin-bottom: 1.5rem;
+    }
+    h1 {
+      font-family: Georgia, Cambria, "Times New Roman", Times, serif;
+      font-style: italic;
+      font-weight: 400;
+      font-size: 2.25rem;
+      line-height: 1.2;
+      color: #ffffff;
+      margin-bottom: 0.75rem;
+    }
+    .desc {
+      font-size: 0.85rem;
+      color: #a9a3ae;
+      line-height: 1.5;
+      margin-bottom: 1.75rem;
+    }
+    .target-domain {
+      color: #c4b5fd;
+      font-weight: 600;
+      font-family: monospace;
+    }
+    .timer-box {
+      background-color: #1d1a21;
+      border: 1px solid #302b35;
+      border-radius: 0.75rem;
+      padding: 1rem;
+      margin-bottom: 2rem;
+    }
+    .timer-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: #7b7484;
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+    }
+    .timer-val {
+      font-size: 2rem;
+      font-weight: 800;
+      font-family: monospace;
+      color: #a78bfa;
+    }
+    .task-title {
+      font-size: 0.75rem;
+      color: #d8cce8;
+      margin-top: 0.5rem;
+    }
+    .btn {
+      display: inline-block;
+      background-color: #6d28d9;
+      color: #ffffff;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      padding: 0.75rem 1.5rem;
+      border-radius: 0.5rem;
+      text-decoration: none;
+      transition: background-color 0.15s ease;
+      cursor: pointer;
+      border: none;
+    }
+    .btn:hover {
+      background-color: #5b21b6;
+    }
+    .footer-note {
+      font-size: 0.7rem;
+      color: #635c6e;
+      margin-top: 1.5rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">
+      &#128737; Focus Shield &bull; Active Enforcement
+    </div>
+    <h1>Distraction Blocked</h1>
+    <p class="desc">
+      Access to <span id="domainText" class="target-domain">this site</span> has been restricted by your active LazyLift focus session.
+    </p>
+
+    <div class="timer-box">
+      <div class="timer-label">Session Remaining</div>
+      <div id="countdown" class="timer-val">--:--</div>
+      <div id="taskBanner" class="task-title"></div>
+    </div>
+
+    <div>
+      <a href="http://localhost:3000" class="btn">Return to LazyLift</a>
+    </div>
+
+    <div class="footer-note">
+      Protection managed via LazyLift declarativeNetRequest engine.
+    </div>
+  </div>
+
+  <script src="blocked.js"></script>
+</body>
+</html>

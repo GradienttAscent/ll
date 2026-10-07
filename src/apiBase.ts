@@ -6,7 +6,19 @@
 // it bundles, and must point at the Render backend, e.g. https://lazylift-backend.onrender.com
 const configured = import.meta.env.VITE_API_BASE_URL ?? '';
 
-export const API_BASE_URL = configured.trim().replace(/\/+$/, '');
+export const API_BASE_URL = (() => {
+  // If running in a browser on loopback (localhost / 127.0.0.1), always keep requests
+  // root-relative / same-origin so they reach the local Express dev server.
+  if (
+    typeof window !== 'undefined' &&
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+  ) {
+    if (configured && !configured.includes('localhost') && !configured.includes('127.0.0.1')) {
+      return '';
+    }
+  }
+  return configured.trim().replace(/\/+$/, '');
+})();
 
 const ABSOLUTE_URL = /^[a-z][a-z0-9+.-]*:/i;
 

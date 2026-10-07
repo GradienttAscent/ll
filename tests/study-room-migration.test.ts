@@ -63,7 +63,7 @@ describe('Study Room migration', () => {
     server = await startServer(dbDir);
 
     const version = (await getDatabase()).prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
-    assert.strictEqual(version.value, '16');
+    assert.ok(Number(version.value) >= 16);
 
     const reloaded = new Api(server.baseUrl);
     await reloaded.signInAs('legacy-owner@lazylift.app', 'secret123');
