@@ -161,6 +161,37 @@ describe('PDF OCR fallback pipeline', () => {
       assert.strictEqual(calls, 1, 'OCR mock must be invoked for low-quality embedded text');
       assert.strictEqual(result.json.analysis.createdQuestionCount, 2);
     });
+
+    it('recovers with locally extracted text when OCR returns 503 high demand', async () => {
+      const mock503AI = {
+        models: {
+          generateContent: async () => {
+            const err: any = new Error('This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.');
+            err.code = 503;
+            err.status = 'UNAVAILABLE';
+            throw err;
+          },
+        },
+      };
+      server.setAIClientForTesting(mock503AI);
+
+      const garbled = pdfWordPerLine([
+        'QUESTION 1 (10 Marks): Explain the working of Dijkstra algorithm.',
+        'QUESTION 2 (10 Marks): Compare BFS and DFS graph traversal.',
+        'node', 'edge', 'weight', 'yes', 'pm', 'finite', 'vertex', 'arc', 'color', 'green', 'mark',
+        'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta', 'iota', 'kappa',
+        'lambda', 'mu', 'nu', 'xi', 'omicron', 'pi', 'rho', 'sigma', 'tau', 'upsilon', 'phi', 'chi',
+      ]);
+      const paper = Buffer.from(garbled, 'latin1').toString('base64');
+      const result = await client.request('/api/academic-documents/upload', {
+        method: 'POST',
+        body: { title: 'recover-on-503.pdf', docType: 'Past Paper', base64: paper, mimeType: 'application/pdf' },
+      });
+
+      assert.strictEqual(result.status, 201);
+      assert.strictEqual(result.json.analysis.document.extractionMethod, 'embedded-pdf-text-fallback');
+      assert.ok(result.json.analysis.createdQuestionCount >= 1);
+    });
   });
 
   describe('OCR unavailable — controlled errors', () => {

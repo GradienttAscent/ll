@@ -3,6 +3,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
+
+process.env.NODE_ENV = 'test';
+
 import { createApp } from '../server';
 
 export interface ApiResponse {
