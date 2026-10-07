@@ -11,8 +11,10 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
   const [docName, setDocName] = useState('');
   const [docType, setDocType] = useState<'Past Paper' | 'Syllabus' | 'Lecture Slides'>('Past Paper');
   const [content, setContent] = useState('');
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingMsg, setProcessingMsg] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
 
   const fileAsBase64 = async (file: File) => {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -23,9 +25,40 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
 
   if (!isOpen) return null;
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []) as File[];
+    if (files.length > 0) {
+      setUploadedFiles((prev) => {
+        const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
+        const fresh = files.filter((f) => !existing.has(`${f.name}-${f.size}`));
+        return [...prev, ...fresh];
+      });
+      setContent('');
+      if (files.length === 1 && !docName) {
+        setDocName(files[0].name);
+      }
+    }
+    e.target.value = '';
+  };
+
+  const handleRemoveFile = (index: number) => {
+    setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleClearFiles = () => {
+    setUploadedFiles([]);
+    setDocName('');
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!docName.trim()) {
+
+    if (uploadedFiles.length === 0 && !content.trim()) {
+      alert('Please select files to upload or paste text content.');
+      return;
+    }
+
+    if (uploadedFiles.length === 0 && !docName.trim()) {
       alert('Please enter a document title.');
       return;
     }
@@ -33,24 +66,69 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
     setIsProcessing(true);
 
     try {
-      const res = await fetch(uploadedFile ? '/api/academic-documents/upload' : '/api/academic-documents/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(uploadedFile
-          ? { title: uploadedFile.name, docType, base64: await fileAsBase64(uploadedFile), mimeType: uploadedFile.type || undefined }
-          : { title: docName, docType, content }),
-      });
+      if (uploadedFiles.length > 0) {
+        let totalQuestions = 0;
+        const processed: { name: string; method: string }[] = [];
+        const failed: { name: string; error: string }[] = [];
 
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Failed to save academic document.');
-      await onAcademicUpdated();
-      onClose();
-      alert(`Document saved. ${json.analysis.createdQuestionCount} new questions were identified.`);
-    } catch (err) {
-      console.error('Error uploading paper:', err);
-      alert('Failed to process document.');
+        for (let i = 0; i < uploadedFiles.length; i++) {
+          const file = uploadedFiles[i];
+          setProcessingMsg(`Processing ${i + 1} of ${uploadedFiles.length}: ${file.name}...`);
+          try {
+            const title = uploadedFiles.length === 1 && docName.trim() ? docName.trim() : file.name;
+            const res = await fetch('/api/academic-documents/upload', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title,
+                docType,
+                base64: await fileAsBase64(file),
+                mimeType: file.type || undefined,
+              }),
+            });
+            const json = await res.json();
+            if (!res.ok) {
+              failed.push({ name: file.name, error: json.error || 'Failed to process file' });
+            } else {
+              totalQuestions += json.analysis?.createdQuestionCount || 0;
+              const method = json.analysis?.document?.extractionMethod || json.analysis?.extractionMethod || 'embedded-pdf-text';
+              processed.push({ name: file.name, method });
+            }
+          } catch (err: any) {
+            failed.push({ name: file.name, error: err.message || 'Upload error' });
+          }
+        }
+
+        if (failed.length > 0 && processed.length === 0) {
+          throw new Error(`Failed to upload: ${failed.map((f) => `${f.name} (${f.error})`).join(', ')}`);
+        }
+
+        await onAcademicUpdated();
+        onClose();
+        const methodSummary = processed.map((p) => `${p.name} (${p.method})`).join(', ');
+        alert(
+          failed.length > 0
+            ? `Partially completed: ${processed.length} of ${uploadedFiles.length} files saved (${totalQuestions} questions; ${methodSummary}). Failed: ${failed.map((f) => f.name).join(', ')}`
+            : `Successfully uploaded ${processed.length} document${processed.length > 1 ? 's' : ''}. ${totalQuestions} questions indexed [Extraction: ${methodSummary}].`
+        );
+      } else {
+        const res = await fetch('/api/academic-documents/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: docName, docType, content }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Failed to save academic document.');
+        await onAcademicUpdated();
+        onClose();
+        alert(`Document saved. ${json.analysis.createdQuestionCount} new questions were identified.`);
+      }
+    } catch (err: any) {
+      console.error('Error uploading document(s):', err);
+      alert(err.message || 'Failed to process document(s).');
     } finally {
       setIsProcessing(false);
+      setProcessingMsg('');
     }
   };
 
@@ -80,12 +158,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#7A7480]">Document Title</label>
+            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#7A7480]">
+              Document Title {uploadedFiles.length > 1 ? '(Optional batch prefix)' : ''}
+            </label>
             <input
               type="text"
               value={docName}
               onChange={(e) => setDocName(e.target.value)}
-              placeholder="e.g. CS301_Final_Exam_2025.txt"
+              placeholder={uploadedFiles.length > 1 ? 'Optional (defaults to individual file names)' : 'e.g. CS301_Final_Exam_2025.txt'}
               className="w-full rounded-lg bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] px-3.5 py-2 text-xs text-[#17151A] dark:text-[#F5F3F7] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] font-sans transition-colors"
             />
           </div>
@@ -130,33 +210,100 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#7A7480]">Content / Text Outline</label>
-            <div className="relative rounded-xl border border-dashed border-[#D8CCE8] dark:border-[#3E344A] bg-[#FAF8FC] dark:bg-[#1D1A21] hover:bg-[#EDE7F6]/30 dark:hover:bg-[#251E30]/40 p-4 text-center transition-colors">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B7484] dark:text-[#7A7480]">
+                Upload PDF / PPTX / TXT File(s)
+              </label>
+              {uploadedFiles.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearFiles}
+                  className="text-[10px] text-red-500 hover:text-red-600 font-semibold transition"
+                >
+                  Clear All ({uploadedFiles.length})
+                </button>
+              )}
+            </div>
+
+            <div
+              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDragging(false);
+                const files = Array.from(e.dataTransfer.files || []) as File[];
+                if (files.length > 0) {
+                  setUploadedFiles((prev) => {
+                    const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
+                    return [...prev, ...files.filter((f) => !existing.has(`${f.name}-${f.size}`))];
+                  });
+                  setContent('');
+                  if (files.length === 1 && !docName) {
+                    setDocName(files[0].name);
+                  }
+                }
+              }}
+              className={`relative rounded-xl border border-dashed transition-colors p-4 text-center ${
+                isDragging
+                  ? 'border-[#6D28D9] dark:border-[#8B5CF6] bg-[#EDE7F6]/40 dark:bg-[#251E30]/50'
+                  : 'border-[#D8CCE8] dark:border-[#3E344A] bg-[#FAF8FC] dark:bg-[#1D1A21] hover:bg-[#EDE7F6]/30 dark:hover:bg-[#251E30]/40'
+              }`}
+            >
               <input 
                 type="file" 
-                accept=".pdf,.txt,.text,text/plain,application/pdf" 
-                onChange={async (event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  setDocName(file.name);
-                  setUploadedFile(file);
-                  setContent('');
-                }} 
+                multiple
+                accept=".pdf,.txt,.text,text/plain,application/pdf,.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation,.docx" 
+                onChange={handleFileChange} 
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
               />
               <div className="space-y-1">
                 <FileUp className="w-5 h-5 mx-auto text-[#6D28D9] dark:text-[#8B5CF6]" />
                 <span className="block text-xs font-medium tracking-wider text-[#6D28D9] dark:text-[#A78BFA]">
-                  {uploadedFile ? uploadedFile.name : 'Choose PDF or TXT file'}
+                  {uploadedFiles.length > 0 ? '+ Add More Files' : 'Choose PDF, PPTX, or TXT file(s)'}
                 </span>
-                <span className="block text-[10px] text-[#7B7484] dark:text-[#7A7480]">Drag and drop or browse from computer</span>
+                <span className="block text-[10px] text-[#7B7484] dark:text-[#7A7480]">
+                  Select multiple files or drag and drop from computer
+                </span>
               </div>
             </div>
+
+            {uploadedFiles.length > 0 && (
+              <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                {uploadedFiles.map((file, idx) => (
+                  <div
+                    key={`${file.name}-${idx}`}
+                    className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] text-xs"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 pr-2">
+                      <FileText className="w-3.5 h-3.5 shrink-0 text-[#6D28D9] dark:text-[#8B5CF6]" />
+                      <span className="truncate text-[#17151A] dark:text-[#F5F3F7] text-[11px]" title={file.name}>
+                        {file.name}
+                      </span>
+                      <span className="text-[10px] text-[#7B7484] dark:text-[#7A7480] shrink-0 font-mono">
+                        ({(file.size / 1024).toFixed(1)} KB)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveFile(idx)}
+                      className="p-1 rounded text-[#7B7484] hover:text-red-500 transition"
+                      title="Remove file"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+                <div className="text-[10px] text-[#7B7484] dark:text-[#7A7480] text-right font-medium">
+                  {uploadedFiles.length} file{uploadedFiles.length > 1 ? 's' : ''} ({(uploadedFiles.reduce((s, f) => s + f.size, 0) / (1024 * 1024)).toFixed(2)} MB total)
+                </div>
+              </div>
+            )}
+
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
               placeholder="Or paste questions or syllabus chapters directly here..."
-              rows={4}
+              rows={3}
               className="w-full rounded-lg bg-[#FAF8FC] dark:bg-[#1D1A21] border border-[#EDE7F3] dark:border-[#302B35] p-3 text-xs text-[#17151A] dark:text-[#F5F3F7] focus:outline-none focus:border-[#6D28D9] dark:focus:border-[#8B5CF6] font-mono transition-colors"
             />
           </div>
@@ -171,18 +318,22 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
             </button>
             <button
               type="submit"
-              disabled={isProcessing}
+              disabled={isProcessing || (uploadedFiles.length === 0 && !content.trim())}
               className="bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white rounded-lg px-5 py-2 font-medium text-xs tracking-wider flex items-center space-x-2 transition-colors shadow-xs disabled:opacity-50"
             >
               {isProcessing ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-white/80" />
-                  <span>Analyzing...</span>
+                  <span>{processingMsg || 'Analyzing...'}</span>
                 </>
               ) : (
                 <>
                   <FileUp className="w-4 h-4 text-white/80" />
-                  <span>Analyze Document</span>
+                  <span>
+                    {uploadedFiles.length > 1
+                      ? `Analyze Documents (${uploadedFiles.length})`
+                      : 'Analyze Document'}
+                  </span>
                 </>
               )}
             </button>

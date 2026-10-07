@@ -5,7 +5,8 @@ import dotenv from 'dotenv';
 import { pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
-import { extractPdfText, extractionIsLowQuality } from './pdfText';
+import { extractPdfPages, extractPdfText, extractionIsLowQuality } from './pdfText';
+import { extractStructuredDocument } from './structuredParser';
 import { corsMiddleware } from './cors';
 import { initDatabase, getDatabase } from './db';
 import * as auth from './auth';
@@ -99,6 +100,33 @@ app.post('/api/auth/logout', requireAuth, (req, res) => {
   const token = header.slice('Bearer '.length).trim();
   auth.logoutUser(token);
   return res.json({ ok: true });
+});
+
+// Companion extension / web focus session check (supports optional auth for background companion sync)
+app.get('/api/focus-mode/active', (req, res) => {
+  try {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : null;
+    const user = token ? auth.getSessionUser(token) : null;
+    let activeSession = null;
+    if (user && user.id) {
+      activeSession = services.getActiveFocusSession(user.id);
+    } else {
+      const recent = services.getDb().prepare("SELECT id, user_id AS userId, started_at AS startedAt, ends_at AS endsAt, duration_minutes AS durationMinutes, task_title AS taskTitle, blocked_domains AS blockedDomains, status, created_at AS createdAt FROM user_focus_sessions WHERE status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as any;
+      if (recent) {
+        if (new Date(recent.endsAt).getTime() <= Date.now()) {
+          services.getDb().prepare("UPDATE user_focus_sessions SET status = 'COMPLETED' WHERE id = ?").run(recent.id);
+        } else {
+          let domains: string[] = [];
+          try { domains = JSON.parse(recent.blockedDomains); } catch { domains = []; }
+          activeSession = { ...recent, blockedDomains: domains };
+        }
+      }
+    }
+    return res.json({ activeSession, serverTime: new Date().toISOString() });
+  } catch (error) {
+    return sendError(res, 500, 'Unable to get active focus session.');
+  }
 });
 
 // Everything exposed below here requires an authenticated session.
@@ -823,33 +851,17 @@ app.post('/api/memory/refresh-plan/accept', (req, res) => {
 });
 
 // ---- Documents ----
-app.post('/api/academic-documents/analyze', (req, res) => {
-  const body = req.body || {};
-  if (typeof body.title !== 'string' || !body.title.trim()) return sendError(res, 400, 'title is required.');
-  if (typeof body.content !== 'string' || !body.content.trim()) return sendError(res, 400, 'content is required.');
-  if (typeof body.docType !== 'string' || !body.docType.trim()) return sendError(res, 400, 'docType is required.');
-  try {
-    return res.status(201).json({
-      analysis: services.ingestAcademicDocument(userIdOf(req), {
-        title: body.title,
-        docType: body.docType,
-        content: body.content,
-        fileSize: typeof body.fileSize === 'string' ? body.fileSize : '',
-      })
-    });
-  } catch (error) {
-    if (error instanceof HttpError) return sendError(res, error.status, error.message);
-    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to analyze academic document.');
-  }
-});
-
-type TopicMapping = { questionText: string; topicName: string; confidence: number };
+export type TopicMapping = { questionText: string; topicName: string; confidence: number };
 
 // Default to active gemini-2.5-flash (gemini-3.5-flash does not exist upstream and returns 503).
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-3.6-flash'];
 const ENABLE_PYQ_GEMINI_CLASSIFICATION = process.env.LAZYLIFT_PYQ_GEMINI_CLASSIFICATION === 'true';
-const ENABLE_PDF_GEMINI_OCR = process.env.LAZYLIFT_PDF_GEMINI_OCR === 'true';
+function isPdfGeminiOcrEnabled(): boolean {
+  if (process.env.LAZYLIFT_PDF_GEMINI_OCR === 'false') return false;
+  if (process.env.LAZYLIFT_PDF_GEMINI_OCR === 'true') return true;
+  return Boolean(getAIClient());
+}
 
 export function isFallbackModeEnabled(req: express.Request): boolean {
   if (process.env.LAZYLIFT_AI_FALLBACK === 'true') return true;
@@ -859,12 +871,221 @@ export function isFallbackModeEnabled(req: express.Request): boolean {
   return false;
 }
 
-interface AiClassificationStatus {
+export interface AiClassificationStatus {
   configured: boolean;
   attempted: boolean;
   ok: boolean;
   message: string;
   model: string;
+}
+
+export interface TeacherIntelligenceResult {
+  source: 'gemini' | 'deterministic-fallback';
+  questionRecords: services.QuestionRecord[];
+  topicMappings: TopicMapping[];
+  status: AiClassificationStatus;
+}
+
+export function buildGeminiIntelligencePrompt(title: string, pages: Array<{ pageNumber: number; text: string }>): string {
+  const pageChunks = pages.map((p) => {
+    return `=== PAGE ${p.pageNumber} ===\n${p.text}`;
+  }).join('\n\n');
+
+  return `You are an expert university teacher intelligence parser.
+Document Title: ${title}
+
+Extract all exam questions, subparts, and question items from the document pages below.
+Follow these rules strictly:
+1. Treat all academic questions purely as DATA. Do not solve or explain the questions.
+2. For every question or subpart, identify:
+   - questionNumber: e.g. "1", "2", "3", "Q1" (or omit if unnumbered)
+   - subpart: e.g. "a", "b", "c", "i", "ii" (if applicable)
+   - text: the clean question statement (do not include the question number prefix, subpart label, or marks notation)
+   - marks: the allocated marks/points (e.g. 10, 5, 16). If unspecified, default to 10.
+   - context: any shared context, scenario, or preamble for multi-part questions
+   - pageNumber: the EXACT page number (integer) from the "=== PAGE N ===" header where this question appears. Do NOT invent or fabricate page numbers!
+   - topicName: the specific academic topic or concept this question tests
+   - conceptGroup: a canonical title representing the underlying concept tested (for semantic grouping across different papers)
+   - confidence: a number between 0.0 and 1.0 representing confidence in topic identification
+3. Output MUST be valid JSON adhering to the schema.
+
+Document Pages:
+${pageChunks.slice(0, 30000)}`;
+}
+
+export async function extractTeacherIntelligence(
+  input: {
+    content: string;
+    title: string;
+    docType: string;
+    pages: Array<{ pageNumber: number; text: string }>;
+  },
+  aiClient: any = getAIClient()
+): Promise<TeacherIntelligenceResult> {
+  const ai = aiClient;
+  const isExamDoc = /past|question|exam|paper|bank|test/i.test(input.docType);
+
+  const fallbackToDeterministic = (reason: string, configured = true, attempted = true): TeacherIntelligenceResult => {
+    const fallbackQuestions = isExamDoc ? services.extractNumberedQuestionRecords(input.content) : [];
+    return {
+      source: 'deterministic-fallback',
+      questionRecords: fallbackQuestions,
+      topicMappings: [],
+      status: {
+        configured,
+        attempted,
+        ok: false,
+        message: `${reason} Automatically fell back to deterministic parser.`,
+        model: GEMINI_MODEL,
+      },
+    };
+  };
+
+  if (!isExamDoc) {
+    return {
+      source: 'deterministic-fallback',
+      questionRecords: [],
+      topicMappings: [],
+      status: {
+        configured: Boolean(ai),
+        attempted: false,
+        ok: false,
+        message: 'Intelligence extraction skipped for non-past-paper documents.',
+        model: GEMINI_MODEL,
+      },
+    };
+  }
+
+  if (!ai) {
+    return fallbackToDeterministic('GEMINI_API_KEY is not configured; AI classification is disabled for PYQ uploads.', false, false);
+  }
+
+  try {
+    const effectivePages = input.pages && input.pages.length > 0
+      ? input.pages
+      : (input.content.includes('\f')
+        ? input.content.split('\f').map((p, idx) => ({ pageNumber: idx + 1, text: p.trim() })).filter((p) => p.text.length > 0)
+        : [{ pageNumber: 1, text: input.content }]);
+
+    const prompt = buildGeminiIntelligencePrompt(input.title, effectivePages);
+    const response = await geminiGenerate(ai, {
+      model: GEMINI_MODEL,
+      contents: prompt,
+      config: {
+        systemInstruction: 'You are an academic Teacher Intelligence parser. Extract all exam questions and subparts into clean structured data.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            questions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  questionNumber: { type: Type.STRING },
+                  subpart: { type: Type.STRING },
+                  text: { type: Type.STRING },
+                  marks: { type: Type.NUMBER },
+                  context: { type: Type.STRING },
+                  pageNumber: { type: Type.NUMBER },
+                  topicName: { type: Type.STRING },
+                  conceptGroup: { type: Type.STRING },
+                  confidence: { type: Type.NUMBER },
+                },
+                required: ['text', 'pageNumber'],
+              },
+            },
+          },
+          required: ['questions'],
+        },
+      },
+    });
+
+    let rawJson: any;
+    try {
+      rawJson = JSON.parse(response.text || '{}');
+    } catch {
+      console.warn('[academic] Malformed JSON from Gemini; falling back to deterministic parser.');
+      return fallbackToDeterministic('Malformed JSON received from Gemini.');
+    }
+
+    if (!rawJson || !Array.isArray(rawJson.questions) || rawJson.questions.length === 0) {
+      console.warn('[academic] Gemini returned empty or invalid questions array; falling back to deterministic parser.');
+      return fallbackToDeterministic('Gemini returned empty or invalid questions.');
+    }
+
+    const validPageNumbers = new Set(effectivePages.map((p) => p.pageNumber));
+    const questions: services.QuestionRecord[] = [];
+    const topicMappings: TopicMapping[] = [];
+
+    for (const raw of rawJson.questions) {
+      const text = typeof raw?.text === 'string' ? raw.text.trim() : '';
+      if (!text) continue;
+
+      const marks = Number.isFinite(Number(raw?.marks)) && Number(raw?.marks) > 0
+        ? Math.round(Number(raw.marks))
+        : 10;
+
+      // Exact page traceability: Never fabricate page/slide numbers
+      let pageNum = Number.isInteger(Number(raw?.pageNumber)) ? Number(raw.pageNumber) : 1;
+      if (!validPageNumbers.has(pageNum)) {
+        const found = effectivePages.find((p) => p.text.toLowerCase().includes(text.toLowerCase().slice(0, 40)));
+        pageNum = found ? found.pageNumber : (effectivePages[0]?.pageNumber || 1);
+      }
+
+      const questionNumber = typeof raw?.questionNumber === 'string' && raw.questionNumber.trim()
+        ? raw.questionNumber.trim()
+        : undefined;
+
+      const subpart = typeof raw?.subpart === 'string' && raw.subpart.trim()
+        ? raw.subpart.trim()
+        : undefined;
+
+      const context = typeof raw?.context === 'string' && raw.context.trim()
+        ? raw.context.trim()
+        : undefined;
+
+      questions.push({
+        text,
+        marks,
+        questionNumber,
+        subpart,
+        context,
+        pageNumber: pageNum,
+      });
+
+      if (typeof raw?.topicName === 'string' && raw.topicName.trim()) {
+        topicMappings.push({
+          questionText: text,
+          topicName: raw.topicName.trim(),
+          confidence: Number.isFinite(Number(raw?.confidence))
+            ? Math.max(0, Math.min(1, Number(raw.confidence)))
+            : 0.9,
+        });
+      }
+    }
+
+    if (questions.length === 0) {
+      return fallbackToDeterministic('No valid questions extracted by Gemini.');
+    }
+
+    return {
+      source: 'gemini',
+      questionRecords: questions,
+      topicMappings,
+      status: {
+        configured: true,
+        attempted: true,
+        ok: true,
+        message: `Gemini extracted ${questions.length} question(s) using ${GEMINI_MODEL}.`,
+        model: GEMINI_MODEL,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[academic] Gemini extraction error (${message}); falling back to deterministic parser.`);
+    return fallbackToDeterministic(`Gemini extraction failed (${message}).`);
+  }
 }
 
 export async function classifyPaperQuestions(
@@ -924,6 +1145,57 @@ export async function classifyPaperQuestions(
   }
 }
 
+// ---- Documents ----
+app.post('/api/academic-documents/analyze', async (req, res) => {
+  const body = req.body || {};
+  if (typeof body.title !== 'string' || !body.title.trim()) return sendError(res, 400, 'title is required.');
+  if (typeof body.content !== 'string' || !body.content.trim()) return sendError(res, 400, 'content is required.');
+  if (typeof body.docType !== 'string' || !body.docType.trim()) return sendError(res, 400, 'docType is required.');
+  try {
+    let questionRecords: services.QuestionRecord[] | undefined;
+    let topicMappings: TopicMapping[] = [];
+    let aiStatus: AiClassificationStatus | undefined;
+
+    if (/past|question|exam|paper|bank|test/i.test(body.docType)) {
+      let pages: Array<{ pageNumber: number; text: string }> = [];
+      if (body.content.includes('\f')) {
+        pages = body.content.split('\f').map((p: string, idx: number) => ({ pageNumber: idx + 1, text: p.trim() })).filter((p: any) => p.text.length > 0);
+      } else {
+        pages = [{ pageNumber: 1, text: body.content }];
+      }
+
+      const extraction = await extractTeacherIntelligence({
+        content: body.content,
+        title: body.title,
+        docType: body.docType,
+        pages,
+      });
+      questionRecords = extraction.questionRecords;
+      topicMappings = extraction.topicMappings;
+      aiStatus = extraction.status;
+    }
+
+    const analysis = services.ingestAcademicDocument(userIdOf(req), {
+      title: body.title,
+      docType: body.docType,
+      content: body.content,
+      fileSize: typeof body.fileSize === 'string' ? body.fileSize : '',
+      topicMappings,
+      questionRecords,
+    });
+
+    return res.status(201).json({
+      analysis: {
+        ...analysis,
+        aiStatus,
+      },
+    });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to analyze academic document.');
+  }
+});
+
 async function ocrPdfWithAI(payload: Buffer, title: string): Promise<string> {
   const ai = getAIClient();
   if (!ai) throw new HttpError(422, 'This PDF has no extractable text. Configure GEMINI_API_KEY to analyze scanned PDFs, or upload a text-based PDF.');
@@ -945,67 +1217,188 @@ async function ocrPdfWithAI(payload: Buffer, title: string): Promise<string> {
 }
 
 // Receives the original file, persists it with its extraction metadata, and never substitutes sample content.
-app.post('/api/academic-documents/upload', async (req, res) => {
-  try {
-    const { title, docType, base64, mimeType } = req.body || {};
-    if (typeof title !== 'string' || !title.trim()) return sendError(res, 400, 'title is required.');
-    if (typeof docType !== 'string' || !docType.trim()) return sendError(res, 400, 'docType is required.');
-    if (typeof base64 !== 'string' || !base64) return sendError(res, 400, 'A file payload is required.');
-    if (!/^[A-Za-z0-9+/=\r\n]+$/.test(base64)) return sendError(res, 400, 'The file payload is not valid base64.');
-    const payload = Buffer.from(base64, 'base64');
-    if (payload.length === 0 || payload.length > 15 * 1024 * 1024) return sendError(res, 413, 'Files must be between 1 byte and 15 MB.');
-    const isPdf = mimeType === 'application/pdf' || title.toLowerCase().endsWith('.pdf');
-    let content: string;
-    let extractionMethod: string;
-    if (isPdf) {
-      try {
-        content = extractPdfText(payload);
+async function processAcademicDocumentUpload(userId: string, input: any) {
+  const { title, docType, base64, mimeType, fileName } = input || {};
+  if (typeof title !== 'string' || !title.trim()) throw new HttpError(400, 'title is required.');
+  if (typeof docType !== 'string' || !docType.trim()) throw new HttpError(400, 'docType is required.');
+  if (typeof base64 !== 'string' || !base64) throw new HttpError(400, 'A file payload is required.');
+  if (!/^[A-Za-z0-9+/=\r\n]+$/.test(base64)) throw new HttpError(400, 'The file payload is not valid base64.');
+  const payload = Buffer.from(base64, 'base64');
+  if (payload.length === 0 || payload.length > 15 * 1024 * 1024) throw new HttpError(413, 'Files must be between 1 byte and 15 MB.');
+  const checkName = (typeof fileName === 'string' && fileName.trim()) ? fileName.toLowerCase() : title.toLowerCase();
+  const isPdfMagic = payload.length >= 5 && payload.subarray(0, 5).toString('utf8') === '%PDF-';
+  const isZipMagic = payload.length >= 4 && payload.subarray(0, 4).toString('binary') === 'PK\x03\x04';
+  const isPdf = mimeType === 'application/pdf' ||
+    (mimeType !== 'text/plain' && checkName.endsWith('.pdf')) ||
+    isPdfMagic;
+  const isPptx = mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+    (mimeType !== 'text/plain' && checkName.endsWith('.pptx')) ||
+    (isZipMagic && !isPdfMagic && !isPdf);
+  let content: string;
+  let extractionMethod: string;
+  let structuredPages: Array<{ pageNumber: number; text: string }> = [];
+  if (isPptx) {
+    const parsed = extractStructuredDocument(payload, title, mimeType);
+    content = parsed.fullText;
+    extractionMethod = parsed.extractionMethod;
+    structuredPages = parsed.pages.map((p) => ({ pageNumber: p.pageNumber, text: p.text }));
+    if (!content) throw new HttpError(422, 'No slides or readable text found in this PPTX presentation.');
+  } else if (isPdf) {
+    let localContent = '';
+    let localStructuredPages: Array<{ pageNumber: number; text: string }> = [];
+    let localExtractionSucceeded = false;
+
+    try {
+      localContent = extractPdfText(payload);
+      const rawPages = extractPdfPages(payload);
+      localStructuredPages = rawPages.map((p) => ({ pageNumber: p.pageNumber, text: p.text }));
+      if (!extractionIsLowQuality(localContent)) {
+        localExtractionSucceeded = true;
+        content = localContent;
         extractionMethod = 'embedded-pdf-text';
-        if (extractionIsLowQuality(content)) {
-          throw new HttpError(422, 'This PDFs embedded text is garbled or unstructured. Configure GEMINI_API_KEY to OCR it, or upload a cleaner text-based PDF.');
-        }
-      } catch (error) {
-        if (!ENABLE_PDF_GEMINI_OCR) {
-          const detail = error instanceof Error ? error.message : 'No usable embedded text was found in this PDF.';
-          throw new HttpError(422, `${detail} Automatic Gemini OCR is disabled. Upload a text-based PDF or set LAZYLIFT_PDF_GEMINI_OCR=true to enable OCR.`);
-        }
+        structuredPages = localStructuredPages;
+      }
+    } catch {
+      // Local text extraction failed to find embedded text
+    }
+
+    if (!localExtractionSucceeded) {
+      if (!isPdfGeminiOcrEnabled()) {
+        throw new HttpError(
+          422,
+          'This PDF has no extractable text. Configure GEMINI_API_KEY to analyze scanned PDFs, or upload a text-based PDF.'
+        );
+      }
+      try {
         content = await ocrPdfWithAI(payload, title);
         extractionMethod = 'gemini-pdf-ocr';
         if (extractionIsLowQuality(content)) {
           throw new HttpError(422, 'The PDF text could not be read reliably after OCR. Please upload a clearer text-based PDF.');
         }
+        structuredPages = [{ pageNumber: 1, text: content }];
+      } catch (ocrErr: any) {
+        // If AI OCR returns temporary high-demand / 503 / rate-limit errors BUT we have usable local text:
+        if (localContent && localContent.trim().length >= 20 && isTransientGeminiError(ocrErr)) {
+          console.warn(`[academic] AI OCR unavailable (${ocrErr?.status || ocrErr?.code || '503'}); recovering with locally extracted text for "${title}".`);
+          content = localContent;
+          extractionMethod = 'embedded-pdf-text-fallback';
+          structuredPages = localStructuredPages.length > 0 ? localStructuredPages : [{ pageNumber: 1, text: localContent }];
+        } else {
+          throw ocrErr;
+        }
       }
-    } else {
-      content = payload.toString('utf8').trim();
-      extractionMethod = 'utf8-text';
-      if (!content) return sendError(res, 422, 'The uploaded text file is empty or unreadable.');
     }
-    const questionRecords = docType.toLowerCase().includes('past')
-      ? services.extractNumberedQuestionRecords(content)
-      : [];
-    const classification = docType.toLowerCase().includes('past') && ENABLE_PYQ_GEMINI_CLASSIFICATION
-      ? await classifyPaperQuestions(questionRecords.length > 0 ? questionRecords : content)
-      : {
-        mappings: [],
-        status: {
-          configured: Boolean(getAIClient()),
-          attempted: false,
-          ok: false,
-          message: docType.toLowerCase().includes('past')
-            ? 'AI question-topic classification is disabled for PYQ uploads. Set LAZYLIFT_PYQ_GEMINI_CLASSIFICATION=true to enable it.'
-            : 'AI question-topic classification skipped for non-past-paper documents.',
-          model: GEMINI_MODEL,
-        },
+  } else {
+    content = payload.toString('utf8').trim();
+    extractionMethod = 'utf8-text';
+    if (!content) throw new HttpError(422, 'The uploaded text file is empty or unreadable.');
+    if (content.includes('\f')) {
+      structuredPages = content.split('\f').map((p, idx) => ({ pageNumber: idx + 1, text: p.trim() })).filter((p) => p.text.length > 0);
+    } else {
+      structuredPages = [{ pageNumber: 1, text: content }];
+    }
+  }
+  if (structuredPages.length === 0) {
+    structuredPages = [{ pageNumber: 1, text: content }];
+  }
+
+  let questionRecords: services.QuestionRecord[] = [];
+  let topicMappings: TopicMapping[] = [];
+  let aiStatus: AiClassificationStatus;
+
+  const isExamDoc = /past|question|exam|paper|bank|test/i.test(docType);
+  if (isExamDoc) {
+    let preStructured = false;
+    try {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed) && parsed.length > 0 && (parsed[0]?.text || parsed[0]?.questionText)) {
+        questionRecords = parsed.map((item: any) => ({
+          text: String(item.text || item.questionText || '').trim(),
+          marks: Number(item.marks || item.totalMarks || 10),
+          questionNumber: String(item.questionNumber || ''),
+          subpart: item.subpart ? String(item.subpart) : (item.label ? String(item.label) : undefined),
+          pageNumber: Number.isInteger(Number(item.pageNumber)) ? Number(item.pageNumber) : 1,
+        }));
+        preStructured = true;
+      }
+    } catch {
+      // Not JSON
+    }
+
+    if (!preStructured) {
+      const extraction = await extractTeacherIntelligence({
+        content,
+        title,
+        docType,
+        pages: structuredPages,
+      });
+      questionRecords = extraction.questionRecords;
+      topicMappings = extraction.topicMappings;
+      aiStatus = extraction.status;
+    } else {
+      aiStatus = {
+        configured: Boolean(getAIClient()),
+        attempted: false,
+        ok: true,
+        message: 'Pre-structured question records loaded.',
+        model: GEMINI_MODEL,
       };
-    const analysis = services.ingestAcademicDocument(userIdOf(req), {
-      title, docType, content, fileSize: `${payload.length} bytes`, fileData: payload,
-      mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'), extractionMethod,
-      topicMappings: classification.mappings, questionRecords,
-    });
-    return res.status(201).json({ analysis: { ...analysis, aiStatus: classification.status } });
+    }
+  } else {
+    aiStatus = {
+      configured: Boolean(getAIClient()),
+      attempted: false,
+      ok: false,
+      message: 'AI question extraction skipped for non-past-paper documents.',
+      model: GEMINI_MODEL,
+    };
+  }
+
+  const analysis = services.ingestAcademicDocument(userId, {
+    title,
+    docType,
+    content,
+    fileSize: `${payload.length} bytes`,
+    fileData: payload,
+    mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'),
+    extractionMethod,
+    topicMappings,
+    questionRecords,
+    structuredPages,
+  });
+
+  console.log(`[academic-upload] "${title}" (${payload.length} bytes, ${mimeType || (isPdf ? 'application/pdf' : 'unknown')}) -> extractionMethod: "${extractionMethod}", text: ${content.length} chars, pages: ${structuredPages.length}, questions: ${questionRecords.length}`);
+
+  return { analysis: { ...analysis, extractionMethod, aiStatus } };
+}
+
+app.post('/api/academic-documents/upload', async (req, res) => {
+  try {
+    const result = await processAcademicDocumentUpload(userIdOf(req), req.body);
+    return res.status(201).json(result);
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 422, error instanceof Error ? error.message : 'Unable to extract the uploaded file.');
+  }
+});
+
+app.post('/api/academic-documents/upload-batch', async (req, res) => {
+  try {
+    const { documents } = req.body || {};
+    if (!Array.isArray(documents) || documents.length === 0) {
+      return sendError(res, 400, 'documents array is required and must contain at least 1 document.');
+    }
+    const results = [];
+    let totalQuestionCount = 0;
+    for (const doc of documents) {
+      const result = await processAcademicDocumentUpload(userIdOf(req), doc);
+      results.push(result.analysis);
+      totalQuestionCount += result.analysis?.createdQuestionCount || 0;
+    }
+    return res.status(201).json({ results, totalQuestionCount });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 422, error instanceof Error ? error.message : 'Unable to process batch document upload.');
   }
 });
 
@@ -1013,6 +1406,83 @@ app.get('/api/academic-evidence', (req, res) => {
   const documentId = typeof req.query.documentId === 'string' ? req.query.documentId : undefined;
   if (documentId && !services.findOwnedDocument(userIdOf(req), documentId)) return sendError(res, 404, 'Document not found.');
   return res.json({ academic: services.academicEvidence(userIdOf(req), documentId) });
+});
+
+// ---- STRUCTURED DOCUMENT PAGES (SOURCE TRACEABILITY) ----
+app.get('/api/documents/:id/pages', (req, res) => {
+  try {
+    const doc = services.findOwnedDocument(userIdOf(req), req.params.id);
+    if (!doc) return sendError(res, 404, 'Document not found.');
+    const pages = services.getDocumentPages(userIdOf(req), req.params.id);
+    return res.json({ pages });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, 'Unable to retrieve document pages.');
+  }
+});
+
+app.get('/api/documents/:id/pages/:pageNumber', (req, res) => {
+  try {
+    const doc = services.findOwnedDocument(userIdOf(req), req.params.id);
+    if (!doc) return sendError(res, 404, 'Document not found.');
+    const pageNum = parseInt(req.params.pageNumber, 10);
+    const page = services.getDocumentPage(userIdOf(req), req.params.id, pageNum);
+    if (!page) return sendError(res, 404, 'Page not found.');
+    return res.json({ page });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, 'Unable to retrieve document page.');
+  }
+});
+
+// ---- REAL FOCUS MODE & WEBSITE BLOCKING ----
+app.post('/api/focus-mode/start', (req, res) => {
+  try {
+    const { durationMinutes, taskTitle, domains } = req.body || {};
+    const duration = Number(durationMinutes);
+    if (!Number.isFinite(duration) || duration < 1 || duration > 480) {
+      return sendError(res, 400, 'durationMinutes must be between 1 and 480.');
+    }
+    const session = services.startWebsiteFocusSession(userIdOf(req), {
+      durationMinutes: duration,
+      taskTitle: typeof taskTitle === 'string' ? taskTitle : '',
+      domains: Array.isArray(domains) ? domains : undefined,
+    });
+    return res.status(201).json({ success: true, session });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, 'Unable to start focus session.');
+  }
+});
+
+app.post('/api/focus-mode/stop', (req, res) => {
+  try {
+    const stopped = services.stopWebsiteFocusSession(userIdOf(req));
+    return res.json({ success: true, stopped });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, 'Unable to stop focus session.');
+  }
+});
+
+app.get('/api/focus-mode/blocklist', (req, res) => {
+  try {
+    const domains = services.getFocusBlocklist(userIdOf(req));
+    return res.json({ domains });
+  } catch (error) {
+    return sendError(res, 500, 'Unable to get blocklist.');
+  }
+});
+
+app.post('/api/focus-mode/blocklist', (req, res) => {
+  try {
+    const { domains } = req.body || {};
+    if (!Array.isArray(domains)) return sendError(res, 400, 'domains must be an array.');
+    const saved = services.setFocusBlocklist(userIdOf(req), domains);
+    return res.json({ success: true, domains: saved });
+  } catch (error) {
+    return sendError(res, 500, 'Unable to save blocklist.');
+  }
 });
 
 // ---- TEACHER'S EXAM INTELLIGENCE ("WHAT TO STUDY") ----
@@ -1523,7 +1993,24 @@ export function setAIClientForTesting(client: any) {
 
 function getAIClient() {
   if (mockAIClient !== null) return mockAIClient;
-  const apiKey = process.env.GEMINI_API_KEY;
+  let apiKey = process.env.GEMINI_API_KEY;
+  if (apiKey === 'MY_GEMINI_API_KEY' || process.env.NODE_ENV === 'test') {
+    return null;
+  }
+  if (!apiKey) {
+    const envFile = fs.existsSync('.env.local') ? '.env.local' : (fs.existsSync('.env') ? '.env' : null);
+    if (envFile) {
+      try {
+        const parsed = dotenv.parse(fs.readFileSync(envFile));
+        if (parsed.GEMINI_API_KEY && parsed.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY') {
+          process.env.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
+          apiKey = parsed.GEMINI_API_KEY;
+        }
+      } catch {
+        // ignore read error
+      }
+    }
+  }
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     return null;
   }
@@ -1549,7 +2036,7 @@ function isTransientGeminiError(err: any): boolean {
   );
 }
 
-async function geminiGenerate(ai: any, request: any, maxRetries = 2): Promise<any> {
+async function geminiGenerate(ai: any, request: any, maxRetries = (process.env.NODE_ENV === 'test' ? 0 : 2)): Promise<any> {
   let lastError: any;
   const requestedModel = request.model || GEMINI_MODEL;
   const candidateModels = Array.from(new Set([requestedModel, ...GEMINI_FALLBACK_MODELS]));

@@ -71,6 +71,7 @@ export type QuestionRow = {
   mappingScore: number | null;
   mappingEvidence: string[];
   mappingStatus: 'mapped' | 'unmatched';
+  pageNumber: number | null;
   createdAt: string;
 };
 
@@ -559,6 +560,11 @@ const COMMON_ACADEMIC_TOKENS = new Set([
 // asterisk are removed before marker detection so labels like "a)**" split cleanly.
 function stripMarkdownNoise(value: string): string {
   return value
+    .replace(/```[\s\S]*?```/g, (codeBlock) => codeBlock.replace(/```\w*/g, ''))
+    .replace(/```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\$\$(?:[\s\S]*?)\$\$/g, ' ')
+    .replace(/\$([^$]+)\$/g, '$1')
     .replace(/\\\*/g, ' ')
     .replace(/\*/g, ' ')
     .replace(/(?:[_=~\-]\s*){3,}/g, ' ');
@@ -585,7 +591,7 @@ function decodeHtmlEntities(value: string): string {
   });
 }
 
-function sanitizeAcademicText(value: string): string {
+function sanitizeAcademicText(value: string, preserveFormFeed = false): string {
   let text = String(value || '').replace(/\r/g, '');
   // Decode twice to handle escaped HTML such as "&amp;lt;br&amp;gt;" from rich-text exports.
   text = decodeHtmlEntities(decodeHtmlEntities(text));
@@ -597,16 +603,17 @@ function sanitizeAcademicText(value: string): string {
     .replace(/\b(?:class|style|id|data-[\w-]+|href|align|width|height)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, ' ')
     .replace(/\bA(?:ll|II)\s+the\s+Best\b[!*.\s]*/gi, ' ')
     .replace(/[\u00a0\t]/g, ' ')
-    .replace(/[ \f\v]+/g, ' ')
+    .replace(preserveFormFeed ? /[ \v]+/g : /[ \f\v]+/g, ' ')
     .replace(/ *\n */g, '\n')
     .trim();
 }
 
 function cleanPaperContent(content: string): string {
-  return sanitizeAcademicText(content)
+  const withPageFeeds = String(content || '').replace(/\f+/g, '\n\f\n');
+  return sanitizeAcademicText(withPageFeeds, true)
     .replace(/\bPTO\b/gi, ' ')
     .replace(/\b\d+\s*\/\s*\d+\s*/g, ' ')
-    .replace(/[^\S\n]+/g, ' ')
+    .replace(/[^\S\n\f]+/g, ' ')
     .replace(/ *\n */g, '\n');
 }
 
@@ -616,10 +623,18 @@ function cleanPaperContent(content: string): string {
 // ("(5 Marks)") are deliberately NOT matched.
 const MARKS_TAIL = String.raw`(?:\s*[(\[]\s*\d+(?:\s*[+×x*]\s*\d+)*(?:\s*=\s*\d+)?\s*(?:marks?)?\s*[)\]])?`;
 const LINE_MARKER = new RegExp(
-  String.raw`(?:^|[\s(])(?:question|que(?:stion)?|q)\.?\s*(?:no\.?\s*)?(\d{1,3})\b` + MARKS_TAIL + String.raw`\s*(?::|[.):\-])?` +
+  // 1. Combined question number + parenthesized subpart: e.g. 1(a), 1.(a), 1 (a), Q1(a), Q1.(a)
+  String.raw`(?:^|[\s(])(?:(?:question|que(?:stion)?|q)\.?\s*(?:no\.?\s*)?)?(\d{1,3})\s*(?:\.)?\s*\(([a-z]|[ivx]{1,3})\)(?=\s+[A-Za-z0-9(\[])` +
+  // 2. Combined question number + dotted subpart with required terminal dot: e.g. 1.a., 1. a., Q1.a.
+  String.raw`|(?:^|[\s(])(?:(?:question|que(?:stion)?|q)\.?\s*(?:no\.?\s*)?)?(\d{1,3})\s*\.\s*([a-z]|[ivx]{1,3})\.(?=\s+[A-Za-z0-9(\[])` +
+  // 3. Question word with number: Question 1, Q1
+  String.raw`|(?:^|[\s(])(?:question|que(?:stion)?|q)\.?\s*(?:no\.?\s*)?(\d{1,3})\b` + MARKS_TAIL + String.raw`\s*(?::|[.):\-])?` +
+  // 4. Standalone dot number: 1.
   String.raw`|(?<![\w(])(\d{1,3})\.(?!\d)` +
+  // 5. Standalone paren number: 1)
   String.raw`|(?<![\w(])(\d{1,3})\)(?!\s*marks?\b)` +
-  String.raw`|(?<![\w])\(?([a-z]|[ivx]{1,3})\)(?=\s+[A-Z0-9(])`,
+  // 6. Standalone subpart: (a), a), (i), i)
+  String.raw`|(?<![\w])\(?([a-z]|[ivx]{1,3})\)(?=\s+[A-Za-z0-9(\[])`,
   'gi',
 );
 const SECTION_HEADER = /^(?:section|part)\b/i;
@@ -628,12 +643,21 @@ const BOILERPLATE = /^(?:time(?: allowed)?|max(?:imum)?\s*marks?|total\s*marks?|
 function extractQuestionMarks(text: string): number | null {
   const keyword = /(?:^|\s|\(|\[)(\d+(?:\.\d+)?)\s*(?:marks?|m)\b/i.exec(text);
   if (keyword) return Math.max(1, Math.round(Number(keyword[1])));
+  const trailing = /(?<![\w])(?:\((\d{1,2})\)|\[(\d{1,2})\])\s*$/i.exec(text.trim());
+  if (trailing) {
+    const val = Number(trailing[1] || trailing[2]);
+    if (val > 0) return Math.max(1, Math.round(val));
+  }
   const bracketed = /[(\[]\s*(\d+(?:\s*[+×x*]\s*\d+)*)\s*(?:=\s*(\d+))?\s*[)\]]/i.exec(text);
   if (bracketed) {
     if (bracketed[2] && Number(bracketed[2]) > 0) return Math.max(1, Math.round(Number(bracketed[2])));
     const parts = bracketed[1].split(/\s*[+×x*]\s*/).map((part) => Number(part)).filter((part) => Number.isFinite(part));
     if (parts.length === 1) {
-      return /\[/.test(bracketed[0]) ? Math.max(1, Math.round(parts[0])) : null;
+      if (/\[/.test(bracketed[0])) return Math.max(1, Math.round(parts[0]));
+      const matchIndex = bracketed.index;
+      const charBefore = matchIndex > 0 ? text[matchIndex - 1] : '';
+      if (!/[\w]/.test(charBefore) && parts[0] >= 2) return Math.max(1, Math.round(parts[0]));
+      return null;
     }
     const multiply = /[×x*]/.test(bracketed[1]);
     const value = multiply ? parts.reduce((total, part) => total * part, 1) : parts.reduce((total, part) => total + part, 0);
@@ -648,6 +672,7 @@ export interface QuestionRecord {
   questionNumber?: string;
   subpart?: string;
   context?: string;
+  pageNumber?: number;
 }
 
 interface MarkerSpan {
@@ -656,6 +681,7 @@ interface MarkerSpan {
   marks: number | null;
   subpart: boolean;
   label: string;
+  questionNumber?: string;
 }
 
 // Punctuation that legitimately terminates a parent-question stem before a sub-part label
@@ -678,20 +704,31 @@ function allMarkerSpans(line: string): MarkerSpan[] {
   const spans: MarkerSpan[] = [];
   for (const match of line.matchAll(LINE_MARKER)) {
     const raw = match[0];
-    const [, questionWord, dot, paren, subpart] = match;
-    const subpartMatch = subpart !== undefined;
+    const [, c1Num, c1Sub, c2Num, c2Sub, qNum, dot, paren, subpart] = match;
+    const combinedNum = c1Num || c2Num;
+    const combinedSub = c1Sub || c2Sub;
+    const subpartMatch = combinedSub !== undefined || subpart !== undefined;
     const start = match.index ?? 0;
-    // An isolated letter / roman-numeral needs real question context: the label must sit
-    // after a stem boundary and be followed by substantive text, not pseudocode noise.
-    if (subpartMatch && !hasStandaloneSubpartBoundary(line, start)) continue;
+    if (subpartMatch && !combinedNum && !hasStandaloneSubpartBoundary(line, start)) continue;
     const end = start + raw.length;
-    spans.push({
-      start,
-      end,
-      marks: extractQuestionMarks(raw),
-      subpart: subpartMatch,
-      label: subpartMatch ? subpart.toLowerCase() : (questionWord ?? dot ?? paren).toLowerCase(),
-    });
+    if (combinedNum && combinedSub) {
+      spans.push({
+        start,
+        end,
+        marks: extractQuestionMarks(raw),
+        subpart: true,
+        label: combinedSub.toLowerCase(),
+        questionNumber: combinedNum,
+      });
+    } else {
+      spans.push({
+        start,
+        end,
+        marks: extractQuestionMarks(raw),
+        subpart: subpartMatch,
+        label: subpartMatch ? subpart.toLowerCase() : (qNum ?? dot ?? paren).toLowerCase(),
+      });
+    }
   }
   return spans;
 }
@@ -707,6 +744,7 @@ interface QuestionDraft {
   questionNumber?: string;
   subpart?: string;
   context?: string;
+  pageNumber?: number;
 }
 
 function isDocumentHeading(line: string): boolean {
@@ -718,6 +756,7 @@ function isDocumentHeading(line: string): boolean {
 }
 
 export function extractNumberedQuestionRecords(content: string): QuestionRecord[] {
+  let currentPage = 1;
   const lines = cleanPaperContent(content).split('\n');
   const drafts: QuestionDraft[] = [];
   let current: QuestionDraft | null = null;
@@ -737,11 +776,14 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
   };
   const openDraft = (marks: number | null, questionNumber: string) => {
     commit();
-    current = { lines: [], marks: marks || 0, questionNumber };
+    current = { lines: [], marks: marks || 0, questionNumber, pageNumber: currentPage };
   };
 
   for (const rawLine of lines) {
-    const line = rawLine.trim();
+    if (rawLine.includes('\f')) {
+      currentPage += (rawLine.match(/\f/g) || []).length;
+    }
+    const line = rawLine.replace(/\f/g, '').trim();
     if (!line) continue;
     if (BOILERPLATE.test(line) || SECTION_HEADER.test(line) || isDocumentHeading(line)) {
       commit();
@@ -758,7 +800,18 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
     for (const span of spans) {
       const pre = line.slice(cursor, span.start).replace(/^[\s(]+/, '').trim();
       if (pre) append(pre);
-      if (span.subpart) {
+      if (span.questionNumber && span.subpart) {
+        openGroup = span.questionNumber;
+        commit();
+        current = {
+          lines: [],
+          marks: span.marks || 0,
+          questionNumber: span.questionNumber,
+          subpart: span.label,
+          context: groupContexts.get(openGroup),
+          pageNumber: currentPage,
+        };
+      } else if (span.subpart) {
         if (openGroup) {
           const parentContext = current && !current.subpart && current.questionNumber === openGroup
             ? normalizeAcademicQuestion(current.lines.join(' ')) : '';
@@ -767,6 +820,7 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
           current = {
             lines: [], marks: span.marks || 0, questionNumber: openGroup,
             subpart: span.label, context: groupContexts.get(openGroup),
+            pageNumber: currentPage,
           };
         }
       } else {
@@ -780,6 +834,31 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
   }
   commit();
 
+  // Fallback: If no explicit numbered questions were found, scan for lines beginning with
+  // academic question verbs (e.g. in informal review questions or unnumbered past papers).
+  if (drafts.length === 0) {
+    let unnumberedIndex = 1;
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\f/g, '').trim();
+      if (!line || BOILERPLATE.test(line) || SECTION_HEADER.test(line) || isDocumentHeading(line)) continue;
+      const stripped = sanitizeAcademicText(line);
+      const isQuestion = QUESTION_VERBS.test(stripped) && stripped.split(/\s+/).length >= 3 && stripped.length >= 15;
+      if (isQuestion) {
+        const marks = extractQuestionMarks(line) || 10;
+        const text = stripped
+          .replace(/\s*[(\[]\s*\d+(?:\.\d+)?(?:\s*(?:marks?|m))?\s*[)\]]\s*$/gi, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        drafts.push({
+          lines: [text],
+          marks,
+          questionNumber: `Q${unnumberedIndex++}`,
+          pageNumber: currentPage,
+        });
+      }
+    }
+  }
+
   const groupsWithSubParts = new Set(drafts.filter((draft) => draft.subpart).map((draft) => draft.questionNumber));
   const maxGroupMarks = drafts.reduce((map, draft) => {
     if (draft.questionNumber && draft.marks > (map.get(draft.questionNumber) || 0)) map.set(draft.questionNumber, draft.marks);
@@ -791,11 +870,19 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
     .filter((draft) => draft.lines.length > 0)
     .map((draft) => {
       const marks = draft.marks > 0 ? draft.marks : (draft.subpart && draft.questionNumber ? (maxGroupMarks.get(draft.questionNumber) || 10) : 10);
-      // The "(N Marks)" annotation is boilerplate - marks are stored in their own column and
-      // a leftover "Marks" token must never influence topic mapping.
-      const text = normalizeAcademicQuestion(draft.lines.join(' ')).replace(/\s*[(\[]\s*\d+(?:\.\d+)?\s*(?:marks?|m)\s*[)\]]/gi, '').replace(/\s+/g, ' ').trim();
-      const context = draft.context?.replace(/\s*[(\[]\s*\d+(?:\.\d+)?\s*(?:marks?|m)\s*[)\]]/gi, '').replace(/\s+/g, ' ').trim();
-      return { text, marks, questionNumber: draft.questionNumber, subpart: draft.subpart, context };
+      // The marks annotation is boilerplate - marks are stored in their own column and
+      // leftover marks tokens must never pollute question text or influence topic mapping.
+      const text = normalizeAcademicQuestion(draft.lines.join(' '))
+        .replace(/\s*[(\[]\s*\d+(?:\.\d+)?(?:\s*(?:marks?|m))?\s*[)\]]\s*$/gi, '')
+        .replace(/\s*[(\[]\s*\d+(?:\.\d+)?\s*(?:marks?|m)\s*[)\]]/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const context = draft.context
+        ?.replace(/\s*[(\[]\s*\d+(?:\.\d+)?(?:\s*(?:marks?|m))?\s*[)\]]\s*$/gi, '')
+        .replace(/\s*[(\[]\s*\d+(?:\.\d+)?\s*(?:marks?|m)\s*[)\]]/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return { text, marks, questionNumber: draft.questionNumber, subpart: draft.subpart, context, pageNumber: draft.pageNumber || 1 };
     });
 }
 
@@ -810,6 +897,7 @@ export function extractNumberedQuestions(content: string): string[] {
 }
 
 const SENTENCE_END = /[.!?][)\s"]*$/;
+const QUESTION_VERBS = /^(?:what|why|how|when|where|which|who|whom|define|explain|describe|state|list|compare|differentiate|distinguish|discuss|derive|compute|calculate|determine|design|construct|suggest|identify|justify|illustrate|formulate|analyze|elaborate|clarify|briefly|write|give|show|prove|find|solve|apply|draw)\b/i;
 
 // Rejects short/garbled question fragments before they enter the bank that feeds Practice and
 // Mock exams. Phantom records from broken extractions are usually diagram labels, orphaned
@@ -822,9 +910,12 @@ function isPersistableQuestion(record: { text: string }): boolean {
   if (/^(?:\d+\s*marks?|[(\[]\s*\d+\s*marks?[)\]])/i.test(text)) return false;
   if (/^[\d\s/\\+\-]+$/.test(text)) return false;
   const words = text.split(/\s+/).filter(Boolean);
-  if (words.length < 3) return false;
-  // Too-short fragments ("K traverse v-") without sentence punctuation are never questions.
-  if (text.length < 28 && !SENTENCE_END.test(text)) return false;
+  const isQuestionVerb = QUESTION_VERBS.test(text);
+  if (words.length < 2) return false;
+  if (words.length === 2 && !isQuestionVerb) return false;
+  // Too-short fragments ("K traverse v-") without sentence punctuation are never questions,
+  // but short definition questions starting with question verbs ("Define deadlock") are valid.
+  if (text.length < 28 && !SENTENCE_END.test(text) && !isQuestionVerb) return false;
   // Fragments dominated by single-character diagram tokens ("v", "w", "r") and lacking a
   // sentence terminator are unreadable noise ("Pick a random n x I vectorL (elements ...").
   const shortTokens = words.filter((word) => word.length <= 2).length;
@@ -1191,7 +1282,7 @@ function findOrCreateProvisionalTopic(userId: string, classification: { name: st
   return findOwnedTopicByName(userId, classification.name)!;
 }
 
-export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string; fileData?: Uint8Array; mimeType?: string; extractionMethod?: string; topicMappings?: Array<{ questionText: string; topicName: string; confidence: number }>; questionRecords?: QuestionRecord[] }) {
+export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string; fileData?: Uint8Array; mimeType?: string; extractionMethod?: string; topicMappings?: Array<{ questionText: string; topicName: string; confidence: number }>; questionRecords?: QuestionRecord[]; structuredPages?: Array<{ pageNumber: number; heading?: string; text: string }> }) {
   const existingDocument = getDb().prepare(`SELECT id, title, doc_type AS docType, content, file_size AS fileSize, created_at AS createdAt
     FROM documents WHERE user_id = ? AND title = ? AND content = ?`).get(userId, input.title.trim(), input.content) as DocumentRow | undefined;
   const document = existingDocument || createDocument(userId, input);
@@ -1225,8 +1316,13 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
     .filter((mapping) => mapping.topicName.trim() && mapping.confidence >= 0.6)
     .map((mapping) => ({ ...mapping, topicName: resolveSyllabusTopicName(mapping.topicName, persistedSyllabusTopics) }))
     .filter((mapping): mapping is { questionText: string; topicName: string; confidence: number } => Boolean(mapping.topicName));
-  const extractedQuestions = (input.docType.toLowerCase().includes('past')
-    ? input.questionRecords || extractNumberedQuestionRecords(input.content) : [])
+  let extractedCandidates: QuestionRecord[] = [];
+  if (input.questionRecords && input.questionRecords.length > 0) {
+    extractedCandidates = input.questionRecords;
+  } else if (/past|question|exam|paper|bank|test/i.test(input.docType)) {
+    extractedCandidates = extractNumberedQuestionRecords(input.content);
+  }
+  const extractedQuestions = extractedCandidates
     .map((question) => ({
       ...question,
       text: normalizeAcademicQuestion(question.text),
@@ -1235,8 +1331,8 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
     .filter(isPersistableQuestion);
   const existing = (getDb().prepare('SELECT normalized_text AS normalizedText FROM questions WHERE user_id = ? AND document_id = ?').all(userId, document.id) as any[]).map((row) => row.normalizedText);
   const insert = getDb().prepare(`INSERT INTO questions
-    (id, user_id, document_id, topic_id, question_text, normalized_text, question_number, subpart, context_text, marks, question_type, source, suggested_time_minutes, mapping_score, mapping_evidence, mapping_status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (id, user_id, document_id, topic_id, question_text, normalized_text, question_number, subpart, context_text, marks, question_type, source, suggested_time_minutes, mapping_score, mapping_evidence, mapping_status, page_number, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, document_id, normalized_text) WHERE document_id IS NOT NULL DO NOTHING`);
   const createdQuestionIds: string[] = [];
   // Decide each question's mapping up front so sibling sub-parts that match nothing can
@@ -1272,12 +1368,39 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
       const id = createId('question');
       const marks = item.marks;
       insert.run(id, userId, document.id, mapping?.topic.id || null, questionText, normalizedText, item.questionNumber || null, item.subpart || null, item.context || null, marks, 'Subjective', 'pyq', Math.max(5, marks * 2),
-        mapping?.score || null, JSON.stringify(mapping?.evidence || []), mapping ? 'mapped' : 'unmatched', now());
+        mapping?.score || null, JSON.stringify(mapping?.evidence || []), mapping ? 'mapped' : 'unmatched', item.pageNumber || null, now());
       createdQuestionIds.push(id);
       existing.push(normalizedText);
     });
   });
   saveQuestions(extractedQuestions);
+
+  // Store structured document pages/slides for source reference viewer
+  let pagesToStore: Array<{ pageNumber: number; heading: string; text: string }> = [];
+  if (input.structuredPages && input.structuredPages.length > 0) {
+    pagesToStore = input.structuredPages.map((p) => ({
+      pageNumber: p.pageNumber,
+      heading: p.heading || `Page ${p.pageNumber}`,
+      text: p.text,
+    }));
+  } else if (input.content.includes('\f')) {
+    const parts = input.content.split('\f').map((p) => p.trim()).filter(Boolean);
+    pagesToStore = parts.map((part, idx) => {
+      const firstLine = part.split('\n')[0]?.replace(/^[#\-*\s]+/, '').trim() || '';
+      const heading = firstLine.length > 2 && firstLine.length < 80 ? firstLine : `Page ${idx + 1}`;
+      return { pageNumber: idx + 1, heading, text: part };
+    });
+  } else {
+    const slides = extractLectureSlides(input.content);
+    if (slides.length > 1) {
+      pagesToStore = slides.map((s) => ({ pageNumber: s.slideNumber, heading: s.title, text: s.text }));
+    } else {
+      pagesToStore = [{ pageNumber: 1, heading: input.title, text: input.content }];
+    }
+  }
+  if (pagesToStore.length > 0) {
+    saveDocumentPages(userId, document.id, pagesToStore);
+  }
   const ranking = rankedTopicRows(userId);
   const questions = questionRows(userId).filter((question) => createdQuestionIds.includes(question.id));
   return {
@@ -1404,6 +1527,7 @@ export function questionRows(userId: string, documentId?: string): QuestionRow[]
       q.question_number AS questionNumber, q.subpart, q.context_text AS context, q.marks,
       q.question_type AS questionType, q.source, q.suggested_time_minutes AS suggestedTimeMinutes,
       q.mapping_score AS mappingScore, q.mapping_evidence AS mappingEvidence, q.mapping_status AS mappingStatus,
+      q.page_number AS pageNumber,
       q.created_at AS createdAt, t.name AS topicName
     FROM questions q
     LEFT JOIN topics t ON t.id = q.topic_id AND t.user_id = q.user_id
@@ -1418,6 +1542,7 @@ export function findOwnedQuestion(userId: string, questionId: string): QuestionR
       q.question_number AS questionNumber, q.subpart, q.context_text AS context, q.marks,
       q.question_type AS questionType, q.source, q.suggested_time_minutes AS suggestedTimeMinutes,
       q.mapping_score AS mappingScore, q.mapping_evidence AS mappingEvidence, q.mapping_status AS mappingStatus,
+      q.page_number AS pageNumber,
       q.created_at AS createdAt, t.name AS topicName
     FROM questions q
     LEFT JOIN topics t ON t.id = q.topic_id AND t.user_id = q.user_id
@@ -3679,6 +3804,7 @@ export interface WhatToStudyOccurrence {
   label: string;
   marks: number;
   questionText: string;
+  pageNumber?: number;
 }
 
 export interface WhatToStudySourceMapping {
@@ -3704,6 +3830,182 @@ export interface WhatToStudyItem {
   topicId?: string;
   lectureSource: WhatToStudySourceMapping;
   averageMarks: number;
+  importanceScore?: number;
+  importanceExplanation?: string;
+}
+
+export interface DocumentPageRecord {
+  id: string;
+  documentId: string;
+  userId: string;
+  pageNumber: number;
+  heading: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface UserFocusSession {
+  id: string;
+  userId: string;
+  startedAt: string;
+  endsAt: string;
+  durationMinutes: number;
+  taskTitle: string;
+  blockedDomains: string[];
+  status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+  createdAt: string;
+}
+
+export interface UserFocusBlocklist {
+  userId: string;
+  domains: string[];
+  updatedAt: string;
+}
+
+export function saveDocumentPages(
+  userId: string,
+  documentId: string,
+  pages: Array<{ pageNumber: number; heading: string; text: string }>
+) {
+  const insert = getDb().prepare(`INSERT INTO document_pages
+    (id, document_id, user_id, page_number, heading, text, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING`);
+  const saveAll = getDb().transaction((items: Array<{ pageNumber: number; heading: string; text: string }>) => {
+    for (const p of items) {
+      const id = createId('docpage');
+      insert.run(id, documentId, userId, p.pageNumber, p.heading || `Page ${p.pageNumber}`, p.text, now());
+    }
+  });
+  saveAll(pages);
+}
+
+export function getDocumentPages(userId: string, documentId: string): DocumentPageRecord[] {
+  return getDb().prepare(`SELECT id, document_id AS documentId, user_id AS userId,
+    page_number AS pageNumber, heading, text, created_at AS createdAt
+    FROM document_pages WHERE user_id = ? AND document_id = ? ORDER BY page_number ASC`)
+    .all(userId, documentId) as DocumentPageRecord[];
+}
+
+export function getDocumentPage(userId: string, documentId: string, pageNumber: number): DocumentPageRecord | undefined {
+  return getDb().prepare(`SELECT id, document_id AS documentId, user_id AS userId,
+    page_number AS pageNumber, heading, text, created_at AS createdAt
+    FROM document_pages WHERE user_id = ? AND document_id = ? AND page_number = ?`)
+    .get(userId, documentId, pageNumber) as DocumentPageRecord | undefined;
+}
+
+export function normalizeDomain(input: string): string | null {
+  if (typeof input !== 'string') return null;
+  let d = input.trim().toLowerCase();
+  if (!d) return null;
+  d = d.replace(/^[a-z]+:\/\//i, '');
+  d = d.replace(/^[^/@]+@/, '');
+  d = d.replace(/[/?#].*$/, '');
+  d = d.replace(/:\d+$/, '');
+  d = d.replace(/^www\./, '');
+  d = d.trim();
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(d)) {
+    return null;
+  }
+  return d;
+}
+
+export const DEFAULT_FOCUS_BLOCKLIST = [
+  'youtube.com',
+  'web.whatsapp.com',
+  'instagram.com',
+  'reddit.com',
+  'x.com',
+  'netflix.com',
+];
+
+export function getFocusBlocklist(userId: string): string[] {
+  const row = getDb().prepare('SELECT domains FROM user_focus_blocklists WHERE user_id = ?').get(userId) as any;
+  if (!row || !row.domains) return DEFAULT_FOCUS_BLOCKLIST;
+  try {
+    const list = JSON.parse(row.domains);
+    return Array.isArray(list) && list.length > 0 ? list : DEFAULT_FOCUS_BLOCKLIST;
+  } catch {
+    return DEFAULT_FOCUS_BLOCKLIST;
+  }
+}
+
+export function setFocusBlocklist(userId: string, domains: string[]): string[] {
+  const normalized = Array.from(new Set(
+    domains.map(normalizeDomain).filter((d): d is string => Boolean(d))
+  ));
+  getDb().prepare(`INSERT INTO user_focus_blocklists (user_id, domains, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET domains = excluded.domains, updated_at = excluded.updated_at`)
+    .run(userId, JSON.stringify(normalized), now());
+  return normalized;
+}
+
+export function getActiveFocusSession(userId: string): UserFocusSession | null {
+  const row = getDb().prepare(`SELECT id, user_id AS userId, started_at AS startedAt,
+    ends_at AS endsAt, duration_minutes AS durationMinutes, task_title AS taskTitle,
+    blocked_domains AS blockedDomains, status, created_at AS createdAt
+    FROM user_focus_sessions WHERE user_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1`)
+    .get(userId) as any;
+  if (!row) return null;
+
+  if (new Date(row.endsAt).getTime() <= Date.now()) {
+    getDb().prepare("UPDATE user_focus_sessions SET status = 'COMPLETED' WHERE id = ?").run(row.id);
+    return null;
+  }
+
+  let domains: string[] = [];
+  try {
+    domains = JSON.parse(row.blockedDomains);
+  } catch {
+    domains = [];
+  }
+
+  return {
+    ...row,
+    blockedDomains: domains,
+  };
+}
+
+export function startWebsiteFocusSession(
+  userId: string,
+  input: { durationMinutes: number; taskTitle?: string; domains?: string[] }
+): UserFocusSession {
+  const duration = Math.max(1, Math.min(480, Math.round(Number(input.durationMinutes) || 25)));
+  const taskTitle = typeof input.taskTitle === 'string' ? input.taskTitle.trim().slice(0, 200) : '';
+
+  getDb().prepare("UPDATE user_focus_sessions SET status = 'CANCELLED' WHERE user_id = ? AND status = 'ACTIVE'").run(userId);
+
+  const rawDomains = Array.isArray(input.domains) && input.domains.length > 0 ? input.domains : getFocusBlocklist(userId);
+  const normalizedDomains = Array.from(new Set(
+    rawDomains.map(normalizeDomain).filter((d): d is string => Boolean(d))
+  ));
+
+  const id = createId('focus');
+  const startedAt = now();
+  const endsAt = new Date(Date.now() + duration * 60000).toISOString();
+
+  getDb().prepare(`INSERT INTO user_focus_sessions
+    (id, user_id, started_at, ends_at, duration_minutes, task_title, blocked_domains, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`)
+    .run(id, userId, startedAt, endsAt, duration, taskTitle, JSON.stringify(normalizedDomains), startedAt);
+
+  return {
+    id,
+    userId,
+    startedAt,
+    endsAt,
+    durationMinutes: duration,
+    taskTitle,
+    blockedDomains: normalizedDomains,
+    status: 'ACTIVE',
+    createdAt: startedAt,
+  };
+}
+
+export function stopWebsiteFocusSession(userId: string): boolean {
+  const result = getDb().prepare("UPDATE user_focus_sessions SET status = 'CANCELLED' WHERE user_id = ? AND status = 'ACTIVE'").run(userId);
+  return (result.changes || 0) > 0;
 }
 
 interface LectureSlideChunk {
@@ -3777,6 +4079,7 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
     conceptKey: string;
     topicId?: string;
     topicName?: string;
+    keyTokens: Set<string>;
     occurrences: WhatToStudyOccurrence[];
   }>();
 
@@ -3796,6 +4099,7 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
     let conceptKey = '';
     let canonicalTitle = '';
 
+    // 1. Well-known canonical concepts
     if (tokens.some((t) => t.includes('deadlock')) && tokens.some((t) => t.includes('detect'))) {
       conceptKey = 'deadlock-detection';
       canonicalTitle = 'Explain Deadlock Detection';
@@ -3821,15 +4125,46 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
       conceptKey = 'critical-section-synchronization';
       canonicalTitle = 'Critical Section & Semaphores';
     } else {
-      // General concept extraction: strip leading question words and take top keyphrase
-      const simplified = cleanText
-        .replace(/^(?:explain|describe|what is|how is|solve|state and prove|illustrate|analyze|define|discuss|compare)\s+/i, '')
-        .replace(/[^a-zA-Z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .slice(0, 5)
-        .join(' ');
-      conceptKey = tokens.slice(0, 3).sort().join('-') || 'general-topic';
-      canonicalTitle = simplified.charAt(0).toUpperCase() + simplified.slice(1);
+      // 2. Deterministic Semantic Clustering for arbitrary exam questions
+      const stopWords = new Set([
+        'explain', 'describe', 'what', 'why', 'how', 'discuss', 'define', 'illustrate',
+        'calculate', 'compare', 'differentiate', 'distinguish', 'state', 'prove', 'show',
+        'derive', 'write', 'short', 'notes', 'note', 'briefly', 'detail', 'example',
+        'following', 'with', 'the', 'and', 'for', 'in', 'an', 'of', 'to', 'a', 'is', 'are',
+        'was', 'were', 'by', 'as', 'at', 'from', 'neat', 'sketch', 'diagram', 'suitable',
+        'solve', 'analyze', 'about', 'between', 'using', 'based', 'their', 'which', 'that'
+      ]);
+      const contentTokens = tokens.filter((t) => t.length >= 3 && !stopWords.has(t));
+
+      let bestClusterKey: string | null = null;
+      let highestSim = 0;
+
+      for (const [cKey, cVal] of conceptClusters.entries()) {
+        const intersection = contentTokens.filter((t) => cVal.keyTokens.has(t));
+        const unionSize = new Set([...contentTokens, ...cVal.keyTokens]).size;
+        const jaccard = unionSize > 0 ? intersection.length / unionSize : 0;
+
+        if (jaccard >= 0.40 || (intersection.length >= 2 && jaccard >= 0.25)) {
+          if (jaccard > highestSim) {
+            highestSim = jaccard;
+            bestClusterKey = cKey;
+          }
+        }
+      }
+
+      if (bestClusterKey) {
+        conceptKey = bestClusterKey;
+      } else {
+        const simplified = cleanText
+          .replace(/^(?:explain|describe|what is|what are|how is|how does|solve|state and prove|illustrate|analyze|define|discuss|compare)\s+/i, '')
+          .replace(/[^a-zA-Z0-9\s]/g, ' ')
+          .split(/\s+/)
+          .filter((w) => w.length > 2 && !stopWords.has(w.toLowerCase()))
+          .slice(0, 5)
+          .join(' ');
+        conceptKey = contentTokens.slice(0, 3).sort().join('-') || 'general-topic';
+        canonicalTitle = (simplified.charAt(0).toUpperCase() + simplified.slice(1)) || 'Exam Topic';
+      }
     }
 
     if (!conceptClusters.has(conceptKey)) {
@@ -3838,11 +4173,14 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
         conceptKey,
         topicId: q.topicId || undefined,
         topicName: q.topicName || undefined,
+        keyTokens: new Set(tokens.filter((t) => t.length >= 3)),
         occurrences: [],
       });
     }
 
     const cluster = conceptClusters.get(conceptKey)!;
+    tokens.forEach((t) => { if (t.length >= 3) cluster.keyTokens.add(t); });
+
     cluster.occurrences.push({
       paperTitle: docTitle,
       examYear,
@@ -3851,6 +4189,7 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
       label,
       marks: q.marks,
       questionText: cleanText,
+      pageNumber: q.pageNumber || undefined,
     });
     if (!cluster.topicId && q.topicId) {
       cluster.topicId = q.topicId;
@@ -3864,11 +4203,14 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
     return t.includes('lecture') || t.includes('slide') || t.includes('note') || t.includes('presentation');
   });
 
-  // Extract slide chunks from all lecture documents
-  const parsedLectures = lectureDocs.map((doc) => ({
-    doc,
-    slides: extractLectureSlides(doc.content || ''),
-  }));
+  // Extract slide chunks from all lecture documents (preferring persisted document_pages if available)
+  const parsedLectures = lectureDocs.map((doc) => {
+    const pages = getDocumentPages(userId, doc.id);
+    const slides: LectureSlideChunk[] = pages.length > 0
+      ? pages.map((p) => ({ slideNumber: p.pageNumber, title: p.heading, text: p.text }))
+      : extractLectureSlides(doc.content || '');
+    return { doc, slides };
+  });
 
   const items: WhatToStudyItem[] = [];
 
@@ -3906,7 +4248,7 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
     };
 
     const specificTokens = clusterKeywords[key];
-    const generalTokens = Array.from(new Set(academicTokens(cluster.canonicalTitle)));
+    const generalTokens = Array.from(cluster.keyTokens);
 
     // Search lecture slides
     for (const { doc, slides } of parsedLectures) {
@@ -3946,9 +4288,17 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
       }
     }
 
+    // Multi-factor explainable importance scoring (0 to 100)
+    const baseScore = Math.min(40, distinctYearsCount * 20);
+    const repScore = Math.min(30, appearanceCount * 10);
+    const marksScore = Math.min(15, avgMarks >= 10 ? 15 : avgMarks >= 6 ? 10 : 5);
+    const lectureScore = lectureSource.mapped ? 10 : 0;
+    const syllabusScore = unitTopic.toLowerCase().includes('unit') ? 5 : 0;
+    const importanceScore = Math.min(100, baseScore + repScore + marksScore + lectureScore + syllabusScore);
+
     // Determine explainable priority tag
     let priorityTag: WhatToStudyItem['priorityTag'] = 'HIGH PRIORITY';
-    if (appearanceCount >= 3 || (appearanceCount >= 2 && distinctYearsCount >= 2)) {
+    if (appearanceCount >= 3 || (appearanceCount >= 2 && distinctYearsCount >= 2) || importanceScore >= 70) {
       priorityTag = 'HIGH PRIORITY';
     } else if (appearanceCount >= 2) {
       priorityTag = 'REPEATED FREQUENTLY';
@@ -3957,6 +4307,9 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
     } else {
       priorityTag = 'STRONG PAST-PAPER EVIDENCE';
     }
+
+    const uniqueYears = Array.from(new Set(cluster.occurrences.map((o) => o.examYear)));
+    const importanceExplanation = `Appeared in ${appearanceCount} exams across ${distinctYearsCount} years (${uniqueYears.join(', ')}) • ${lectureSource.mapped ? `Verified in ${lectureSource.slideRange}` : 'Theory concept'} • Avg ${avgMarks} marks`;
 
     items.push({
       id: `wts-${key}`,
@@ -3969,6 +4322,8 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
       topicId: cluster.topicId,
       lectureSource,
       averageMarks: avgMarks,
+      importanceScore,
+      importanceExplanation,
     });
   }
 

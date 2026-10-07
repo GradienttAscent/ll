@@ -455,6 +455,46 @@ const MIGRATIONS: Migration[] = [
       db.run('CREATE INDEX IF NOT EXISTS idx_doubt_answers_doubt ON study_doubt_answers(doubt_id);');
     },
   },
+  {
+    version: 17,
+    name: 'document-pages-and-real-focus-mode',
+    up: (db) => {
+      db.run(`CREATE TABLE IF NOT EXISTS document_pages (
+        id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        page_number INTEGER NOT NULL,
+        heading TEXT NOT NULL DEFAULT '',
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );`);
+      db.run('CREATE INDEX IF NOT EXISTS idx_document_pages_doc_num ON document_pages(document_id, page_number);');
+
+      const questionColumns = pragmaTableInfo(db, 'questions').map((column) => column.name);
+      if (!questionColumns.includes('page_number')) {
+        db.run('ALTER TABLE questions ADD COLUMN page_number INTEGER;');
+      }
+
+      db.run(`CREATE TABLE IF NOT EXISTS user_focus_sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        started_at TEXT NOT NULL,
+        ends_at TEXT NOT NULL,
+        duration_minutes INTEGER NOT NULL,
+        task_title TEXT NOT NULL DEFAULT '',
+        blocked_domains TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'ACTIVE',
+        created_at TEXT NOT NULL
+      );`);
+      db.run('CREATE INDEX IF NOT EXISTS idx_user_focus_sessions_user ON user_focus_sessions(user_id, status);');
+
+      db.run(`CREATE TABLE IF NOT EXISTS user_focus_blocklists (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        domains TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL
+      );`);
+    },
+  },
 ];
 
 function createMockExamTables(db: SqlJsDatabase) {
@@ -517,6 +557,35 @@ function repairSchema(db: SqlJsDatabase) {
   if (!columns.includes('missed')) {
     db.run('ALTER TABLE schedule_blocks ADD COLUMN missed INTEGER NOT NULL DEFAULT 0;');
   }
+  const qCols = pragmaTableInfo(db, 'questions').map((c) => c.name);
+  if (!qCols.includes('page_number')) {
+    db.run('ALTER TABLE questions ADD COLUMN page_number INTEGER;');
+  }
+  db.run(`CREATE TABLE IF NOT EXISTS document_pages (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    page_number INTEGER NOT NULL,
+    heading TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS user_focus_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL,
+    ends_at TEXT NOT NULL,
+    duration_minutes INTEGER NOT NULL,
+    task_title TEXT NOT NULL DEFAULT '',
+    blocked_domains TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TEXT NOT NULL
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS user_focus_blocklists (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    domains TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+  );`);
   replaceLegacyMockExamTables(db);
   createMockExamTables(db);
 }

@@ -584,6 +584,7 @@ export interface WhatToStudyOccurrence {
   label: string;
   marks: number;
   questionText: string;
+  pageNumber?: number;
 }
 
 export interface WhatToStudySourceMapping {
@@ -609,5 +610,7 @@ export interface WhatToStudyItem {
   topicId?: string;
   lectureSource: WhatToStudySourceMapping;
   averageMarks: number;
+  importanceScore?: number;
+  importanceExplanation?: string;
 }
 

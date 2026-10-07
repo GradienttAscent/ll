@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface SplashScreenProps {
@@ -7,22 +7,40 @@ interface SplashScreenProps {
 
 export const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
   const [isVisible, setIsVisible] = useState(true);
+  const completedRef = useRef(false);
+
+  const complete = useCallback(() => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    setIsVisible(false);
+    onComplete();
+  }, [onComplete]);
+
+  const startExit = useCallback(() => {
+    if (completedRef.current) return;
+    setIsVisible(false);
+    // Hard fallback timeout in case onExitComplete doesn't fire in React 19 / motion v12
+    const safetyTimer = setTimeout(() => {
+      complete();
+    }, 600);
+    return () => clearTimeout(safetyTimer);
+  }, [complete]);
 
   useEffect(() => {
-    // Total duration of splash screen animation before calling onComplete
+    // Total duration of splash screen animation before starting fade out
     const timer = setTimeout(() => {
-      setIsVisible(false);
-    }, 2800);
+      startExit();
+    }, 2000);
 
     return () => clearTimeout(timer);
-  }, []);
+  }, [startExit]);
 
   const handleSkip = () => {
-    setIsVisible(false);
+    complete();
   };
 
   return (
-    <AnimatePresence onExitComplete={onComplete}>
+    <AnimatePresence onExitComplete={complete}>
       {isVisible && (
         <motion.div
           key="splash"

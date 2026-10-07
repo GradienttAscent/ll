@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActiveTab, PastPaper, ExtractedTopic, QuestionItem, WhatToStudyItem } from '../types';
 import { FileUp, FileText, CheckCircle2, ArrowRight, Loader2, BookOpen, Calendar, Clock, ExternalLink, X, Plus } from 'lucide-react';
 
@@ -26,9 +26,24 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [fileError, setFileError] = useState('');
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+  const [uploadProgressMsg, setUploadProgressMsg] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
   const [isSampleMode, setIsSampleMode] = useState(false);
   const [showUploadForm, setShowUploadForm] = useState(false);
+  const uploadFormRef = useRef<HTMLDivElement>(null);
+
+  const toggleUploadForm = () => {
+    setShowUploadForm((prev) => {
+      const next = !prev;
+      if (next) {
+        setTimeout(() => {
+          uploadFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 50);
+      }
+      return next;
+    });
+  };
 
   // Source Slide Viewer Modal State
   const [activeSourceItem, setActiveSourceItem] = useState<WhatToStudyItem | null>(null);
@@ -66,18 +81,21 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     void fetchWhatToStudy();
   }, [papers.length, questions.length, topics.length]);
 
-  const fileAsBase64 = async (file: File) => {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let binary = '';
-    for (let index = 0; index < bytes.length; index += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-    }
-    return btoa(binary);
-  };
+  const fileAsBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64 = result.includes(',') ? result.split(',')[1] : result;
+        resolve(base64);
+      };
+      reader.onerror = (error) => reject(error);
+      reader.readAsDataURL(file);
+    });
 
   const handleRunAnalysis = async () => {
-    if (!uploadedFile && !inputText.trim() && !selectedPaper) {
-      alert('Please enter document content or select an uploaded paper.');
+    if (uploadedFiles.length === 0 && !inputText.trim() && !selectedPaper) {
+      alert('Please select files to upload, enter document content, or select an uploaded paper.');
       return;
     }
     if (fileError) return;
@@ -85,43 +103,85 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     setIsAnalyzing(true);
     setAnalysisResult(null);
 
-    const contentToAnalyze = inputText || selectedPaper?.parsedContent || '';
-    const nameToAnalyze = docName || selectedPaper?.title || 'Academic Paper';
-
     try {
-      const res = await fetch(uploadedFile ? '/api/academic-documents/upload' : '/api/academic-documents/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(uploadedFile ? {
-          title: uploadedFile.name,
-          docType,
-          base64: await fileAsBase64(uploadedFile),
-          mimeType: uploadedFile.type || undefined,
-        } : {
-          title: nameToAnalyze,
-          docType: isSampleMode ? 'Past Paper (Sample)' : docType,
-          content: contentToAnalyze,
-        }),
-      });
+      if (uploadedFiles.length > 0) {
+        let totalQuestions = 0;
+        const processed: { name: string; method?: string }[] = [];
+        const failed: { name: string; error: string }[] = [];
 
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Unable to persist academic document.');
-      const analysis = json.analysis;
-      setAnalysisResult({
-        title: 'Academic document saved',
-        summary: `${analysis.createdQuestionCount} questions were persisted from ${isSampleMode ? 'the sample paper' : 'the uploaded document'}. Topic evidence and marks were calculated from those stored questions.`,
-      });
+        for (let i = 0; i < uploadedFiles.length; i++) {
+          const file = uploadedFiles[i];
+          setUploadProgressMsg(`Processing file ${i + 1} of ${uploadedFiles.length}: ${file.name}...`);
+          try {
+            const title = uploadedFiles.length === 1 && docName.trim() ? docName.trim() : file.name;
+            const res = await fetch('/api/academic-documents/upload', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title,
+                docType,
+                base64: await fileAsBase64(file),
+                mimeType: file.type || undefined,
+                fileName: file.name,
+              }),
+            });
+            const json = await res.json();
+            if (!res.ok) {
+              failed.push({ name: file.name, error: json.error || 'Failed to extract document' });
+            } else {
+              totalQuestions += json.analysis?.createdQuestionCount || 0;
+              const method = json.analysis?.document?.extractionMethod || json.analysis?.extractionMethod || 'embedded-pdf-text';
+              processed.push({ name: file.name, method });
+            }
+          } catch (err: any) {
+            failed.push({ name: file.name, error: err.message || 'Network error' });
+          }
+        }
+
+        if (failed.length > 0 && processed.length === 0) {
+          throw new Error(`Failed to upload files: ${failed.map((f) => `${f.name} (${f.error})`).join(', ')}`);
+        }
+
+        const pathInfo = processed.map((p) => `${p.name}: ${p.method}`).join(', ');
+        setAnalysisResult({
+          title: failed.length > 0 ? 'Documents partially saved' : 'Academic documents saved',
+          summary: `${processed.length} of ${uploadedFiles.length} document${uploadedFiles.length > 1 ? 's' : ''} saved successfully (${totalQuestions} total questions indexed; extraction: ${pathInfo}).${failed.length > 0 ? ` Failed: ${failed.map((f) => f.name).join(', ')}` : ''}`,
+        });
+      } else {
+        const contentToAnalyze = inputText || selectedPaper?.parsedContent || '';
+        const nameToAnalyze = docName || selectedPaper?.title || 'Academic Paper';
+
+        const res = await fetch('/api/academic-documents/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: nameToAnalyze,
+            docType: isSampleMode ? 'Past Paper (Sample)' : docType,
+            content: contentToAnalyze,
+          }),
+        });
+
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Unable to persist academic document.');
+        const analysis = json.analysis;
+        setAnalysisResult({
+          title: 'Academic document saved',
+          summary: `${analysis.createdQuestionCount} questions were persisted from ${isSampleMode ? 'the sample paper' : 'the uploaded text'}. Topic evidence and marks were calculated from those stored questions.`,
+        });
+      }
+
       await onAcademicUpdated();
       await fetchWhatToStudy();
       setInputText('');
-      setUploadedFile(null);
+      setUploadedFiles([]);
       setDocName('');
       setShowUploadForm(false);
-    } catch (err) {
-      console.error('Failed to run AI document analysis:', err);
-      alert('Error analyzing document. Please try again.');
+    } catch (err: any) {
+      console.error('Failed to run document analysis:', err);
+      alert(err.message || 'Error analyzing document. Please try again.');
     } finally {
       setIsAnalyzing(false);
+      setUploadProgressMsg('');
     }
   };
 
@@ -145,15 +205,64 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setDocName(file.name);
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []) as File[];
+    if (files.length > 0) {
+      setUploadedFiles((prev) => {
+        const existingKeys = new Set(prev.map((f) => `${f.name}-${f.size}`));
+        const filtered = files.filter((f) => !existingKeys.has(`${f.name}-${f.size}`));
+        return [...prev, ...filtered];
+      });
       setSelectedPaper(null);
-      setUploadedFile(file);
       setIsSampleMode(false);
       setFileError('');
       setInputText('');
+      if (files.length === 1 && !docName) {
+        setDocName(files[0].name);
+      }
+    }
+    e.target.value = '';
+  };
+
+  const handleRemoveFile = (index: number) => {
+    setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleClearFiles = () => {
+    setUploadedFiles([]);
+    setDocName('');
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files || []) as File[];
+    if (files.length > 0) {
+      setUploadedFiles((prev) => {
+        const existingKeys = new Set(prev.map((f) => `${f.name}-${f.size}`));
+        const filtered = files.filter((f) => !existingKeys.has(`${f.name}-${f.size}`));
+        return [...prev, ...filtered];
+      });
+      setSelectedPaper(null);
+      setIsSampleMode(false);
+      setFileError('');
+      setInputText('');
+      if (files.length === 1 && !docName) {
+        setDocName(files[0].name);
+      }
     }
   };
 
@@ -239,11 +348,15 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
           </button>
 
           <button
-            onClick={() => setShowUploadForm(!showUploadForm)}
-            className="rounded-lg bg-[#6D28D9] dark:bg-[#8B5CF6] hover:bg-[#5B21B6] dark:hover:bg-[#7C3AED] text-white px-3.5 py-2 text-[10px] font-bold uppercase tracking-[0.14em] transition-all shadow-2xs active:scale-98 flex items-center gap-1.5"
+            onClick={toggleUploadForm}
+            className={`rounded-lg px-3.5 py-2 text-[10px] font-bold uppercase tracking-[0.14em] transition-all shadow-2xs active:scale-98 flex items-center gap-1.5 ${
+              showUploadForm
+                ? 'bg-[#5B21B6] text-white border border-[#5B21B6]'
+                : 'bg-[#6D28D9] dark:bg-[#8B5CF6] hover:bg-[#5B21B6] dark:hover:bg-[#7C3AED] text-white'
+            }`}
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Upload Material</span>
+            {showUploadForm ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+            <span>{showUploadForm ? 'Close Upload Form' : 'Upload Material'}</span>
           </button>
         </div>
       </div>
@@ -273,6 +386,205 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* UPLOAD & INGESTION FORM (MOVED TO TOP FOR IMMEDIATE VISIBILITY) */}
+      {/* ========================================================================= */}
+      {showUploadForm && (
+        <section ref={uploadFormRef} className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-5 shadow-2xs animate-fade-in">
+          <div className="flex items-center justify-between border-b border-[#EDE7F3] dark:border-[#302B35] pb-3">
+            <h3 className="font-serif text-2xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">
+              Upload Academic Material
+            </h3>
+            <button
+              onClick={() => setShowUploadForm(false)}
+              className="text-[#7B7484] hover:text-[#17151A] p-1"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            {/* Document Type Selector (3 Types) */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
+                Document Type
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDocType('Past Paper')}
+                  className={`py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                    docType === 'Past Paper'
+                      ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-[#6D28D9] dark:border-[#8B5CF6] shadow-2xs'
+                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8]'
+                  }`}
+                >
+                  Past Question Paper
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDocType('Lecture Slides')}
+                  className={`py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                    docType === 'Lecture Slides'
+                      ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-[#6D28D9] dark:border-[#8B5CF6] shadow-2xs'
+                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8]'
+                  }`}
+                >
+                  Lecture Slides / PPT / Notes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDocType('Syllabus')}
+                  className={`py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                    docType === 'Syllabus'
+                      ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-[#6D28D9] dark:border-[#8B5CF6] shadow-2xs'
+                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8]'
+                  }`}
+                >
+                  Course Syllabus
+                </button>
+              </div>
+            </div>
+
+            {/* Document Title */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
+                Document Title {uploadedFiles.length > 1 ? '(Optional batch prefix)' : ''}
+              </label>
+              <input
+                type="text"
+                value={docName}
+                onChange={(e) => setDocName(e.target.value)}
+                placeholder={uploadedFiles.length > 1 ? 'Optional (defaults to individual file names)' : 'e.g. 2024 End Semester Exam, OS Unit 4 Slides, Course Syllabus...'}
+                className="w-full text-xs px-3 py-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] placeholder:text-[#9E94AB] focus:outline-none focus:border-[#6D28D9]"
+              />
+            </div>
+
+            {/* File Upload Box */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
+                  Upload PDF / PPTX / Text Files
+                </label>
+                {uploadedFiles.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearFiles}
+                    className="text-[10px] text-red-500 hover:text-red-600 font-semibold transition"
+                  >
+                    Clear All ({uploadedFiles.length})
+                  </button>
+                )}
+              </div>
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`p-4 rounded-xl border border-dashed text-center transition-colors ${
+                  isDragging
+                    ? 'border-[#6D28D9] dark:border-[#8B5CF6] bg-[#EDE7F6]/50 dark:bg-[#251E30]/50'
+                    : 'border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21]'
+                }`}
+              >
+                <input
+                  type="file"
+                  id="academic-file-input"
+                  onChange={handleFileUpload}
+                  accept=".pdf,.txt,.pptx,.docx"
+                  multiple
+                  className="hidden"
+                />
+                <label
+                  htmlFor="academic-file-input"
+                  className="cursor-pointer inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-xs font-semibold text-[#17151A] dark:text-[#F5F3F7] hover:border-[#D8CCE8] shadow-2xs transition"
+                >
+                  <FileUp className="w-3.5 h-3.5 text-[#6D28D9] dark:text-[#8B5CF6]" />
+                  <span>{uploadedFiles.length > 0 ? '+ Add More Files' : 'Choose Files (Multiple PDFs, PPTXs, TXT)'}</span>
+                </label>
+                <p className="text-[10px] text-[#7B7484] dark:text-[#807A87] mt-1.5">
+                  Select one or multiple past papers, lecture slides, or syllabi (or drag &amp; drop here)
+                </p>
+
+                {uploadedFiles.length > 0 && (
+                  <div className="mt-3.5 space-y-1.5 text-left max-h-48 overflow-y-auto pr-1">
+                    {uploadedFiles.map((file, idx) => (
+                      <div
+                        key={`${file.name}-${idx}`}
+                        className="flex items-center justify-between px-3 py-2 rounded-lg bg-white dark:bg-[#17151A] border border-[#EDE7F3] dark:border-[#302B35] text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 pr-2">
+                          <FileText className="w-3.5 h-3.5 shrink-0 text-[#6D28D9] dark:text-[#8B5CF6]" />
+                          <span className="truncate text-[#17151A] dark:text-[#F5F3F7] font-medium text-[11px]" title={file.name}>
+                            {file.name}
+                          </span>
+                          <span className="text-[10px] text-[#7B7484] dark:text-[#807A87] shrink-0 font-mono">
+                            ({(file.size / 1024).toFixed(1)} KB)
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveFile(idx)}
+                          className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-[#7B7484] hover:text-red-500 transition"
+                          title="Remove file"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                    <div className="text-[10px] text-[#7B7484] dark:text-[#807A87] text-right font-medium pt-1">
+                      Total: {uploadedFiles.length} file{uploadedFiles.length > 1 ? 's' : ''} ({(uploadedFiles.reduce((sum, f) => sum + f.size, 0) / (1024 * 1024)).toFixed(2)} MB)
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Content Textarea (Optional if uploading file) */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
+                Or Paste Content Directly
+              </label>
+              <textarea
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                placeholder="Paste exam questions, slide text, or syllabus units here..."
+                rows={5}
+                className="w-full text-xs font-mono p-3 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] placeholder:text-[#9E94AB] focus:outline-none focus:border-[#6D28D9]"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowUploadForm(false)}
+                className="px-3 py-1.5 text-xs text-[#7B7484] hover:text-[#17151A]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRunAnalysis}
+                disabled={isAnalyzing || (uploadedFiles.length === 0 && !inputText.trim())}
+                className="px-4 py-2 rounded-lg bg-[#6D28D9] dark:bg-[#8B5CF6] hover:bg-[#5B21B6] text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50 transition flex items-center gap-2"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>{uploadProgressMsg || 'Analyzing...'}</span>
+                  </>
+                ) : (
+                  <span>
+                    {uploadedFiles.length > 1
+                      ? `Save & Analyze (${uploadedFiles.length} Files)`
+                      : 'Save & Analyze'}
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
+        </section>
       )}
 
       {/* ========================================================================= */}
@@ -355,7 +667,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
                           {item.priorityTag}
                         </span>
                         <span className="text-[11px] font-sans font-medium text-[#7B7484] dark:text-[#A9A3AE]">
-                          Appeared {item.appearanceCount} times
+                          Appeared {item.appearanceCount} times{item.importanceScore ? ` • Score ${item.importanceScore}%` : ''}
                         </span>
                       </div>
                       <h3 className="font-serif text-2xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">
@@ -404,7 +716,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
                               {occ.label}
                             </span>
                             <span className="text-[10px] text-[#7B7484] dark:text-[#807A87] shrink-0">
-                              {occ.marks} marks
+                              {occ.pageNumber ? `p.${occ.pageNumber} · ` : ''}{occ.marks} marks
                             </span>
                           </div>
                         ))}
@@ -445,143 +757,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
           </div>
         )}
       </section>
-
-      {/* ========================================================================= */}
-      {/* 2. UPLOAD & INGESTION FORM (COLLAPSIBLE OR ACCORDION) */}
-      {/* ========================================================================= */}
-      {showUploadForm && (
-        <section className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-5 shadow-2xs animate-fade-in">
-          <div className="flex items-center justify-between border-b border-[#EDE7F3] dark:border-[#302B35] pb-3">
-            <h3 className="font-serif text-2xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">
-              Upload Academic Material
-            </h3>
-            <button
-              onClick={() => setShowUploadForm(false)}
-              className="text-[#7B7484] hover:text-[#17151A] p-1"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="space-y-4">
-            {/* Document Type Selector (3 Types) */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
-                Document Type
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDocType('Past Paper')}
-                  className={`py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
-                    docType === 'Past Paper'
-                      ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-[#6D28D9] dark:border-[#8B5CF6] shadow-2xs'
-                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8]'
-                  }`}
-                >
-                  Past Question Paper
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDocType('Lecture Slides')}
-                  className={`py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
-                    docType === 'Lecture Slides'
-                      ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-[#6D28D9] dark:border-[#8B5CF6] shadow-2xs'
-                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8]'
-                  }`}
-                >
-                  Lecture Slides / PPT / Notes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDocType('Syllabus')}
-                  className={`py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
-                    docType === 'Syllabus'
-                      ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-[#6D28D9] dark:border-[#8B5CF6] shadow-2xs'
-                      : 'bg-[#FAF8FC] dark:bg-[#1D1A21] text-[#55524E] dark:text-[#A9A3AE] border-[#EDE7F3] dark:border-[#302B35] hover:border-[#D8CCE8]'
-                  }`}
-                >
-                  Course Syllabus
-                </button>
-              </div>
-            </div>
-
-            {/* Document Title */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
-                Document Title
-              </label>
-              <input
-                type="text"
-                value={docName}
-                onChange={(e) => setDocName(e.target.value)}
-                placeholder="e.g. 2024 End Semester Exam, OS Unit 4 Slides, Course Syllabus..."
-                className="w-full text-xs px-3 py-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] placeholder:text-[#9E94AB] focus:outline-none focus:border-[#6D28D9]"
-              />
-            </div>
-
-            {/* File Upload Box */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
-                Upload PDF / PPTX / Text File
-              </label>
-              <div className="p-4 rounded-xl border border-dashed border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] text-center space-y-2">
-                <input
-                  type="file"
-                  id="academic-file-input"
-                  onChange={handleFileUpload}
-                  accept=".pdf,.txt,.pptx,.docx"
-                  className="hidden"
-                />
-                <label
-                  htmlFor="academic-file-input"
-                  className="cursor-pointer inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-xs font-semibold text-[#17151A] dark:text-[#F5F3F7] hover:border-[#D8CCE8]"
-                >
-                  <FileUp className="w-3.5 h-3.5 text-[#6D28D9] dark:text-[#8B5CF6]" />
-                  <span>{uploadedFile ? uploadedFile.name : 'Choose File (PDF, PPTX, TXT)'}</span>
-                </label>
-                {uploadedFile && (
-                  <p className="text-[10px] text-[#7B7484] dark:text-[#807A87]">
-                    Size: {(uploadedFile.size / 1024).toFixed(1)} KB
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* Content Textarea (Optional if uploading file) */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B7484] dark:text-[#807A87]">
-                Or Paste Content Directly
-              </label>
-              <textarea
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder="Paste exam questions, slide text, or syllabus units here..."
-                rows={5}
-                className="w-full text-xs font-mono p-3 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] placeholder:text-[#9E94AB] focus:outline-none focus:border-[#6D28D9]"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowUploadForm(false)}
-                className="px-3 py-1.5 text-xs text-[#7B7484] hover:text-[#17151A]"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleRunAnalysis}
-                disabled={isAnalyzing || (!uploadedFile && !inputText.trim())}
-                className="px-4 py-2 rounded-lg bg-[#6D28D9] dark:bg-[#8B5CF6] hover:bg-[#5B21B6] text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50 transition"
-              >
-                {isAnalyzing ? 'Analyzing...' : 'Save & Analyze'}
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
 
       {/* ========================================================================= */}
       {/* 3. TOPIC WEIGHTAGE & QUESTION BANK (SUPPORTING VIEWS) */}
@@ -706,6 +881,25 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
                   {activeSourceItem.lectureSource.slideSnippet || 'No snippet available.'}
                 </div>
               </div>
+
+              {activeSourceItem.occurrences && activeSourceItem.occurrences.length > 0 && (
+                <div className="p-4 rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#FAF8FC] dark:bg-[#1D1A21] space-y-2.5">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#7B7484] dark:text-[#807A87]">
+                    Exam Question Evidence &amp; Traceability ({activeSourceItem.occurrences.length} papers)
+                  </div>
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {activeSourceItem.occurrences.map((occ, i) => (
+                      <div key={i} className="text-xs border-b border-[#EDE7F3] dark:border-[#302B35] pb-2 last:border-none">
+                        <div className="flex items-center justify-between font-mono font-semibold text-[#6D28D9] dark:text-[#8B5CF6] text-[11px]">
+                          <span>{occ.label}</span>
+                          <span>{occ.pageNumber ? `Page ${occ.pageNumber} · ` : ''}{occ.marks} marks</span>
+                        </div>
+                        <p className="text-[11px] text-[#55524E] dark:text-[#A9A3AE] pt-0.5 leading-relaxed">{occ.questionText}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {activeSourceItem.lectureSource.documentId && (
                 <div className="flex items-center justify-between text-xs text-[#7B7484] pt-1">

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LazyLift Focus Shield</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 280px;
+      background: #17151a;
+      color: #f5f3f7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 1rem;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #302b35;
+      padding-bottom: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .title {
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: #a78bfa;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .status-badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.2rem 0.5rem;
+      border-radius: 9999px;
+      text-transform: uppercase;
+    }
+    .status-active {
+      background: #251e30;
+      color: #a78bfa;
+      border: 1px solid #3e3846;
+    }
+    .status-idle {
+      background: #242228;
+      color: #7b7484;
+      border: 1px solid #302b35;
+    }
+    .content {
+      font-size: 0.75rem;
+      color: #a9a3ae;
+      line-height: 1.4;
+      margin-bottom: 1rem;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      background: #6d28d9;
+      color: #ffffff;
+      border: none;
+      padding: 0.5rem;
+      border-radius: 0.4rem;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      text-align: center;
+      text-decoration: none;
+    }
+    .btn:hover { background: #5b21b6; }
+    .btn-secondary {
+      background: #251e30;
+      color: #c4b5fd;
+      border: 1px solid #3e3846;
+      margin-top: 0.5rem;
+    }
+    .btn-secondary:hover { background: #302b35; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">Focus Shield</div>
+    <div id="statusBadge" class="status-badge status-idle">Standby</div>
+  </div>
+  <div id="statusText" class="content">
+    Checking focus session status with LazyLift...
+  </div>
+  <button id="syncBtn" class="btn">Sync Now</button>
+  <a href="http://localhost:3000" target="_blank" class="btn btn-secondary">Open LazyLift</a>
+
+  <script src="popup.js"></script>
+</body>
+</html>

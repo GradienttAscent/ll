@@ -51,6 +51,22 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
   const [blockApps, setBlockApps] = useState(false);
   const [customSiteInput, setCustomSiteInput] = useState('');
   const [customList, setCustomList] = useState<DistractionTarget[]>([]);
+  const [activeServerSession, setActiveServerSession] = useState<any>(null);
+  const [isStopping, setIsStopping] = useState(false);
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+    void fetch('/api/focus-mode/active')
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (data && data.activeSession) {
+          setActiveServerSession(data.activeSession);
+        } else {
+          setActiveServerSession(null);
+        }
+      })
+      .catch(() => {});
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -78,8 +94,40 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
     setCustomSiteInput('');
   };
 
-  const handleStart = () => {
+  const handleStopActiveSession = async () => {
+    setIsStopping(true);
+    try {
+      await fetch('/api/focus-mode/stop', { method: 'POST' });
+      setActiveServerSession(null);
+      onClose();
+    } catch (err) {
+      console.error('Failed to stop focus session:', err);
+    } finally {
+      setIsStopping(false);
+    }
+  };
+
+  const handleStart = async () => {
     const finalDuration = isCustom && customDuration ? parseInt(customDuration, 10) || 50 : duration;
+    const allTargets = [...COMMON_DISTRACTIONS, ...customList];
+    const targetDomains = allTargets
+      .filter((t) => selectedDistractions.includes(t.id))
+      .map((t) => t.domain);
+
+    try {
+      await fetch('/api/focus-mode/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          durationMinutes: Math.max(5, Math.min(240, finalDuration)),
+          taskTitle: taskTitle || undefined,
+          domains: targetDomains,
+        }),
+      });
+    } catch (err) {
+      console.error('Failed to register active focus session:', err);
+    }
+
     onStartFocus({
       durationMinutes: Math.max(5, Math.min(240, finalDuration)),
       blockedDistractions: selectedDistractions,
@@ -119,6 +167,27 @@ export const FocusModeModal: React.FC<FocusModeModalProps> = ({
             )}
           </p>
         </div>
+
+        {activeServerSession && (
+          <div className="p-4 rounded-xl border border-purple-200 dark:border-purple-900/50 bg-purple-50 dark:bg-purple-950/20 text-xs space-y-2 animate-fade-in">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-purple-900 dark:text-purple-300 flex items-center gap-1.5">
+                <Shield className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                Focus Session Active (Ends {new Date(activeServerSession.endsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+              </span>
+              <button
+                onClick={handleStopActiveSession}
+                disabled={isStopping}
+                className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] uppercase tracking-wider transition"
+              >
+                {isStopping ? 'Stopping...' : 'Stop Focus'}
+              </button>
+            </div>
+            <div className="text-[11px] text-purple-800 dark:text-purple-300">
+              Actively shielded: {activeServerSession.blockedDomains?.join(', ') || 'Default blocklist'}
+            </div>
+          </div>
+        )}
 
         {/* Duration Configuration */}
         <div className="space-y-2.5">
