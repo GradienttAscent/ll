@@ -151,6 +151,19 @@ export function pdfLineSegments(source: string): string[] {
 export function extractionIsLowQuality(text: string): boolean {
   const normalized = String(text || '').replace(/\r/g, '').trim();
   if (!normalized) return true;
+
+  // Unprintable control codes (e.g. font glyph substitution or binary extraction corruptions)
+  const controlChars = (normalized.match(/[\x00-\x08\x0E-\x1F]/g) || []).length;
+  if (controlChars > 5 && controlChars / normalized.length > 0.03) {
+    return true;
+  }
+
+  const nonWhitespace = normalized.replace(/\s/g, '');
+  const printableAlnum = (nonWhitespace.match(/[A-Za-z0-9]/g) || []).length;
+  if (nonWhitespace.length > 30 && printableAlnum / nonWhitespace.length < 0.35) {
+    return true;
+  }
+
   const lines = normalized.split('\n').filter((line) => line.trim().length > 0);
   // Documents with few physical lines are either well-formed single-line papers (pasted
   // text) or short fragments; neither should be forced through OCR blindly.

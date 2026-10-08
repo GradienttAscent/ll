@@ -474,6 +474,7 @@ export default function App() {
               questions={questions}
               onAcademicUpdated={refreshAcademicData}
               setActiveTab={setActiveTab}
+              onOpenUpload={() => setIsUploadModalOpen(true)}
             />
           )}
 

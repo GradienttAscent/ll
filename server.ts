@@ -738,7 +738,7 @@ app.get('/api/study-streak', (req, res) => {
 // ---- YOUR ASCENT Progression System ----
 app.get('/api/ascent', (req, res) => {
   const offset = Number(req.query.tzOffsetMinutes);
-  const tzOffsetMinutes = Number.isFinite(offset) ? offset : new Date().getTimezoneOffset();
+  const tzOffsetMinutes = Number.isFinite(offset) ? offset : 0;
   res.json({ ascent: services.computeAscentState(userIdOf(req), tzOffsetMinutes) });
 });
 
@@ -891,23 +891,29 @@ export function buildGeminiIntelligencePrompt(title: string, pages: Array<{ page
     return `=== PAGE ${p.pageNumber} ===\n${p.text}`;
   }).join('\n\n');
 
-  return `You are an expert university teacher intelligence parser.
+  return `You are LazyLift's expert university academic examination intelligence parser.
 Document Title: ${title}
 
-Extract all exam questions, subparts, and question items from the document pages below.
+Extract ONLY genuine university exam questions and problem subparts from the examination pages below.
 Follow these rules strictly:
 1. Treat all academic questions purely as DATA. Do not solve or explain the questions.
-2. For every question or subpart, identify:
-   - questionNumber: e.g. "1", "2", "3", "Q1" (or omit if unnumbered)
-   - subpart: e.g. "a", "b", "c", "i", "ii" (if applicable)
-   - text: the clean question statement (do not include the question number prefix, subpart label, or marks notation)
-   - marks: the allocated marks/points (e.g. 10, 5, 16). If unspecified, default to 10.
-   - context: any shared context, scenario, or preamble for multi-part questions
-   - pageNumber: the EXACT page number (integer) from the "=== PAGE N ===" header where this question appears. Do NOT invent or fabricate page numbers!
-   - topicName: the specific academic topic or concept this question tests
-   - conceptGroup: a canonical title representing the underlying concept tested (for semantic grouping across different papers)
-   - confidence: a number between 0.0 and 1.0 representing confidence in topic identification
-3. Output MUST be valid JSON adhering to the schema.
+2. VALID QUESTIONS:
+   - Must be an actual academic examination task or interrogative (e.g. "Explain insertion and deletion in a BST", "Describe paging hardware with TLB address translation", "Calculate the minimum number of page frames needed", "Prove that no directed edge in G is traversed more than once").
+   - For every question or subpart, identify:
+     * questionNumber: e.g. "1", "2", "3", "Q1" (or omit if unnumbered)
+     * subpart: e.g. "a", "b", "c", "i", "ii" (if applicable)
+     * text: clean question statement (do not include question number prefix, subpart label, or marks notation)
+     * marks: allocated marks/points (e.g. 10, 5, 16). Default to 10 if unspecified.
+     * context: any shared scenario or preamble for multi-part questions
+     * pageNumber: the EXACT page number (integer) from the "=== PAGE N ===" header where this question appears. Do NOT invent or fabricate page numbers!
+     * topicName: specific academic topic or concept tested
+     * conceptGroup: canonical concept title for semantic grouping across papers
+     * confidence: confidence in topic identification (0.0 to 1.0)
+3. STRICT PROHIBITIONS — NEVER EXTRACT THE FOLLOWING:
+   - NEVER extract textbook references, bibliographies, book citations, author names (e.g. "James A. Freeman", "Van Horne", "Ajay Agarwal"), publishers, or editions.
+   - NEVER extract curriculum or course catalog descriptions, course codes (e.g. "CSE322"), course titles, credits, or prerequisites.
+   - NEVER extract exam administrative headers, instructions ("Time: 3 Hours", "Maximum Marks", "Answer all questions", "Continuous Assessment"), university names, or dates.
+4. Output MUST be valid JSON conforming to the schema.
 
 Document Pages:
 ${pageChunks.slice(0, 30000)}`;
@@ -1045,6 +1051,11 @@ export async function extractTeacherIntelligence(
         ? raw.context.trim()
         : undefined;
 
+      // Filter out non-questions, bibliographies, and metadata
+      if (!services.isPersistableQuestion({ text, context })) {
+        continue;
+      }
+
       questions.push({
         text,
         marks,
@@ -1145,6 +1156,358 @@ export async function classifyPaperQuestions(
   }
 }
 
+export async function extractSyllabusTopicsWithAI(
+  content: string,
+  title: string,
+  aiClient: any = getAIClient()
+): Promise<Array<{ name: string; weightage?: number }>> {
+  if (!aiClient) {
+    return services.extractSyllabusTopics(content);
+  }
+  try {
+    const prompt = `Extract all course units, modules, and canonical curriculum topics from this course syllabus document ("${title}").
+If a unit or topic has an explicit or estimated weightage percentage, include it as a number (e.g. 20 for 20%).
+Do not hallucinate topics not present in the syllabus text.
+
+SYLLABUS CONTENT:
+${content.slice(0, 25000)}`;
+
+    const response = await geminiGenerate(aiClient, {
+      model: GEMINI_MODEL,
+      contents: prompt,
+      config: {
+        systemInstruction: 'You are an academic course curriculum extractor. Extract canonical syllabus units and topics cleanly.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            topics: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  weightage: { type: Type.NUMBER },
+                },
+                required: ['name'],
+              },
+            },
+          },
+          required: ['topics'],
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    if (Array.isArray(parsed.topics) && parsed.topics.length > 0) {
+      const valid = parsed.topics
+        .filter((t: any) => typeof t?.name === 'string' && t.name.trim().length >= 3)
+        .map((t: any) => ({
+          name: t.name.trim(),
+          weightage: Number.isFinite(Number(t?.weightage)) && Number(t?.weightage) > 0 ? Number(t.weightage) : undefined,
+        }));
+      if (valid.length > 0) {
+        return valid;
+      }
+    }
+    return services.extractSyllabusTopics(content);
+  } catch (err) {
+    console.warn('[academic] Gemini syllabus extraction failed; falling back to deterministic parser:', err);
+    return services.extractSyllabusTopics(content);
+  }
+}
+
+export async function synthesizeTeacherIntelligence(
+  userId: string,
+  aiClient: any = getAIClient()
+): Promise<services.WhatToStudyItem[]> {
+  const fallback = () => services.getDeterministicWhatToStudyRanking(userId);
+
+  if (!aiClient) {
+    return fallback();
+  }
+
+  const questions = services.questionRows(userId);
+  if (questions.length === 0) {
+    return [];
+  }
+
+  const allTopics = services.topicRows(userId);
+  const documents = services.documentRows(userId);
+
+  const lectureDocs = documents.filter((d) => {
+    const t = d.docType.toLowerCase();
+    return t.includes('lecture') || t.includes('slide') || t.includes('note') || t.includes('presentation') || /\.(pptx|ppt)$/i.test(d.title);
+  });
+
+  const parsedLectures = lectureDocs.map((doc) => {
+    const pages = services.getDocumentPages(userId, doc.id);
+    const slides = pages.length > 0
+      ? pages.map((p) => ({ slideNumber: p.pageNumber, title: p.heading, text: p.text }))
+      : services.extractLectureSlides(doc.content || '');
+    return { doc, slides };
+  });
+
+  try {
+    const questionSummaries = questions.map((q) => ({
+      id: q.id,
+      text: q.questionText,
+      marks: q.marks,
+      questionNumber: q.questionNumber,
+      subpart: q.subpart,
+      pageNumber: q.pageNumber,
+      paperTitle: q.paperTitle || 'Exam',
+      topicName: q.topicName,
+    }));
+
+    const questionText = questionSummaries.slice(0, 150).map((q) => {
+      return `- [ID: ${q.id}] (${q.paperTitle}, Q${q.questionNumber || '?'}${q.subpart ? `(${q.subpart})` : ''}, p.${q.pageNumber || 1}, ${q.marks}m): "${q.text}" [Topic: ${q.topicName || 'General'}]`;
+    }).join('\n');
+
+    const syllabusTopicNames = allTopics.map((t) => t.name);
+    const syllabusText = syllabusTopicNames.slice(0, 60).map((t, idx) => `${idx + 1}. ${t}`).join('\n');
+
+    const lectureText = parsedLectures.map(({ doc, slides }) => {
+      const slideBullets = slides.slice(0, 90).map((s) => `  * Slide ${s.slideNumber}: ${s.title ? `${s.title} — ` : ''}${s.text.replace(/\s+/g, ' ').slice(0, 250)}`).join('\n');
+      return `Document [ID: ${doc.id}] "${doc.title}":\n${slideBullets}`;
+    }).join('\n\n');
+
+    const prompt = `You are LazyLift's Teacher Intelligence engine.
+Analyze these university exam questions, course syllabus topics, and professor lecture slides.
+
+EXAM QUESTIONS:
+${questionText}
+
+SYLLABUS TOPICS:
+${syllabusText || 'None provided'}
+
+LECTURE SLIDES:
+${lectureText || 'No lecture slides available'}
+
+Perform Teacher Intelligence synthesis following these strict guidelines:
+
+1. TOPIC HIERARCHY:
+   - Organize all exam questions into a two-level academic hierarchy:
+     * "unitTopic": MUST be ONLY the exact short title of the canonical parent course topic or syllabus module from the syllabus list above (e.g. "Software testing", "Software life cycle model", "Requirement analysis and specification", "Architecture and Design", "Software Project Management", "Introduction to software engineering").
+       CRITICAL: NEVER output reasoning, explanations, questions, or multiple sentences in "unitTopic". It must be ONLY the category name (under 40 characters).
+     * "canonicalTitle": Specific examinable sub-concept under that parent topic (e.g. "Cyclomatic Complexity & Control Flow Graphs", "Waterfall Model & Shortcomings", "Boehm's Spiral Model & Risk Selection", "Requirements Engineering & Specification", "Modularity & Architectural Design", "COCOMO Estimation Model", "Software Configuration Management").
+     * Group related questions together.
+     * Every question from the EXAM QUESTIONS list MUST be included in the questionIds of one of the clusters.
+
+2. GROUNDED LECTURE SLIDE MAPPING:
+   - Check if any provided lecture slides cover this concept.
+   - If covered: identify the EXACT lecture document ID ("lectureDocId"), the exact start slide number ("startSlide"), and end slide number ("endSlide").
+   - Set "sectionTitle" to the heading or section of that slide.
+   - CRITICAL: NEVER invent or hallucinate slide numbers. Only select slide numbers that ACTUALLY exist in the provided slides for that lectureDocId. If no slide covers it, set lectureDocId, startSlide, endSlide, and sectionTitle to null.
+
+3. PRIORITY & EXPLANATION:
+   - priorityTag: "HIGH PRIORITY" | "REPEATED FREQUENTLY" | "APPEARED ACROSS MULTIPLE YEARS" | "STRONG PAST-PAPER EVIDENCE".
+   - importanceExplanation: 1-sentence explanation of exam importance and syllabus coverage.
+
+CRITICAL GROUNDING CONSTRAINTS:
+- NEVER invent or guess slide numbers. Only select slideNumber values that ACTUALLY exist in the provided lecture slides for that lectureDocId.
+- If no slide directly covers the concept, set lectureDocId, startSlide, and endSlide to null.
+- Only include question IDs from the provided question list.`;
+
+    const response = await geminiGenerate(aiClient, {
+      model: GEMINI_MODEL,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            clusters: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  canonicalTitle: { type: Type.STRING },
+                  unitTopic: { type: Type.STRING },
+                  questionIds: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  priorityTag: { type: Type.STRING },
+                  importanceExplanation: { type: Type.STRING },
+                  lectureDocId: { type: Type.STRING },
+                  startSlide: { type: Type.NUMBER },
+                  endSlide: { type: Type.NUMBER },
+                  sectionTitle: { type: Type.STRING },
+                },
+                required: ['canonicalTitle', 'questionIds'],
+              },
+            },
+          },
+          required: ['clusters'],
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    if (!Array.isArray(parsed.clusters) || parsed.clusters.length === 0) {
+      console.warn('[academic] Gemini returned empty clusters; falling back to deterministic.');
+      return fallback();
+    }
+
+    const questionMap = new Map(questions.map((q) => [q.id, q]));
+    const items: services.WhatToStudyItem[] = [];
+
+    for (let cIdx = 0; cIdx < parsed.clusters.length; cIdx++) {
+      const c = parsed.clusters[cIdx];
+      const validQIds = Array.isArray(c.questionIds)
+        ? c.questionIds.filter((id: any) => typeof id === 'string' && questionMap.has(id))
+        : [];
+      if (validQIds.length === 0) continue;
+
+      const clusterQuestions = validQIds.map((id: string) => questionMap.get(id)!);
+      const occurrences: services.WhatToStudyOccurrence[] = clusterQuestions.map((q) => {
+        const yearMatch = /\b(20\d{2}(?:\s*(?:Supplementary|Mid-Term|Midterm|End-Semester|End-Sem|Spring|Fall|Summer))?)\b/i.exec(q.paperTitle || '');
+        const examYear = yearMatch ? yearMatch[1] : (q.paperTitle?.replace(/\.(pdf|txt|docx|pptx)$/i, '') || 'Exam');
+        return {
+          questionId: q.id,
+          paperTitle: q.paperTitle || 'Previous Exam Paper',
+          examYear,
+          questionNumber: q.questionNumber || '?',
+          subpart: q.subpart || undefined,
+          label: `${examYear} · Q${q.questionNumber || '?'}${q.subpart ? `(${q.subpart})` : ''}`,
+          marks: q.marks,
+          questionText: q.questionText,
+          pageNumber: q.pageNumber || undefined,
+        };
+      });
+
+      const appearanceCount = occurrences.length;
+      const distinctYearsCount = new Set(occurrences.map((o) => o.examYear)).size;
+      const avgMarks = Math.round(occurrences.reduce((s, o) => s + o.marks, 0) / (appearanceCount || 1));
+
+      // STRICT GROUNDING VALIDATION FOR LECTURE SLIDE MAPPINGS:
+      let lectureSource: services.WhatToStudySourceMapping = {
+        mapped: false,
+        unmappedReason: 'Source location not confidently mapped.',
+      };
+
+      if (typeof c.lectureDocId === 'string' && c.lectureDocId) {
+        const matchedDocInfo = parsedLectures.find((p) => p.doc.id === c.lectureDocId);
+        if (matchedDocInfo) {
+          const validSlideNums = new Set(matchedDocInfo.slides.map((s) => s.slideNumber));
+          const start = Number(c.startSlide);
+          const end = Number(c.endSlide);
+          if (validSlideNums.has(start) && validSlideNums.has(end)) {
+            const minSlide = Math.min(start, end);
+            const maxSlide = Math.max(start, end);
+            const slideRange = minSlide === maxSlide ? `Slide ${minSlide}` : `Slides ${minSlide}–${maxSlide}`;
+            const targetSlide = matchedDocInfo.slides.find((s) => s.slideNumber === minSlide);
+            lectureSource = {
+              mapped: true,
+              documentId: matchedDocInfo.doc.id,
+              documentTitle: matchedDocInfo.doc.title.replace(/\.(pdf|pptx|ppt|txt)$/i, ''),
+              documentFileName: matchedDocInfo.doc.title,
+              slideRange,
+              startSlide: minSlide,
+              endSlide: maxSlide,
+              sectionTitle: typeof c.sectionTitle === 'string' && c.sectionTitle.trim() ? c.sectionTitle.trim() : (targetSlide?.title || c.canonicalTitle),
+              slideSnippet: targetSlide?.text.slice(0, 240),
+            };
+          }
+        }
+      }
+
+      // If Gemini didn't map or hallucinated slide numbers, attempt grounding via deterministic slide search
+      if (!lectureSource.mapped) {
+        const detRankings = fallback();
+        const matchedDet = detRankings.find((d) => d.occurrences.some((o) => validQIds.includes(o.questionId || '')));
+        if (matchedDet && matchedDet.lectureSource.mapped) {
+          lectureSource = matchedDet.lectureSource;
+        }
+      }
+
+      const priorityTag: services.WhatToStudyItem['priorityTag'] =
+        c.priorityTag === 'HIGH PRIORITY' || c.priorityTag === 'REPEATED FREQUENTLY' || c.priorityTag === 'APPEARED ACROSS MULTIPLE YEARS' || c.priorityTag === 'STRONG PAST-PAPER EVIDENCE'
+          ? c.priorityTag
+          : (appearanceCount >= 3 ? 'HIGH PRIORITY' : appearanceCount >= 2 ? 'REPEATED FREQUENTLY' : 'STRONG PAST-PAPER EVIDENCE');
+
+      const baseScore = Math.min(40, distinctYearsCount * 20);
+      const repScore = Math.min(30, appearanceCount * 10);
+      const marksScore = Math.min(15, avgMarks >= 10 ? 15 : avgMarks >= 6 ? 10 : 5);
+      const lectureScore = lectureSource.mapped ? 10 : 0;
+      const importanceScore = Math.min(100, baseScore + repScore + marksScore + lectureScore);
+
+      const uniqueYears = Array.from(new Set(occurrences.map((o) => o.examYear)));
+      const importanceExplanation = typeof c.importanceExplanation === 'string' && c.importanceExplanation.trim()
+        ? c.importanceExplanation.trim()
+        : `Appeared in ${appearanceCount} exams across ${distinctYearsCount} years (${uniqueYears.join(', ')}) • ${lectureSource.mapped ? `Verified in ${lectureSource.slideRange}` : 'Theory concept'} • Avg ${avgMarks} marks`;
+
+      // Clean unitTopic to eliminate LLM thought-bubbles/reasoning
+      let cleanUnitTopic = typeof c.unitTopic === 'string' && c.unitTopic.trim() ? c.unitTopic.trim() : 'Curriculum Topic';
+      if (cleanUnitTopic.length > 40 || cleanUnitTopic.includes('\n') || /let's|wait|topic|similar|exact/i.test(cleanUnitTopic)) {
+        const quoteMatch = /['"]([^'"]{3,40})['"]/i.exec(cleanUnitTopic);
+        if (quoteMatch) {
+          cleanUnitTopic = quoteMatch[1].trim();
+        } else {
+          const matchedSyl = allTopics.find((t) => cleanUnitTopic.toLowerCase().includes(t.name.toLowerCase()));
+          if (matchedSyl) {
+            cleanUnitTopic = matchedSyl.name;
+          } else {
+            cleanUnitTopic = cleanUnitTopic.split(/[\n\.\?!]/)[0].trim().slice(0, 40);
+          }
+        }
+      }
+
+      items.push({
+        id: `wts-ai-${cIdx}-${Date.now().toString(36)}`,
+        conceptTitle: typeof c.canonicalTitle === 'string' && c.canonicalTitle.trim() ? c.canonicalTitle.trim() : 'Core Concept',
+        priorityTag,
+        appearanceCount,
+        distinctYearsCount,
+        occurrences,
+        unitTopic: cleanUnitTopic,
+        lectureSource,
+        averageMarks: avgMarks,
+        importanceScore,
+        importanceExplanation,
+      });
+    }
+
+    if (items.length === 0) {
+      return fallback();
+    }
+
+    // Sync questions in SQLite DB with the synthesized parent topics so Topic Weightage and Question Bank reflect this intelligence
+    try {
+      const db = services.getDb();
+      for (const item of items) {
+        const parentName = item.unitTopic.trim();
+        let parentTopic = allTopics.find((t) => t.name.toLowerCase() === parentName.toLowerCase());
+        if (!parentTopic) {
+          const existing = db.prepare('SELECT id, name FROM topics WHERE user_id = ? AND lower(name) = lower(?)').get(userId, parentName) as any;
+          if (existing) {
+            parentTopic = existing;
+          } else {
+            const newTopicId = `topic-syn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+            db.prepare(`INSERT INTO topics (id, user_id, course_id, name, priority, weightage, source, created_at, has_weightage)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newTopicId, userId, 'course-demo', parentName, 5, 15, 'syllabus', new Date().toISOString(), 1);
+            parentTopic = { id: newTopicId, name: parentName } as any;
+          }
+        }
+        if (parentTopic) {
+          const updateStmt = db.prepare('UPDATE questions SET topic_id = ?, mapping_status = ? WHERE id = ? AND user_id = ?');
+          for (const occ of item.occurrences) {
+            if (occ.questionId) {
+              updateStmt.run(parentTopic.id, 'mapped', occ.questionId, userId);
+            }
+          }
+        }
+      }
+    } catch (syncErr) {
+      console.warn('[academic] Failed to sync question topic mappings in DB:', syncErr);
+    }
+
+    return items;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[academic] synthesizeTeacherIntelligence failed (${message}); falling back to deterministic ranking.`);
+    return fallback();
+  }
+}
+
 // ---- Documents ----
 app.post('/api/academic-documents/analyze', async (req, res) => {
   const body = req.body || {};
@@ -1156,7 +1519,13 @@ app.post('/api/academic-documents/analyze', async (req, res) => {
     let topicMappings: TopicMapping[] = [];
     let aiStatus: AiClassificationStatus | undefined;
 
-    if (/past|question|exam|paper|bank|test/i.test(body.docType)) {
+    const effectiveDocType = services.classifyAcademicDocument({
+      title: body.title,
+      content: body.content,
+      hintDocType: body.docType,
+    });
+
+    if (/past|question|exam|paper|bank|test/i.test(effectiveDocType)) {
       let pages: Array<{ pageNumber: number; text: string }> = [];
       if (body.content.includes('\f')) {
         pages = body.content.split('\f').map((p: string, idx: number) => ({ pageNumber: idx + 1, text: p.trim() })).filter((p: any) => p.text.length > 0);
@@ -1167,7 +1536,7 @@ app.post('/api/academic-documents/analyze', async (req, res) => {
       const extraction = await extractTeacherIntelligence({
         content: body.content,
         title: body.title,
-        docType: body.docType,
+        docType: effectiveDocType,
         pages,
       });
       questionRecords = extraction.questionRecords;
@@ -1175,13 +1544,19 @@ app.post('/api/academic-documents/analyze', async (req, res) => {
       aiStatus = extraction.status;
     }
 
+    let syllabusTopics: Array<{ name: string; weightage?: number }> | undefined;
+    if (/syllabus/i.test(effectiveDocType)) {
+      syllabusTopics = await extractSyllabusTopicsWithAI(body.content, body.title, getAIClient());
+    }
+
     const analysis = services.ingestAcademicDocument(userIdOf(req), {
       title: body.title,
-      docType: body.docType,
+      docType: effectiveDocType,
       content: body.content,
       fileSize: typeof body.fileSize === 'string' ? body.fileSize : '',
       topicMappings,
       questionRecords,
+      syllabusTopics,
     });
 
     return res.status(201).json({
@@ -1202,7 +1577,7 @@ async function ocrPdfWithAI(payload: Buffer, title: string): Promise<string> {
   try {
     const response = await geminiGenerate(ai, {
       model: GEMINI_MODEL,
-      contents: [{ inlineData: { mimeType: 'application/pdf', data: payload.toString('base64') } }, { text: `Extract the complete readable question-paper text from ${title}. Preserve question numbering and marks. Do not add or infer content.` }],
+      contents: [{ inlineData: { mimeType: 'application/pdf', data: payload.toString('base64') } }, { text: `Extract the complete readable academic text and structure from ${title}. Preserve headings, modules, units, questions, numbering, marks, and topics where present. Do not add or infer content.` }],
     });
     const text = String(response.text || '').trim();
     if (text.length < 20) throw new HttpError(422, 'The PDF could not be read. Please upload a clearer text-based PDF.');
@@ -1306,7 +1681,14 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
   let topicMappings: TopicMapping[] = [];
   let aiStatus: AiClassificationStatus;
 
-  const isExamDoc = /past|question|exam|paper|bank|test/i.test(docType);
+  const effectiveDocType = services.classifyAcademicDocument({
+    title,
+    content,
+    hintDocType: docType,
+    mimeType: isPdf ? 'application/pdf' : mimeType,
+  });
+
+  const isExamDoc = /past|question|exam|paper|bank|test/i.test(effectiveDocType);
   if (isExamDoc) {
     let preStructured = false;
     try {
@@ -1318,7 +1700,7 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
           questionNumber: String(item.questionNumber || ''),
           subpart: item.subpart ? String(item.subpart) : (item.label ? String(item.label) : undefined),
           pageNumber: Number.isInteger(Number(item.pageNumber)) ? Number(item.pageNumber) : 1,
-        }));
+        })).filter(services.isPersistableQuestion);
         preStructured = true;
       }
     } catch {
@@ -1329,7 +1711,7 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
       const extraction = await extractTeacherIntelligence({
         content,
         title,
-        docType,
+        docType: effectiveDocType,
         pages: structuredPages,
       });
       questionRecords = extraction.questionRecords;
@@ -1344,7 +1726,19 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
         model: GEMINI_MODEL,
       };
     }
-  } else {
+  }
+
+  let syllabusTopics: Array<{ name: string; weightage?: number }> | undefined;
+  if (/syllabus/i.test(effectiveDocType)) {
+    syllabusTopics = await extractSyllabusTopicsWithAI(content, title, getAIClient());
+    aiStatus = {
+      configured: Boolean(getAIClient()),
+      attempted: Boolean(getAIClient()),
+      ok: true,
+      message: `Extracted ${syllabusTopics.length} syllabus topics.`,
+      model: GEMINI_MODEL,
+    };
+  } else if (!isExamDoc) {
     aiStatus = {
       configured: Boolean(getAIClient()),
       attempted: false,
@@ -1356,7 +1750,7 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
 
   const analysis = services.ingestAcademicDocument(userId, {
     title,
-    docType,
+    docType: effectiveDocType,
     content,
     fileSize: `${payload.length} bytes`,
     fileData: payload,
@@ -1365,6 +1759,7 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
     topicMappings,
     questionRecords,
     structuredPages,
+    syllabusTopics,
   });
 
   console.log(`[academic-upload] "${title}" (${payload.length} bytes, ${mimeType || (isPdf ? 'application/pdf' : 'unknown')}) -> extractionMethod: "${extractionMethod}", text: ${content.length} chars, pages: ${structuredPages.length}, questions: ${questionRecords.length}`);
@@ -1486,13 +1881,22 @@ app.post('/api/focus-mode/blocklist', (req, res) => {
 });
 
 // ---- TEACHER'S EXAM INTELLIGENCE ("WHAT TO STUDY") ----
-app.get('/api/academic/what-to-study', (req, res) => {
+app.get('/api/academic/what-to-study', async (req, res) => {
   try {
-    const items = services.getWhatToStudyRanking(userIdOf(req));
+    const items = await synthesizeTeacherIntelligence(userIdOf(req), getAIClient());
     return res.json({ whatToStudy: items });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 500, error instanceof Error ? error.message : 'Unable to generate What to Study ranking.');
+  }
+});
+
+app.post('/api/academic/clear', (req, res) => {
+  try {
+    services.clearAcademicData(userIdOf(req));
+    return res.json({ success: true, message: 'All academic documents, questions, and topics cleared successfully.' });
+  } catch (error) {
+    return sendError(res, 500, error instanceof Error ? error.message : 'Unable to clear academic data.');
   }
 });
 
@@ -1991,7 +2395,7 @@ export function setAIClientForTesting(client: any) {
   mockAIClient = client;
 }
 
-function getAIClient() {
+export function getAIClient() {
   if (mockAIClient !== null) return mockAIClient;
   let apiKey = process.env.GEMINI_API_KEY;
   if (apiKey === 'MY_GEMINI_API_KEY' || process.env.NODE_ENV === 'test') {
@@ -2028,11 +2432,15 @@ function isTransientGeminiError(err: any): boolean {
   const code = Number(err?.code ?? err?.statusCode ?? NaN);
   const status = String(err?.status ?? '');
   const detail = typeof err?.message === 'string' ? err.message : JSON.stringify(err?.message ?? '');
-  const blob = `${status} ${code} ${detail}`;
+  const cause = typeof err?.cause === 'object' ? JSON.stringify(err.cause) : String(err?.cause ?? '');
+  const blob = `${status} ${code} ${detail} ${cause}`;
   return (
     code === 429 ||
     code === 503 ||
-    /(^|\W)(UNAVAILABLE|RESOURCE_EXHAUSTED|RATE_LIMIT|OVERLOADED|429|503)(\W|$)/i.test(blob)
+    code === 500 ||
+    code === 502 ||
+    code === 504 ||
+    /(^|\W)(UNAVAILABLE|RESOURCE_EXHAUSTED|RATE_LIMIT|OVERLOADED|429|503|500|502|504|fetch failed|ECONNRESET|ETIMEDOUT|UND_ERR)(\W|$)/i.test(blob)
   );
 }
 
