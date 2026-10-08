@@ -72,6 +72,7 @@ export type QuestionRow = {
   mappingEvidence: string[];
   mappingStatus: 'mapped' | 'unmatched';
   pageNumber: number | null;
+  paperTitle?: string | null;
   createdAt: string;
 };
 
@@ -638,7 +639,107 @@ const LINE_MARKER = new RegExp(
   'gi',
 );
 const SECTION_HEADER = /^(?:section|part)\b/i;
-const BOILERPLATE = /^(?:time(?: allowed)?|max(?:imum)?\s*marks?|total\s*marks?|marks?(?:\s*allotted)?[:.]|instructions?[:.]|attempt\s+(?:all|any)|answer\s+(?:all|any)|roll\s*(?:no\.?|number)?|register\s*(?:no\.?|number)?|enroll(?:ment)?\s*(?:no\.?|number)?|semester[:.]|course\s*(?:code|name)?[:.]|subject\s*(?:code)?[:.]|paper\s*(?:code)?[:.]|branch[:.]|year[:.]|page[:.]|duration[:.]|note[s]?[:.]|general\s*instructions?)/i;
+const BOILERPLATE = /^(?:time(?: allowed)?|max(?:imum)?\s*marks?|total\s*marks?|marks?(?:\s*allotted)?[:.]|instructions?[:.]|attempt\s+(?:all|any)|answer\s+(?:all|any)|roll\s*(?:no\.?|number)?|register\s*(?:no\.?|number)?|enroll(?:ment)?\s*(?:no\.?|number)?|semester[:.]|course\s*(?:code|name)?[:.]|subject\s*(?:code)?[:.]|paper\s*(?:code)?[:.]|branch[:.]|year[:.]|page[:.]|duration[:.]|note[s]?[:.]|general\s*instructions?|textbooks?\s*(?:\/|\&|and)?\s*references?|prerequisites?[:.]|learning\s*outcomes?|course\s*outcomes?)/i;
+
+export const QUESTION_TASK_VERBS = /\b(?:explain|describe|derive|define|state|list|compare|differentiate|distinguish|discuss|compute|calculate|determine|design|construct|suggest|identify|justify|illustrate|formulate|analyze|elaborate|clarify|briefly|write\s+(?:a|an|the|down|programs?|code|algorithms?)|give|show|prove|find|solve|apply|draw|evaluate|examine|demonstrate|trace|outline|develop|simulate|classify|convert|simplify|generate|estimate|model|summarize|critique|insert|delete|perform|search|translate|check\s+whether|what|why|how|when|where|which|who|whom)\b/i;
+export const QUESTION_STARTS_WITH_VERB = /^(?:what|why|how|when|where|which|who|whom|define|explain|describe|state|list|compare|differentiate|distinguish|discuss|derive|compute|calculate|determine|design|construct|suggest|identify|justify|illustrate|formulate|analyze|elaborate|clarify|briefly|write|give|show|prove|find|solve|apply|draw)\b/i;
+export const QUESTION_PREMISE_PREFIX = /^(?:consider|suppose|assume|given|let|for\s+a|in\s+a|if\s+a|using|based\s+on|with\s+(?:a\s+)?neat|redraw|an\s+algorithm|as\s+part\s+of|a\s+university\s+plans|a\s+hospital|a\s+distributed|a\s+system)\b/i;
+
+export function isBibliographyOrMetadata(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+
+  // 1. Explicit Academic Publishers, editions, volume, ISBN
+  if (/\b(?:pearson(?:\s+education)?|prentice[\s-]hall|mcgraw[\s-]hill|tata[\s-]mcgraw|wiley(?:\s+india)?|springer|oxford\s+university\s+press|cambridge\s+university\s+press|cengage(?:\s+learning)?|phi\s+learning|addison[\s-]?wesley|ane\s+books|rawat\s+publications|packt|isbn[\s:-]*\d|edition\b|vol(?:ume)?\.?\s*\d|pp\.?\s*\d+-\d+)\b/i.test(trimmed)) {
+    return true;
+  }
+
+  // 2. Author bibliography citation: e.g. "James A. Freeman, Neural Networks..." or "Van Horne James, Financial..." or "Ajay Agarwal, Data Structures..."
+  if (/^[A-Z][a-zA-Z\s.-]{1,35},\s+["']?[A-Z][\w\s,:.-]+(?:,\s*(?:[A-Z][\w\s]+|\d{4}))/i.test(trimmed) && !QUESTION_TASK_VERBS.test(trimmed) && !trimmed.includes('?')) {
+    return true;
+  }
+
+  // 3. Course catalog & curriculum code metadata: e.g. "CSE322 Cloud Computing [3 - 0 - 2 - 4]"
+  if (/\b(?:cse|ece|it|eee|mech|civil|math|phy|chm)\s*\d{3,4}\b/i.test(trimmed) && /\b\[\s*\d+\s*-\s*\d+\s*-\s*\d+/i.test(trimmed)) {
+    return true;
+  }
+  if (/\b(?:curriculum|prerequisites?|course\s+outcomes?|course\s+objectives?|scheme\s+of\s+studies|evaluation\s+scheme)\b/i.test(trimmed) && !QUESTION_TASK_VERBS.test(trimmed) && !trimmed.includes('?')) {
+    return true;
+  }
+
+  // 4. Institutional, Departmental & Administrative headers
+  if (/^(?:university|institute|college|department|faculty|school)\s+of\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/^(?:btech|mtech|b\.?e|m\.?e|bca|mca)\b/i.test(trimmed) && !trimmed.includes('?')) {
+    return true;
+  }
+  if (/^(?:time(?: allowed)?|max(?:imum)?\s*marks|total\s*marks|duration|roll\s*no|register\s*no)\b/i.test(trimmed)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function classifyAcademicDocument(options: {
+  title?: string;
+  fileName?: string;
+  content?: string;
+  hintDocType?: string;
+  mimeType?: string;
+}): 'Syllabus' | 'Lecture Slides' | 'Past Paper' {
+  const title = options.title || options.fileName || '';
+  const content = options.content || '';
+  const hintDocType = options.hintDocType || '';
+  const mimeType = options.mimeType || '';
+  const normalizedTitle = title.replace(/[_\.\-]+/g, ' ').toLowerCase();
+  const lowerTitle = title.toLowerCase();
+  const lowerContent = content.slice(0, 20000).toLowerCase();
+
+  // 1. Strict Lecture Slides / Presentation detection
+  const isPptExt = /\.(pptx?|key|odp)$/i.test(title);
+  const isPptMime = /presentation|powerpoint/i.test(mimeType);
+  const titleHasSlideWord = /\b(?:ppt|pptx|slides?|lecture|deck|presentation)\b/i.test(normalizedTitle);
+  const titleIsLectureTopic = /^(?:trees?|unit\s*\d|chapter\s*\d|module\s*\d|lec(?:ture)?\s*\d)/i.test(normalizedTitle);
+  const hasSlideIndicators = /\b(?:slide\s+\d+|presentation\s+title|bullet\s+points?)\b/i.test(lowerContent);
+
+  if (isPptExt || isPptMime) {
+    return 'Lecture Slides';
+  }
+
+  // 2. Strong Past Paper / Exam Paper detection
+  const titleHasExamWord = /\b(?:exam|examination|end\s*sem|mid\s*sem|midterm|question\s*paper|pyq|quiz|test|supplementary|makeup)\b/i.test(normalizedTitle);
+  const contentHasExamMarkers =
+    /\b(?:maximum\s*marks|max\s*marks|time\s*allowed|time\s*:\s*\d+\s*hours?|end\s*semester\s*examination|mid\s*semester\s*examination|makeup\s*examination|answer\s+(?:all|any)\s+questions?|roll\s*no[:.]|q\s*\.?\s*\d+\s*[\(\.]|part\s+[a-c]\s*\(\s*\d+\s*marks|course\s+instructor\b)/i.test(lowerContent);
+
+  if (titleHasExamWord || contentHasExamMarkers) {
+    return 'Past Paper';
+  }
+
+  // 3. Strict Syllabus / Curriculum detection (when NOT containing exam markers)
+  const titleHasSyllabusWord = /\b(?:syllabus|curriculum|curricula|modality|modalities|course\s*(?:outline|structure|plan|scheme|handout))\b/i.test(normalizedTitle);
+  const contentHasCurriculumMarkers =
+    /\b(?:scheme\s+of\s+(?:instruction|studies|examination)|b\.?tech\s*-\s*[a-z]+|course\s+code\b|prerequisites?\b|course\s+outcomes?\b|evaluation\s+scheme\b|text\s*books?\s*\/\s*references?|curriculum\s+version|senate\s+\d|contact\s+hours\b|credit\s+structure\b)/i.test(lowerContent);
+
+  if (titleHasSyllabusWord) {
+    return 'Syllabus';
+  }
+  if (contentHasCurriculumMarkers) {
+    return 'Syllabus';
+  }
+
+  // 4. Lecture slides by title/content indicators
+  if (titleHasSlideWord || titleIsLectureTopic || hasSlideIndicators) {
+    return 'Lecture Slides';
+  }
+
+  // 5. Fallback to user hint if provided
+  if (/syllabus/i.test(hintDocType)) return 'Syllabus';
+  if (/lecture|slide/i.test(hintDocType)) return 'Lecture Slides';
+  if (/past|question|exam|paper/i.test(hintDocType)) return 'Past Paper';
+
+  return 'Past Paper';
+}
 
 function extractQuestionMarks(text: string): number | null {
   const keyword = /(?:^|\s|\(|\[)(\d+(?:\.\d+)?)\s*(?:marks?|m)\b/i.exec(text);
@@ -785,7 +886,7 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
     }
     const line = rawLine.replace(/\f/g, '').trim();
     if (!line) continue;
-    if (BOILERPLATE.test(line) || SECTION_HEADER.test(line) || isDocumentHeading(line)) {
+    if (BOILERPLATE.test(line) || SECTION_HEADER.test(line) || isDocumentHeading(line) || isBibliographyOrMetadata(line)) {
       commit();
       continue;
     }
@@ -840,9 +941,9 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
     let unnumberedIndex = 1;
     for (const rawLine of lines) {
       const line = rawLine.replace(/\f/g, '').trim();
-      if (!line || BOILERPLATE.test(line) || SECTION_HEADER.test(line) || isDocumentHeading(line)) continue;
+      if (!line || BOILERPLATE.test(line) || SECTION_HEADER.test(line) || isDocumentHeading(line) || isBibliographyOrMetadata(line)) continue;
       const stripped = sanitizeAcademicText(line);
-      const isQuestion = QUESTION_VERBS.test(stripped) && stripped.split(/\s+/).length >= 3 && stripped.length >= 15;
+      const isQuestion = QUESTION_STARTS_WITH_VERB.test(stripped) && stripped.split(/\s+/).length >= 3 && stripped.length >= 15;
       if (isQuestion) {
         const marks = extractQuestionMarks(line) || 10;
         const text = stripped
@@ -883,7 +984,8 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
         .replace(/\s+/g, ' ')
         .trim();
       return { text, marks, questionNumber: draft.questionNumber, subpart: draft.subpart, context, pageNumber: draft.pageNumber || 1 };
-    });
+    })
+    .filter(isPersistableQuestion);
 }
 
 export function extractNumberedQuestions(content: string): string[] {
@@ -897,29 +999,43 @@ export function extractNumberedQuestions(content: string): string[] {
 }
 
 const SENTENCE_END = /[.!?][)\s"]*$/;
-const QUESTION_VERBS = /^(?:what|why|how|when|where|which|who|whom|define|explain|describe|state|list|compare|differentiate|distinguish|discuss|derive|compute|calculate|determine|design|construct|suggest|identify|justify|illustrate|formulate|analyze|elaborate|clarify|briefly|write|give|show|prove|find|solve|apply|draw)\b/i;
 
-// Rejects short/garbled question fragments before they enter the bank that feeds Practice and
-// Mock exams. Phantom records from broken extractions are usually diagram labels, orphaned
-// marks annotations, or single-character-heavy noise.
-function isPersistableQuestion(record: { text: string }): boolean {
+// Rejects non-questions, bibliographies, metadata, and fragments before they enter the bank
+export function isPersistableQuestion(record: { text: string; context?: string }): boolean {
   const text = record.text.trim();
   if (!text) return false;
-  // A record that begins with a marks annotation ("2 marks) Roll No: ...") is a fragment whose
-  // real start was consumed by a stray number marker earlier in the broken extraction.
+
+  // 1. Orphaned marks annotations or pure numbers/symbols
   if (/^(?:\d+\s*marks?|[(\[]\s*\d+\s*marks?[)\]])/i.test(text)) return false;
-  if (/^[\d\s/\\+\-]+$/.test(text)) return false;
+  if (/^[\d\s/\\+\-.,;:()\[\]{}]+$/.test(text)) return false;
+
+  // 2. Reject bibliography citations, publishers, book titles, author lists
+  if (isBibliographyOrMetadata(text)) return false;
+
+  // 3. Reject administrative examination boilerplate and university headers
+  if (/^(?:university|institute|college|department|faculty|school)\s+of\b/i.test(text)) return false;
+  if (/\b(?:maximum\s*marks|max\s*marks|total\s*marks|time\s*allowed|time\s*:\s*\d+\s*hours?|duration\s*:\s*\d+|roll\s*no|register\s*no|enrollment\s*no|page\s+\d+\s+of\s+\d+|university\s+examination|semester\s+examination|mid[\s-]*term\s+examination|end[\s-]*semester\s+examination|instructions?\s*to\s*candidates?|all\s*questions\s*carry\s+equal\s+marks)\b/i.test(text)) return false;
+  if (/\b(?:curriculum|prerequisites?|course\s+outcomes?|course\s+objectives?|scheme\s+of\s+studies|evaluation\s+scheme)\b/i.test(text)) return false;
+
   const words = text.split(/\s+/).filter(Boolean);
-  const isQuestionVerb = QUESTION_VERBS.test(text);
   if (words.length < 2) return false;
-  if (words.length === 2 && !isQuestionVerb) return false;
-  // Too-short fragments ("K traverse v-") without sentence punctuation are never questions,
-  // but short definition questions starting with question verbs ("Define deadlock") are valid.
-  if (text.length < 28 && !SENTENCE_END.test(text) && !isQuestionVerb) return false;
-  // Fragments dominated by single-character diagram tokens ("v", "w", "r") and lacking a
-  // sentence terminator are unreadable noise ("Pick a random n x I vectorL (elements ...").
+
+  const hasTaskVerb = QUESTION_TASK_VERBS.test(text);
+  const hasPremise = QUESTION_PREMISE_PREFIX.test(text);
+  const hasQuestionMark = text.includes('?');
+  const parentHasContext = Boolean(record.context && (QUESTION_TASK_VERBS.test(record.context) || record.context.includes('?')));
+
+  if (!hasTaskVerb && !hasPremise && !hasQuestionMark && !parentHasContext) {
+    return false;
+  }
+
+  // Too-short fragments without sentence punctuation or question verb
+  if (text.length < 15 && !hasQuestionMark && !hasTaskVerb) return false;
+
+  // Fragments dominated by single-character diagram tokens ("v", "w", "r") and lacking sentence terminator
   const shortTokens = words.filter((word) => word.length <= 2).length;
   if (shortTokens / words.length > 0.5 && !SENTENCE_END.test(text)) return false;
+
   return true;
 }
 
@@ -940,11 +1056,15 @@ type ProvisionalTopicRule = { name: string; patterns: RegExp[] };
 // PYQ-derived topics are stable academic concepts, not fragments copied from the question.
 // They use normalized concept aliases, never capitalization or the first word of a question.
 const PROVISIONAL_TOPIC_RULES: ProvisionalTopicRule[] = [
-  { name: 'Software Process Models', patterns: [/\b(?:waterfall|spiral|incremental|agile|generic)\s+(?:software\s+)?process(?:\s+models?)?\b/i, /\bsoftware\s+process(?:\s+(?:model|stage|lifecycle|risk))?\b/i] },
-  { name: 'Software Architecture', patterns: [/\bsoftware\s+architecture\b/i, /\barchitecture\s+(?:pattern|style|design)\b/i, /\b(?:client.server|layered|microservice|repository)\s+architecture\b/i, /\btransparent\s+replication\b/i, /\breplication\b/i] },
-  { name: 'Non-Functional Requirements', patterns: [/\bnon.functional\s+requirements?\b/i, /\bquality\s+(?:attributes?|metrics?|requirements?)\b/i, /\b(?:performance|reliability|availability|maintainability|scalability|interoperability|security)\b/i] },
-  { name: 'Software Requirements Specification', patterns: [/\b(?:software\s+)?requirements?\s+specification\b/i, /\bsrs\b/i, /\bfunctional\s+requirements?\b/i] },
+  { name: 'Software Process Models', patterns: [/\b(?:waterfall|spiral|incremental|agile|generic)\s+(?:software\s+)?process(?:\s+models?)?\b/i, /\bsoftware\s+process(?:\s+(?:model|stage|lifecycle|risk))?\b/i, /\bselection\s+of\s+a\s+life\s+cycle\s+model\b/i, /\blife\s*cycle\s*models?\b/i] },
+  { name: 'Software Architecture', patterns: [/\bsoftware\s+architecture\b/i, /\barchitecture\s+(?:pattern|style|design)\b/i, /\b(?:client.server|layered|microservice|repository)\s+architecture\b/i, /\btransparent\s+replication\b/i, /\breplication\b/i, /\bmodularity\b/i, /\bmodular\s+system\b/i] },
+  { name: 'Software Testing', patterns: [/\b(?:software\s+)?testing\b/i, /\bcyclomatic\s+complexity\b/i, /\bcontrol\s+flow\s+graph\b/i, /\bwhite.box\b/i, /\bdecision\s+table\b/i, /\btest\s+cases?\b/i, /\btesting\s+principles?\b/i] },
+  { name: 'Software Requirements Specification', patterns: [/\b(?:software\s+)?requirements?\s+specification\b/i, /\bsrs\b/i, /\bfunctional\s+requirements?\b/i, /\bcharacteristics\s+of\s+requirements\b/i, /\bdfd\b/i, /\bcontext\s+diagram\b/i, /\bproblem\s+statement\b/i] },
   { name: 'Form-Based Requirements Specification', patterns: [/\bform.based\s+(?:requirements?|specification)\b/i, /\b(?:forms?|form\s+handling)\s+(?:to\s+)?(?:specify|capture|requirements?)\b/i] },
+  { name: 'Software Project Management', patterns: [/\b(?:cocomo|project\s*estimation|lines\s*of\s*code|\bloc\b|configuration\s*management|project\s*manager|jeopardy|stakeholders?)\b/i] },
+  { name: 'Risk Management', patterns: [/\brisk\s*(?:management|activities|analysis|resolution)\b/i] },
+  { name: 'Integration & Debugging', patterns: [/\b(?:integration|debugging)\s+activities?\b/i] },
+  { name: 'Non-Functional Requirements', patterns: [/\bnon.functional\s+requirements?\b/i, /\bquality\s+(?:attributes?|metrics?|requirements?)\b/i, /\b(?:performance|reliability|availability|maintainability|scalability|interoperability|security)\b/i] },
   { name: 'Distributed Systems', patterns: [/\bdistributed\s+(?:system|database|application|computing)\b/i, /\b(?:replication|fragmentation|distributed\s+transaction)\b/i] },
   { name: 'Database Systems', patterns: [/\b(?:normalization|relational\s+algebra|sql|database\s+schema|acid|transaction)\b/i] },
   { name: 'Operating Systems', patterns: [/\b(?:paging|page\s+fault|deadlock|process\s+schedul|virtual\s+memory)\b/i] },
@@ -1153,6 +1273,53 @@ const CONCEPT_RULES: ConceptAliasRule[] = [
       { label: 'trie', pattern: /\btrie\b/i },
     ],
   },
+  {
+    domain: 'Software Testing',
+    topicMatches: (name) => /\btesting\b/i.test(name),
+    aliases: [
+      { label: 'cyclomatic complexity', pattern: /\bcyclomatic\s+complexity\b/i },
+      { label: 'control flow graph', pattern: /\bcontrol\s+flow\s+graph\b/i },
+      { label: 'decision table', pattern: /\bdecision\s+table\b/i },
+      { label: 'software testing', pattern: /\bsoftware\s+testing\b/i },
+      { label: 'integration & debugging', pattern: /\b(?:integration|debugging)\b/i },
+    ],
+  },
+  {
+    domain: 'Software Life Cycle Models',
+    topicMatches: (name) => /\b(?:life\s*cycle|process\s*model)\b/i.test(name),
+    aliases: [
+      { label: 'waterfall model', pattern: /\bwaterfall(?:\s+model)?\b/i },
+      { label: 'spiral model', pattern: /\bspiral(?:\s+model)?\b/i },
+      { label: 'life cycle model selection', pattern: /\blife\s*cycle\s*model\b/i },
+    ],
+  },
+  {
+    domain: 'Requirements Engineering',
+    topicMatches: (name) => /\brequirement/i.test(name),
+    aliases: [
+      { label: 'requirements engineering', pattern: /\brequirements?\s+(?:engineering|analysis|specification)\b/i },
+      { label: 'DFD / context diagram', pattern: /\b(?:dfd|context\s+diagram|problem\s+statement)\b/i },
+      { label: 'characteristics of requirements', pattern: /\bcharacteristics\s+of\s+requirements\b/i },
+    ],
+  },
+  {
+    domain: 'Software Architecture and Design',
+    topicMatches: (name) => /\b(?:software\s+architecture|architectural\s+design|architecture\s+and\s+design)\b/i.test(name),
+    aliases: [
+      { label: 'modularity', pattern: /\bmodularity\b/i },
+      { label: 'architectural design', pattern: /\barchitectural\s+design\b/i },
+    ],
+  },
+  {
+    domain: 'Software Project Management',
+    topicMatches: (name) => /\b(?:software\s+project\s+management|project\s+management)\b/i.test(name) && !/\bsystem\s+design\b/i.test(name),
+    aliases: [
+      { label: 'COCOMO model', pattern: /\bcocomo\b/i },
+      { label: 'LOC size metric', pattern: /\blines\s+of\s+code|\bloc\b/i },
+      { label: 'software configuration management', pattern: /\bconfiguration\s+management\b/i },
+      { label: 'risk management', pattern: /\brisk\s+management\b/i },
+    ],
+  },
 ];
 
 function mapQuestionToTopic(questionText: string, topics: TopicRow[]) {
@@ -1282,11 +1449,13 @@ function findOrCreateProvisionalTopic(userId: string, classification: { name: st
   return findOwnedTopicByName(userId, classification.name)!;
 }
 
-export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string; fileData?: Uint8Array; mimeType?: string; extractionMethod?: string; topicMappings?: Array<{ questionText: string; topicName: string; confidence: number }>; questionRecords?: QuestionRecord[]; structuredPages?: Array<{ pageNumber: number; heading?: string; text: string }> }) {
+export function ingestAcademicDocument(userId: string, input: { title: string; docType: string; content: string; fileSize?: string; fileData?: Uint8Array; mimeType?: string; extractionMethod?: string; topicMappings?: Array<{ questionText: string; topicName: string; confidence: number }>; questionRecords?: QuestionRecord[]; structuredPages?: Array<{ pageNumber: number; heading?: string; text: string }>; syllabusTopics?: Array<{ name: string; weightage?: number }> }) {
   const existingDocument = getDb().prepare(`SELECT id, title, doc_type AS docType, content, file_size AS fileSize, created_at AS createdAt
     FROM documents WHERE user_id = ? AND title = ? AND content = ?`).get(userId, input.title.trim(), input.content) as DocumentRow | undefined;
   const document = existingDocument || createDocument(userId, input);
-  const syllabusTopics = input.docType.toLowerCase() === 'syllabus' ? extractSyllabusTopics(input.content) : [];
+  const syllabusTopics = (input.syllabusTopics && input.syllabusTopics.length > 0)
+    ? input.syllabusTopics
+    : (input.docType.toLowerCase() === 'syllabus' ? extractSyllabusTopics(input.content) : []);
   if (syllabusTopics.length > 0) {
     saveTopics(userId, syllabusTopics.map((topic) => ({
       name: topic.name,
@@ -1317,10 +1486,12 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
     .map((mapping) => ({ ...mapping, topicName: resolveSyllabusTopicName(mapping.topicName, persistedSyllabusTopics) }))
     .filter((mapping): mapping is { questionText: string; topicName: string; confidence: number } => Boolean(mapping.topicName));
   let extractedCandidates: QuestionRecord[] = [];
-  if (input.questionRecords && input.questionRecords.length > 0) {
-    extractedCandidates = input.questionRecords;
-  } else if (/past|question|exam|paper|bank|test/i.test(input.docType)) {
-    extractedCandidates = extractNumberedQuestionRecords(input.content);
+  if (/past|question|exam|paper|bank|test/i.test(input.docType)) {
+    if (input.questionRecords && input.questionRecords.length > 0) {
+      extractedCandidates = input.questionRecords;
+    } else {
+      extractedCandidates = extractNumberedQuestionRecords(input.content);
+    }
   }
   const extractedQuestions = extractedCandidates
     .map((question) => ({
@@ -1485,19 +1656,51 @@ function reconcileProvisionalMappings(userId: string, topics: TopicRow[]) {
   apply(provisionalQuestions);
 }
 
-// Older uploads predate the question sanitizer. Run this idempotent repair when the service
-// starts so existing UI data does not continue to expose HTML/entities after the ingest fix.
+// Idempotent reconciliation and sanitation: cleans up misclassified documents, purges invalid questions,
+// and ensures only genuine interrogative questions exist in the academic question bank.
 export function sanitizePersistedAcademicQuestions() {
-  const rows = getDb().prepare(
+  const db = getDb();
+
+  // 1. Reconcile documents and rectify misclassified types (e.g. curriculum uploaded as Past Paper)
+  const docs = db.prepare('SELECT id, user_id, title, doc_type, content, mime_type FROM documents').all() as Array<{
+    id: string; user_id: string; title: string; doc_type: string; content: string | null; mime_type: string | null;
+  }>;
+  const updateDocType = db.prepare('UPDATE documents SET doc_type = ? WHERE id = ?');
+  const deleteQuestionsForDoc = db.prepare('DELETE FROM questions WHERE document_id = ?');
+  const deleteQuestionById = db.prepare('DELETE FROM questions WHERE id = ?');
+
+  for (const doc of docs) {
+    const trueType = classifyAcademicDocument({
+      title: doc.title,
+      content: doc.content || '',
+      hintDocType: doc.doc_type,
+      mimeType: doc.mime_type || undefined,
+    });
+    if (trueType !== doc.doc_type) {
+      updateDocType.run(trueType, doc.id);
+    }
+    // Syllabus and Lecture Slides MUST NEVER produce or store exam questions
+    if (trueType === 'Syllabus' || trueType === 'Lecture Slides') {
+      deleteQuestionsForDoc.run(doc.id);
+    }
+  }
+
+  // 2. Remove any remaining question rows that fail isPersistableQuestion (e.g. bibliography citations, author names, course codes, exam headers)
+  const rows = db.prepare(
     'SELECT id, user_id AS userId, question_text AS questionText, context_text AS context, ' +
     'question_number AS questionNumber, subpart, normalized_text AS normalizedText FROM questions',
   ).all() as Array<{
     id: string; userId: string; questionText: string; context: string | null;
     questionNumber: string | null; subpart: string | null; normalizedText: string;
   }>;
-  const update = getDb().prepare('UPDATE questions SET question_text = ?, context_text = ?, normalized_text = ? WHERE id = ? AND user_id = ?');
-  const apply = getDb().transaction((items: typeof rows) => {
+
+  const update = db.prepare('UPDATE questions SET question_text = ?, context_text = ?, normalized_text = ? WHERE id = ? AND user_id = ?');
+  const apply = db.transaction((items: typeof rows) => {
     for (const row of items) {
+      if (!isPersistableQuestion({ text: row.questionText, context: row.context || undefined })) {
+        deleteQuestionById.run(row.id);
+        continue;
+      }
       const questionText = normalizeAcademicQuestion(row.questionText);
       const context = row.context ? normalizeAcademicQuestion(row.context) : null;
       const normalizedText = ((row.questionNumber || '') + ':' + (row.subpart || '') + ':' + questionText).toLowerCase();
@@ -1528,9 +1731,11 @@ export function questionRows(userId: string, documentId?: string): QuestionRow[]
       q.question_type AS questionType, q.source, q.suggested_time_minutes AS suggestedTimeMinutes,
       q.mapping_score AS mappingScore, q.mapping_evidence AS mappingEvidence, q.mapping_status AS mappingStatus,
       q.page_number AS pageNumber,
-      q.created_at AS createdAt, t.name AS topicName
+      q.created_at AS createdAt, t.name AS topicName,
+      d.title AS paperTitle
     FROM questions q
     LEFT JOIN topics t ON t.id = q.topic_id AND t.user_id = q.user_id
+    LEFT JOIN documents d ON d.id = q.document_id AND d.user_id = q.user_id
     WHERE q.user_id = ? ${documentId ? 'AND q.document_id = ?' : ''}
     ORDER BY q.created_at DESC
   `).all(userId, ...(documentId ? [documentId] : [])).map((row: any) => ({ ...row, mappingEvidence: parseJsonList(row.mappingEvidence), mappingStatus: row.mappingStatus || (row.topicId ? 'mapped' : 'unmatched') })) as QuestionRow[];
@@ -1543,9 +1748,11 @@ export function findOwnedQuestion(userId: string, questionId: string): QuestionR
       q.question_type AS questionType, q.source, q.suggested_time_minutes AS suggestedTimeMinutes,
       q.mapping_score AS mappingScore, q.mapping_evidence AS mappingEvidence, q.mapping_status AS mappingStatus,
       q.page_number AS pageNumber,
-      q.created_at AS createdAt, t.name AS topicName
+      q.created_at AS createdAt, t.name AS topicName,
+      d.title AS paperTitle
     FROM questions q
     LEFT JOIN topics t ON t.id = q.topic_id AND t.user_id = q.user_id
+    LEFT JOIN documents d ON d.id = q.document_id AND d.user_id = q.user_id
     WHERE q.id = ? AND q.user_id = ?
   `).get(questionId, userId) as QuestionRow | undefined;
   return row ? { ...row, mappingEvidence: parseJsonList(row.mappingEvidence), mappingStatus: row.mappingStatus || (row.topicId ? 'mapped' : 'unmatched') } : undefined;
@@ -3811,6 +4018,7 @@ export interface WhatToStudySourceMapping {
   mapped: boolean;
   documentId?: string;
   documentTitle?: string;
+  documentFileName?: string;
   slideRange?: string;
   startSlide?: number;
   endSlide?: number;
@@ -4014,7 +4222,7 @@ interface LectureSlideChunk {
   text: string;
 }
 
-function extractLectureSlides(content: string): LectureSlideChunk[] {
+export function extractLectureSlides(content: string): LectureSlideChunk[] {
   if (!content) return [];
   // 1. Explicit Slide/Page markers: "Slide 1:", "Page 1:", "=== Slide 1 ===", "--- Slide 1 ---"
   const slideRegex = /(?:^|\n)(?:(?:===+|---+)?\s*(?:Slide|Page)\s+(\d+)[:.\-]?\s*([^\n]*)|#+\s*(?:Slide|Page)\s+(\d+)[:.\-]?\s*([^\n]*))/gi;
@@ -4068,12 +4276,41 @@ function extractLectureSlides(content: string): LectureSlideChunk[] {
   return [{ slideNumber: 1, title: 'Lecture Slides', text: content }];
 }
 
-export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
+function academicStem(token: string): string {
+  let t = token.toLowerCase();
+  if (t.endsWith("'s")) t = t.slice(0, -2);
+  if (t.length > 4 && t.endsWith('ies')) return t.slice(0, -3) + 'y';
+  if (t.length > 4 && t.endsWith('ing')) return t.slice(0, -3);
+  if (t.length > 4 && t.endsWith('tion')) return t.slice(0, -4) + 't';
+  if (t.length > 4 && t.endsWith('ted')) return t.slice(0, -2);
+  if (t.length > 4 && t.endsWith('ed')) return t.slice(0, -2);
+  if (t.length > 3 && t.endsWith('s') && !t.endsWith('ss')) return t.slice(0, -1);
+  return t;
+}
+
+function clusterTokens(value: string): string[] {
+  const stopWords = new Set([
+    'explain', 'describe', 'what', 'why', 'how', 'discuss', 'define', 'illustrate',
+    'calculate', 'compare', 'differentiate', 'distinguish', 'state', 'prove', 'show',
+    'derive', 'write', 'short', 'notes', 'note', 'briefly', 'detail', 'example',
+    'following', 'with', 'the', 'and', 'for', 'in', 'an', 'of', 'to', 'a', 'is', 'are',
+    'was', 'were', 'by', 'as', 'at', 'from', 'neat', 'sketch', 'diagram', 'suitable',
+    'solve', 'analyze', 'about', 'between', 'using', 'based', 'their', 'which', 'that',
+    'system', 'systems'
+  ]);
+  return value.toLowerCase().replace(/[^a-z0-9+#']+/g, ' ').split(/\s+/)
+    .map((token) => academicStem(token))
+    .filter((token) => token.length > 2 && !stopWords.has(token));
+}
+
+export function getDeterministicWhatToStudyRanking(userId: string): WhatToStudyItem[] {
   const documents = documentRows(userId);
   const allTopics = topicRows(userId);
   const questions = questionRows(userId);
 
-  // Group questions by underlying academic concept
+  if (questions.length === 0) return [];
+
+  // Group questions by underlying academic concept using subject-agnostic semantic token clustering
   const conceptClusters = new Map<string, {
     canonicalTitle: string;
     conceptKey: string;
@@ -4093,78 +4330,56 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
 
     const label = `${examYear} · Q${q.questionNumber || '?'}${q.subpart ? `(${q.subpart})` : ''}`;
     const cleanText = q.questionText.trim();
-    const tokens = academicTokens(cleanText);
+    const contentTokens = clusterTokens(cleanText);
 
-    // Identify semantic concept cluster
+    let bestClusterKey: string | null = null;
+    let highestSim = 0;
+
+    for (const [cKey, cVal] of conceptClusters.entries()) {
+      const intersection = contentTokens.filter((t) => cVal.keyTokens.has(t));
+      const unionSize = new Set([...contentTokens, ...cVal.keyTokens]).size;
+      const jaccard = unionSize > 0 ? intersection.length / unionSize : 0;
+
+      if (intersection.length >= 2 || (intersection.length >= 1 && jaccard >= 0.25)) {
+        const score = intersection.length * 10 + jaccard;
+        if (score > highestSim) {
+          highestSim = score;
+          bestClusterKey = cKey;
+        }
+      }
+    }
+
     let conceptKey = '';
     let canonicalTitle = '';
 
-    // 1. Well-known canonical concepts
-    if (tokens.some((t) => t.includes('deadlock')) && tokens.some((t) => t.includes('detect'))) {
-      conceptKey = 'deadlock-detection';
-      canonicalTitle = 'Explain Deadlock Detection';
-    } else if (tokens.some((t) => t.includes('banker'))) {
-      conceptKey = 'bankers-algorithm';
-      canonicalTitle = "Banker's Algorithm";
-    } else if (tokens.some((t) => t.includes('deadlock')) && tokens.some((t) => t.includes('condition') || t.includes('prevention') || t.includes('character'))) {
-      conceptKey = 'deadlock-conditions';
-      canonicalTitle = 'Deadlock Conditions & Prevention';
-    } else if (tokens.some((t) => t.includes('knapsack'))) {
-      conceptKey = 'knapsack-dp';
-      canonicalTitle = '0/1 Knapsack Problem';
-    } else if (tokens.some((t) => t.includes('dijkstra'))) {
-      conceptKey = 'dijkstra-algorithm';
-      canonicalTitle = "Dijkstra's Shortest Path Algorithm";
-    } else if (tokens.some((t) => t.includes('master')) && tokens.some((t) => t.includes('theorem') || t.includes('recurren'))) {
-      conceptKey = 'master-theorem';
-      canonicalTitle = 'Master Theorem for Recurrences';
-    } else if (tokens.some((t) => t.includes('paging')) || (tokens.some((t) => t.includes('virtual')) && tokens.some((t) => t.includes('memory')))) {
-      conceptKey = 'paging-virtual-memory';
-      canonicalTitle = 'Paging & Virtual Memory Translation';
-    } else if (tokens.some((t) => t.includes('critical')) && tokens.some((t) => t.includes('section') || t.includes('semaphore') || t.includes('mutex'))) {
-      conceptKey = 'critical-section-synchronization';
-      canonicalTitle = 'Critical Section & Semaphores';
-    } else {
-      // 2. Deterministic Semantic Clustering for arbitrary exam questions
-      const stopWords = new Set([
-        'explain', 'describe', 'what', 'why', 'how', 'discuss', 'define', 'illustrate',
-        'calculate', 'compare', 'differentiate', 'distinguish', 'state', 'prove', 'show',
-        'derive', 'write', 'short', 'notes', 'note', 'briefly', 'detail', 'example',
-        'following', 'with', 'the', 'and', 'for', 'in', 'an', 'of', 'to', 'a', 'is', 'are',
-        'was', 'were', 'by', 'as', 'at', 'from', 'neat', 'sketch', 'diagram', 'suitable',
-        'solve', 'analyze', 'about', 'between', 'using', 'based', 'their', 'which', 'that'
-      ]);
-      const contentTokens = tokens.filter((t) => t.length >= 3 && !stopWords.has(t));
-
-      let bestClusterKey: string | null = null;
-      let highestSim = 0;
-
-      for (const [cKey, cVal] of conceptClusters.entries()) {
-        const intersection = contentTokens.filter((t) => cVal.keyTokens.has(t));
-        const unionSize = new Set([...contentTokens, ...cVal.keyTokens]).size;
-        const jaccard = unionSize > 0 ? intersection.length / unionSize : 0;
-
-        if (jaccard >= 0.40 || (intersection.length >= 2 && jaccard >= 0.25)) {
-          if (jaccard > highestSim) {
-            highestSim = jaccard;
-            bestClusterKey = cKey;
-          }
-        }
-      }
-
-      if (bestClusterKey) {
-        conceptKey = bestClusterKey;
-      } else {
-        const simplified = cleanText
-          .replace(/^(?:explain|describe|what is|what are|how is|how does|solve|state and prove|illustrate|analyze|define|discuss|compare)\s+/i, '')
-          .replace(/[^a-zA-Z0-9\s]/g, ' ')
-          .split(/\s+/)
-          .filter((w) => w.length > 2 && !stopWords.has(w.toLowerCase()))
-          .slice(0, 5)
+    if (bestClusterKey) {
+      conceptKey = bestClusterKey;
+      const namedMatch = /\b([A-Z][a-z]+'s\s+[A-Za-z]+)\b/.exec(cleanText);
+      if (namedMatch && !conceptClusters.get(bestClusterKey)!.canonicalTitle.includes("'s")) {
+        const words = namedMatch[1].split(/\s+/);
+        conceptClusters.get(bestClusterKey)!.canonicalTitle = words
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
           .join(' ');
-        conceptKey = contentTokens.slice(0, 3).sort().join('-') || 'general-topic';
-        canonicalTitle = (simplified.charAt(0).toUpperCase() + simplified.slice(1)) || 'Exam Topic';
       }
+    } else {
+      let candidate = cleanText.replace(/[:\-\.]+/g, ' ').trim();
+      const namedMatch = /\b([A-Z][a-z]+'s\s+[A-Za-z]+)\b/.exec(cleanText);
+      let phrase = '';
+      if (namedMatch) {
+        phrase = namedMatch[1];
+      } else if (/^explain\s+/i.test(candidate)) {
+        phrase = candidate.split(/\s+/).slice(0, 3).join(' ');
+      } else {
+        const simplified = candidate
+          .replace(/^(?:describe|what is|what are|how is|how does|solve|state and prove|illustrate|analyze|define|discuss|compare)\s+(?:the\s+|a\s+|an\s+)?/i, '')
+          .trim();
+        phrase = simplified.split(/\s+/).slice(0, 3).join(' ');
+      }
+      conceptKey = contentTokens.slice(0, 3).sort().join('-') || 'general-topic';
+      canonicalTitle = phrase
+        .split(/\s+/)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(' ') || 'Exam Topic';
     }
 
     if (!conceptClusters.has(conceptKey)) {
@@ -4173,15 +4388,16 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
         conceptKey,
         topicId: q.topicId || undefined,
         topicName: q.topicName || undefined,
-        keyTokens: new Set(tokens.filter((t) => t.length >= 3)),
+        keyTokens: new Set(contentTokens),
         occurrences: [],
       });
     }
 
     const cluster = conceptClusters.get(conceptKey)!;
-    tokens.forEach((t) => { if (t.length >= 3) cluster.keyTokens.add(t); });
+    contentTokens.forEach((t) => cluster.keyTokens.add(t));
 
     cluster.occurrences.push({
+      questionId: q.id,
       paperTitle: docTitle,
       examYear,
       questionNumber: q.questionNumber || '?',
@@ -4200,7 +4416,7 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
   // Find all lecture material documents (PPTs, PDFs, lecture notes)
   const lectureDocs = documents.filter((d) => {
     const t = d.docType.toLowerCase();
-    return t.includes('lecture') || t.includes('slide') || t.includes('note') || t.includes('presentation');
+    return t.includes('lecture') || t.includes('slide') || t.includes('note') || t.includes('presentation') || /\.(pptx|ppt)$/i.test(d.title);
   });
 
   // Extract slide chunks from all lecture documents (preferring persisted document_pages if available)
@@ -4230,46 +4446,35 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
       }
     }
 
-    // MAP TO LECTURE MATERIAL (PPT / PDF) - STRICT TRACEABILITY
+    // MAP TO LECTURE MATERIAL (PPT / PDF) - STRICT TRACEABILITY (Subject-agnostic)
     let lectureSource: WhatToStudySourceMapping = {
       mapped: false,
       unmappedReason: 'Source location not confidently mapped.',
     };
 
-    const clusterKeywords: Record<string, string[]> = {
-      'deadlock-detection': ['detect'],
-      'bankers-algorithm': ['banker'],
-      'deadlock-conditions': ['condition', 'prevention', 'character'],
-      'knapsack-dp': ['knapsack'],
-      'dijkstra-algorithm': ['dijkstra'],
-      'master-theorem': ['master'],
-      'paging-virtual-memory': ['tlb', 'page fault', 'paging', 'virtual'],
-      'critical-section-synchronization': ['critical', 'semaphore', 'mutex'],
-    };
-
-    const specificTokens = clusterKeywords[key];
-    const generalTokens = Array.from(cluster.keyTokens);
+    const clusterTokensArray = Array.from(cluster.keyTokens);
+    const canonicalTokens = clusterTokens(cluster.canonicalTitle);
 
     // Search lecture slides
     for (const { doc, slides } of parsedLectures) {
-      const matchingSlides: LectureSlideChunk[] = [];
+      const scoredSlides: Array<{ slide: LectureSlideChunk; score: number }> = [];
       for (const slide of slides) {
-        const slideTokens = academicTokens(slide.title + ' ' + slide.text);
-        if (specificTokens && specificTokens.length > 0) {
-          const hasSpecific = specificTokens.some((st) => slideTokens.some((t) => t.includes(st)));
-          if (hasSpecific) {
-            matchingSlides.push(slide);
-          }
-        } else {
-          const matchCount = generalTokens.filter((ct) => slideTokens.includes(ct)).length;
-          if (matchCount >= 2 || (generalTokens.length === 1 && matchCount === 1)) {
-            matchingSlides.push(slide);
-          }
+        const slideTokens = clusterTokens(slide.title + ' ' + slide.text);
+        const matchCount = clusterTokensArray.filter((ct) => slideTokens.includes(ct)).length;
+        const canonicalMatches = canonicalTokens.filter((ct) => slideTokens.includes(ct));
+
+        const hasCoreMatch = canonicalTokens.length >= 2
+          ? canonicalMatches.length >= 2
+          : matchCount >= 2;
+
+        if (hasCoreMatch) {
+          scoredSlides.push({ slide, score: matchCount + canonicalMatches.length * 2 });
         }
       }
 
-      if (matchingSlides.length > 0) {
-        const slideNums = matchingSlides.map((s) => s.slideNumber).sort((a, b) => a - b);
+      if (scoredSlides.length > 0) {
+        const bestSlides = scoredSlides.map((s) => s.slide);
+        const slideNums = bestSlides.map((s) => s.slideNumber).sort((a, b) => a - b);
         const minSlide = slideNums[0];
         const maxSlide = slideNums[slideNums.length - 1];
         const slideRange = minSlide === maxSlide ? `Slide ${minSlide}` : `Slides ${minSlide}–${maxSlide}`;
@@ -4278,11 +4483,12 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
           mapped: true,
           documentId: doc.id,
           documentTitle: doc.title.replace(/\.(pptx|pdf|txt|docx)$/i, ''),
+          documentFileName: doc.title,
           slideRange,
           startSlide: minSlide,
           endSlide: maxSlide,
-          sectionTitle: matchingSlides[0].title || cluster.canonicalTitle,
-          slideSnippet: matchingSlides[0].text.slice(0, 240),
+          sectionTitle: bestSlides[0].title || cluster.canonicalTitle,
+          slideSnippet: bestSlides[0].text.slice(0, 240),
         };
         break; // Stop at first confident lecture source match
       }
@@ -4342,6 +4548,19 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
     if (diffCount !== 0) return diffCount;
     return b.distinctYearsCount - a.distinctYearsCount;
   });
+}
+
+export function clearAcademicData(userId: string): void {
+  const db = getDb();
+  db.prepare('DELETE FROM questions WHERE user_id = ?').run(userId);
+  db.prepare('DELETE FROM topic_document_sources WHERE user_id = ?').run(userId);
+  db.prepare('DELETE FROM document_pages WHERE user_id = ?').run(userId);
+  db.prepare('DELETE FROM documents WHERE user_id = ?').run(userId);
+  db.prepare('DELETE FROM topics WHERE user_id = ?').run(userId);
+}
+
+export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
+  return getDeterministicWhatToStudyRanking(userId);
 }
 
 /**

@@ -23,6 +23,24 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
     return btoa(binary);
   };
 
+  const inferDocTypeFromFileName = (fileName: string, defaultType: 'Past Paper' | 'Syllabus' | 'Lecture Slides'): 'Past Paper' | 'Syllabus' | 'Lecture Slides' => {
+    const normalized = fileName.replace(/[_\.\-]+/g, ' ').toLowerCase();
+    const lower = fileName.toLowerCase();
+    if (/\.(pptx?|key|odp)$/i.test(lower) || /\b(?:ppt|pptx|slides?|lecture|deck|presentation)\b/i.test(normalized) || /^(?:trees?|unit\s*\d|chapter\s*\d|module\s*\d|lec(?:ture)?\s*\d)/i.test(normalized)) {
+      return 'Lecture Slides';
+    }
+    if (/\b(?:syllabus|curriculum|curricula|modality|modalities|course\s*(?:outline|structure|plan|scheme))\b/i.test(normalized)) {
+      return 'Syllabus';
+    }
+    if (/\b(?:exam|examination|end\s*sem|mid\s*sem|midterm|question\s*paper|pyq|quiz|test|makeup)\b/i.test(normalized)) {
+      return 'Past Paper';
+    }
+    if (lower.endsWith('.pdf')) {
+      return defaultType === 'Syllabus' ? 'Past Paper' : defaultType;
+    }
+    return defaultType;
+  };
+
   if (!isOpen) return null;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -36,6 +54,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
       setContent('');
       if (files.length === 1 && !docName) {
         setDocName(files[0].name);
+        setDocType(inferDocTypeFromFileName(files[0].name, 'Past Paper'));
       }
     }
     e.target.value = '';
@@ -81,7 +100,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 title,
-                docType,
+                docType: inferDocTypeFromFileName(file.name, docType),
                 base64: await fileAsBase64(file),
                 mimeType: file.type || undefined,
               }),
