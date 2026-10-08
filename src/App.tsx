@@ -495,6 +495,7 @@ export default function App() {
               onAcceptAdaptiveProposal={acceptAdaptiveProposal}
               onRejectAdaptiveProposal={rejectAdaptiveProposal}
               onReconsiderAdaptiveProposal={requestAdaptiveProposal}
+              onCalendarChanged={() => setScheduleRefreshKey((key) => key + 1)}
             />
           )}
 

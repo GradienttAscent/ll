@@ -67,6 +67,15 @@ describe('scheduling assistant parser', () => {
     assert.deepStrictEqual(parseSchedulingAssistantIntent('Make DBMS shorter', currentTime), {
       type: 'shorten_topic', topicQuery: 'dbms', sourceDate: undefined,
     });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Swap my first two blocks', currentTime), {
+      type: 'swap_sessions', swapFirstTwo: true,
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Move my next block to tomorrow at 4 PM', currentTime), {
+      type: 'move_topic', blockPosition: 'next', targetDate: '2026-09-15', targetTime: '16:00', targetTimeMode: 'exact',
+    });
+    assert.deepStrictEqual(parseSchedulingAssistantIntent('Shorten my next session to 30 minutes', currentTime), {
+      type: 'shorten_topic', blockPosition: 'next', durationMinutes: 30,
+    });
     assert.deepStrictEqual(parseSchedulingAssistantIntent('When do I study DBMS?', currentTime), {
       type: 'query_schedule', topicQuery: 'dbms',
     });
@@ -353,6 +362,50 @@ describe('scheduling assistant API', () => {
     assert.strictEqual(next.status, 200);
     assert.match(next.json.preview.assistantMessage, /Your next session is/);
     assert.deepStrictEqual(await blocks(), before);
+  });
+
+  it('executes the priority positional commands against persisted blocks', async () => {
+    const positional = new Api(server.baseUrl);
+    const { token } = await positional.register('assistant-positional@example.com', 'secret123');
+    positional.token = token;
+    const topics = await positional.request('/api/topics/bulk', {
+      method: 'POST', body: { topics: [{ name: 'Position One' }, { name: 'Position Two' }, { name: 'Position Three' }] },
+    });
+    const topicIdFor = (name: string) => topics.json.topics.find((topic: any) => topic.name === name).id;
+    const tomorrow = dateAfterToday(1);
+    const dayAfterTomorrow = dateAfterToday(2);
+    const thirdDay = dateAfterToday(3);
+    assert.strictEqual((await positional.request('/api/schedule-blocks/bulk', {
+      method: 'POST', body: { scheduleBlocks: [
+        { topicId: topicIdFor('Position One'), title: 'Position One review', date: tomorrow, startTime: '09:00', durationMinutes: 60 },
+        { topicId: topicIdFor('Position Two'), title: 'Position Two review', date: dayAfterTomorrow, startTime: '10:00', durationMinutes: 60 },
+        { topicId: topicIdFor('Position Three'), title: 'Position Three review', date: thirdDay, startTime: '11:00', durationMinutes: 60 },
+      ] },
+    })).status, 201);
+
+    const tomorrowQuery = await positional.request('/api/scheduling-assistant/preview', { method: 'POST', body: { message: 'What do I have tomorrow?' } });
+    assert.match(tomorrowQuery.json.preview.assistantMessage, /Position One/);
+
+    const swap = await positional.request('/api/scheduling-assistant/preview', { method: 'POST', body: { message: 'Swap my first two blocks' } });
+    assert.strictEqual(swap.json.preview.changes.length, 2);
+    assert.strictEqual((await positional.request('/api/scheduling-assistant/confirm', {
+      method: 'POST', body: { message: 'Swap my first two blocks', changes: swap.json.preview.changes },
+    })).status, 200);
+
+    const move = await positional.request('/api/scheduling-assistant/preview', { method: 'POST', body: { message: 'Move my next block to tomorrow at 4 PM' } });
+    assert.strictEqual(move.json.preview.changes.length, 1);
+    assert.strictEqual(move.json.preview.changes[0].proposed.startTime, '16:00');
+    assert.strictEqual((await positional.request('/api/scheduling-assistant/confirm', {
+      method: 'POST', body: { message: 'Move my next block to tomorrow at 4 PM', changes: move.json.preview.changes },
+    })).status, 200);
+
+    const shorten = await positional.request('/api/scheduling-assistant/preview', { method: 'POST', body: { message: 'Shorten my next session to 30 minutes' } });
+    assert.strictEqual(shorten.json.preview.changes[0].proposed.durationMinutes, 30);
+    assert.strictEqual((await positional.request('/api/scheduling-assistant/confirm', {
+      method: 'POST', body: { message: 'Shorten my next session to 30 minutes', changes: shorten.json.preview.changes },
+    })).status, 200);
+    const saved = (await positional.request('/api/schedule-blocks')).json.scheduleBlocks;
+    assert.strictEqual(saved.find((block: any) => block.id === shorten.json.preview.changes[0].blockId).durationMinutes, 30);
   });
 
   it('reports no upcoming sessions for an empty schedule', async () => {

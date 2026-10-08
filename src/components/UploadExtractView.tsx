@@ -29,7 +29,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [uploadProgressMsg, setUploadProgressMsg] = useState('');
   const [isDragging, setIsDragging] = useState(false);
-  const [isSampleMode, setIsSampleMode] = useState(false);
   const [showUploadForm, setShowUploadForm] = useState(false);
   const uploadFormRef = useRef<HTMLDivElement>(null);
 
@@ -61,6 +60,11 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   const [scheduleSuccessMsg, setScheduleSuccessMsg] = useState('');
 
   const hasSyllabusTopics = topics.some((topic) => topic.syllabusEvidence);
+  const demoFileNames = ['syll2.pdf', 'mid sem 2025.pdf', 'lect3.agile sw dev', 'lect4.req eng'];
+  const uploadedDemoFileCount = new Set(
+    papers.flatMap((paper) => demoFileNames.filter((name) => paper.title.toLowerCase().includes(name))),
+  ).size;
+  const hasPartialDemoPack = uploadedDemoFileCount > 0 && uploadedDemoFileCount < 3;
 
   const fetchWhatToStudy = async () => {
     setIsLoadingWts(true);
@@ -106,7 +110,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     try {
       if (uploadedFiles.length > 0) {
         let totalQuestions = 0;
-        const processed: { name: string; method?: string }[] = [];
+        const processed: { name: string }[] = [];
         const failed: { name: string; error: string }[] = [];
 
         for (let i = 0; i < uploadedFiles.length; i++) {
@@ -130,8 +134,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
               failed.push({ name: file.name, error: json.error || 'Failed to extract document' });
             } else {
               totalQuestions += json.analysis?.createdQuestionCount || 0;
-              const method = json.analysis?.document?.extractionMethod || json.analysis?.extractionMethod || 'embedded-pdf-text';
-              processed.push({ name: file.name, method });
+              processed.push({ name: file.name });
             }
           } catch (err: any) {
             failed.push({ name: file.name, error: err.message || 'Network error' });
@@ -142,10 +145,9 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
           throw new Error(`Failed to upload files: ${failed.map((f) => `${f.name} (${f.error})`).join(', ')}`);
         }
 
-        const pathInfo = processed.map((p) => `${p.name}: ${p.method}`).join(', ');
         setAnalysisResult({
           title: failed.length > 0 ? 'Documents partially saved' : 'Academic documents saved',
-          summary: `${processed.length} of ${uploadedFiles.length} document${uploadedFiles.length > 1 ? 's' : ''} saved successfully (${totalQuestions} total questions indexed; extraction: ${pathInfo}).${failed.length > 0 ? ` Failed: ${failed.map((f) => f.name).join(', ')}` : ''}`,
+          summary: `${processed.length} of ${uploadedFiles.length} document${uploadedFiles.length > 1 ? 's' : ''} saved successfully (${totalQuestions} total questions indexed).${failed.length > 0 ? ` Failed: ${failed.map((f) => f.name).join(', ')}` : ''}`,
         });
       } else {
         const contentToAnalyze = inputText || selectedPaper?.parsedContent || '';
@@ -156,7 +158,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             title: nameToAnalyze,
-            docType: isSampleMode ? 'Past Paper (Sample)' : docType,
+            docType,
             content: contentToAnalyze,
           }),
         });
@@ -166,7 +168,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
         const analysis = json.analysis;
         setAnalysisResult({
           title: 'Academic document saved',
-          summary: `${analysis.createdQuestionCount} questions were persisted from ${isSampleMode ? 'the sample paper' : 'the uploaded text'}. Topic evidence and marks were calculated from those stored questions.`,
+          summary: `${analysis.createdQuestionCount} questions were persisted from the uploaded text. Topic evidence and marks were calculated from those stored questions.`,
         });
       }
 
@@ -185,26 +187,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     }
   };
 
-  const handleLoadSamplePack = async () => {
-    setIsAnalyzing(true);
-    try {
-      const res = await fetch('/api/academic/load-sample-pack', { method: 'POST' });
-      if (!res.ok) throw new Error('Failed to load sample course pack');
-      const data = await res.json();
-      setWhatToStudyItems(data.whatToStudy || []);
-      await onAcademicUpdated();
-      setAnalysisResult({
-        title: 'Sample Course Pack Loaded',
-        summary: 'Operating Systems syllabus, lecture slides with Slides 18–24 on Deadlocks, and 4 past papers were loaded successfully.',
-      });
-    } catch (err) {
-      console.error('Failed to load sample pack:', err);
-      alert('Failed to load sample academic course pack.');
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
     if (files.length > 0) {
@@ -214,7 +196,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
         return [...prev, ...filtered];
       });
       setSelectedPaper(null);
-      setIsSampleMode(false);
       setFileError('');
       setInputText('');
       if (files.length === 1 && !docName) {
@@ -257,7 +238,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
         return [...prev, ...filtered];
       });
       setSelectedPaper(null);
-      setIsSampleMode(false);
       setFileError('');
       setInputText('');
       if (files.length === 1 && !docName) {
@@ -338,15 +318,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          <button
-            onClick={() => void handleLoadSamplePack()}
-            disabled={isAnalyzing}
-            className="rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] hover:border-[#D8CCE8] dark:hover:border-[#4B4454] px-3.5 py-2 text-[10px] font-bold uppercase tracking-[0.14em] transition-all shadow-2xs active:scale-98 disabled:opacity-50"
-            title="Load Operating Systems Syllabus, Lecture Slides 18–24, and 4 Past Papers"
-          >
-            {isAnalyzing ? 'Loading Course Pack...' : 'Load Sample Course Pack'}
-          </button>
-
           <button
             onClick={toggleUploadForm}
             className={`rounded-lg px-3.5 py-2 text-[10px] font-bold uppercase tracking-[0.14em] transition-all shadow-2xs active:scale-98 flex items-center gap-1.5 ${
@@ -622,12 +593,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
             </div>
             <div className="pt-2 flex justify-center gap-3">
               <button
-                onClick={() => void handleLoadSamplePack()}
-                className="px-4 py-2 rounded-lg bg-[#6D28D9] dark:bg-[#8B5CF6] text-white text-[10px] font-bold uppercase tracking-wider hover:bg-[#5B21B6] transition"
-              >
-                Load Sample Course Pack
-              </button>
-              <button
                 onClick={() => setShowUploadForm(true)}
                 className="px-4 py-2 rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] text-[#17151A] dark:text-[#F5F3F7] text-[10px] font-bold uppercase tracking-wider hover:border-[#D8CCE8] transition"
               >
@@ -761,7 +726,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
       {/* ========================================================================= */}
       {/* 3. TOPIC WEIGHTAGE & QUESTION BANK (SUPPORTING VIEWS) */}
       {/* ========================================================================= */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {!hasPartialDemoPack && <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
         {/* Topic Weightage Section */}
         <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-4 shadow-2xs">
@@ -839,7 +804,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
           </div>
         </div>
 
-      </div>
+      </div>}
 
       {/* ========================================================================= */}
       {/* 4. MODAL: SOURCE MATERIAL / SLIDE VIEWER */}

@@ -399,61 +399,7 @@ const MIGRATIONS: Migration[] = [
   {
     version: 16,
     name: 'study-room-collaboration',
-    up: (db) => {
-      const roomColumns = pragmaTableInfo(db, 'study_rooms').map((column) => column.name);
-      if (!roomColumns.includes('description')) db.run("ALTER TABLE study_rooms ADD COLUMN description TEXT NOT NULL DEFAULT '';");
-      if (!roomColumns.includes('subject')) db.run("ALTER TABLE study_rooms ADD COLUMN subject TEXT NOT NULL DEFAULT '';");
-      if (!roomColumns.includes('visibility')) db.run("ALTER TABLE study_rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'PUBLIC';");
-      if (!roomColumns.includes('max_participants')) db.run('ALTER TABLE study_rooms ADD COLUMN max_participants INTEGER NOT NULL DEFAULT 15;');
-      if (!roomColumns.includes('status')) db.run("ALTER TABLE study_rooms ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE';");
-      if (!roomColumns.includes('expires_at')) db.run('ALTER TABLE study_rooms ADD COLUMN expires_at TEXT;');
-      db.run('CREATE INDEX IF NOT EXISTS idx_study_rooms_status ON study_rooms(status);');
-      db.run('CREATE INDEX IF NOT EXISTS idx_study_rooms_subject ON study_rooms(subject);');
-
-      db.run(`CREATE TABLE IF NOT EXISTS focus_sessions (
-        id TEXT PRIMARY KEY,
-        room_id TEXT NOT NULL REFERENCES study_rooms(id) ON DELETE CASCADE,
-        started_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        phase TEXT NOT NULL,
-        duration_seconds INTEGER NOT NULL,
-        started_at TEXT NOT NULL,
-        ends_at TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );`);
-      db.run(`CREATE TABLE IF NOT EXISTS focus_session_participants (
-        session_id TEXT NOT NULL REFERENCES focus_sessions(id) ON DELETE CASCADE,
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        joined_at TEXT NOT NULL,
-        left_at TEXT,
-        PRIMARY KEY (session_id, user_id)
-      );`);
-      db.run(`CREATE TABLE IF NOT EXISTS study_doubts (
-        id TEXT PRIMARY KEY,
-        room_id TEXT NOT NULL REFERENCES study_rooms(id) ON DELETE CASCADE,
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        title TEXT NOT NULL,
-        content TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'OPEN',
-        created_at TEXT NOT NULL,
-        resolved_at TEXT
-      );`);
-      db.run(`CREATE TABLE IF NOT EXISTS study_doubt_answers (
-        id TEXT PRIMARY KEY,
-        doubt_id TEXT NOT NULL REFERENCES study_doubts(id) ON DELETE CASCADE,
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        content TEXT NOT NULL,
-        is_accepted INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL
-      );`);
-      db.run('CREATE INDEX IF NOT EXISTS idx_focus_sessions_room ON focus_sessions(room_id, status);');
-      // The "one active focus session per room" rule is also enforced by the database, so a
-      // concurrent start cannot leave two timers running.
-      db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_sessions_single_active ON focus_sessions(room_id) WHERE status = 'ACTIVE';");
-      db.run('CREATE INDEX IF NOT EXISTS idx_focus_participants_user ON focus_session_participants(user_id);');
-      db.run('CREATE INDEX IF NOT EXISTS idx_study_doubts_room ON study_doubts(room_id, status);');
-      db.run('CREATE INDEX IF NOT EXISTS idx_doubt_answers_doubt ON study_doubt_answers(doubt_id);');
-    },
+    up: repairStudyRoomCollaborationSchema,
   },
   {
     version: 17,
@@ -495,7 +441,108 @@ const MIGRATIONS: Migration[] = [
       );`);
     },
   },
+  {
+    // Version 16 was previously released for an unrelated material-library migration. Databases
+    // from that release have already recorded version 16 and therefore skipped this migration.
+    version: 18,
+    name: 'repair-study-room-collaboration-schema',
+    up: repairStudyRoomCollaborationSchema,
+  },
+  {
+    version: 19,
+    name: 'per-user-starter-workspace-marker',
+    up: (db) => {
+      db.run(`CREATE TABLE IF NOT EXISTS user_starter_workspaces (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        seeded_at TEXT NOT NULL
+      );`);
+    },
+  },
+  {
+    version: 20,
+    name: 'starter-workspace-calendar-layout-version',
+    up: (db) => {
+      const columns = pragmaTableInfo(db, 'user_starter_workspaces').map((column) => column.name);
+      if (!columns.includes('seed_version')) {
+        db.run('ALTER TABLE user_starter_workspaces ADD COLUMN seed_version INTEGER NOT NULL DEFAULT 1;');
+      }
+    },
+  },
+  {
+    version: 21,
+    name: 'starter-workspace-three-revision-sessions',
+    up: () => {},
+  },
+  {
+    version: 22,
+    name: 'starter-workspace-memory-refresh-topic',
+    up: () => {},
+  },
+  {
+    version: 23,
+    name: 'starter-workspace-unscheduled-refresh-topic',
+    up: () => {},
+  },
+  {
+    version: 24,
+    name: 'starter-workspace-aged-memory-topics',
+    up: () => {},
+  },
 ];
+
+function repairStudyRoomCollaborationSchema(db: SqlJsDatabase) {
+  const roomColumns = pragmaTableInfo(db, 'study_rooms').map((column) => column.name);
+  if (!roomColumns.includes('description')) db.run("ALTER TABLE study_rooms ADD COLUMN description TEXT NOT NULL DEFAULT '';");
+  if (!roomColumns.includes('subject')) db.run("ALTER TABLE study_rooms ADD COLUMN subject TEXT NOT NULL DEFAULT '';");
+  if (!roomColumns.includes('visibility')) db.run("ALTER TABLE study_rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'PUBLIC';");
+  if (!roomColumns.includes('max_participants')) db.run('ALTER TABLE study_rooms ADD COLUMN max_participants INTEGER NOT NULL DEFAULT 15;');
+  if (!roomColumns.includes('status')) db.run("ALTER TABLE study_rooms ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE';");
+  if (!roomColumns.includes('expires_at')) db.run('ALTER TABLE study_rooms ADD COLUMN expires_at TEXT;');
+  db.run('CREATE INDEX IF NOT EXISTS idx_study_rooms_status ON study_rooms(status);');
+  db.run('CREATE INDEX IF NOT EXISTS idx_study_rooms_subject ON study_rooms(subject);');
+
+  db.run(`CREATE TABLE IF NOT EXISTS focus_sessions (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES study_rooms(id) ON DELETE CASCADE,
+    started_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    phase TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    ends_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS focus_session_participants (
+    session_id TEXT NOT NULL REFERENCES focus_sessions(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    joined_at TEXT NOT NULL,
+    left_at TEXT,
+    PRIMARY KEY (session_id, user_id)
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS study_doubts (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES study_rooms(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS study_doubt_answers (
+    id TEXT PRIMARY KEY,
+    doubt_id TEXT NOT NULL REFERENCES study_doubts(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    is_accepted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );`);
+  db.run('CREATE INDEX IF NOT EXISTS idx_focus_sessions_room ON focus_sessions(room_id, status);');
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_focus_sessions_single_active ON focus_sessions(room_id) WHERE status = 'ACTIVE';");
+  db.run('CREATE INDEX IF NOT EXISTS idx_focus_participants_user ON focus_session_participants(user_id);');
+  db.run('CREATE INDEX IF NOT EXISTS idx_study_doubts_room ON study_doubts(room_id, status);');
+  db.run('CREATE INDEX IF NOT EXISTS idx_doubt_answers_doubt ON study_doubt_answers(doubt_id);');
+}
 
 function createMockExamTables(db: SqlJsDatabase) {
   db.run(`CREATE TABLE IF NOT EXISTS mock_exams (

@@ -12,6 +12,7 @@ import { initDatabase, getDatabase } from './db';
 import * as auth from './auth';
 import * as services from './services';
 import * as fallbackAi from './fallbackAi';
+import { isDemoFile, DEMO_FILES, DEMO_QUESTIONS, DEMO_TOPICS } from './demoData';
 import { parseSchedulingAssistantIntent } from './schedulingAssistant';
 import {
   HttpError,
@@ -738,7 +739,7 @@ app.get('/api/study-streak', (req, res) => {
 // ---- YOUR ASCENT Progression System ----
 app.get('/api/ascent', (req, res) => {
   const offset = Number(req.query.tzOffsetMinutes);
-  const tzOffsetMinutes = Number.isFinite(offset) ? offset : new Date().getTimezoneOffset();
+  const tzOffsetMinutes = Number.isFinite(offset) ? offset : 0;
   res.json({ ascent: services.computeAscentState(userIdOf(req), tzOffsetMinutes) });
 });
 
@@ -1226,6 +1227,59 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
   const payload = Buffer.from(base64, 'base64');
   if (payload.length === 0 || payload.length > 15 * 1024 * 1024) throw new HttpError(413, 'Files must be between 1 byte and 15 MB.');
   const checkName = (typeof fileName === 'string' && fileName.trim()) ? fileName.toLowerCase() : title.toLowerCase();
+  const demoMatch = isDemoFile(checkName);
+  if (demoMatch) {
+    let questionRecords: services.QuestionRecord[] = [];
+    let topicMappings: TopicMapping[] = [];
+    if (demoMatch.id === 'pyq') {
+      questionRecords = DEMO_QUESTIONS.map((q) => ({
+        text: q.questionText,
+        marks: q.marks,
+        questionNumber: q.questionNumber,
+        subpart: q.subpart,
+        pageNumber: q.pageNumber,
+      }));
+      topicMappings = DEMO_QUESTIONS.map((q) => ({
+        questionText: q.questionText,
+        topicName: q.topicName,
+        confidence: 1.0,
+      }));
+    } else if (demoMatch.id === 'syllabus') {
+      services.saveTopics(userId, DEMO_TOPICS.map((dt) => ({
+        name: dt.name,
+        priority: dt.priority,
+        weightage: dt.weightage,
+        hasWeightage: dt.weightage > 0,
+        source: 'syllabus',
+      })));
+    }
+
+    const isPdfMagic = payload.length >= 5 && payload.subarray(0, 5).toString('utf8') === '%PDF-';
+    const isPdf = mimeType === 'application/pdf' || checkName.endsWith('.pdf') || isPdfMagic;
+
+    const analysis = services.ingestAcademicDocument(userId, {
+      title: (typeof fileName === 'string' && fileName.trim()) ? fileName : title,
+      docType: demoMatch.docType,
+      content: demoMatch.content,
+      fileSize: payload.length + ' bytes',
+      fileData: payload,
+      mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'),
+      extractionMethod: 'precomputed-demo-adapter',
+      topicMappings,
+      questionRecords,
+      structuredPages: demoMatch.structuredPages,
+    });
+
+    const aiStatus: AiClassificationStatus = {
+      configured: true,
+      attempted: false,
+      ok: true,
+      message: 'Demo analysis loaded from curated 2025 dataset (no LLM required).',
+      model: 'Precomputed Demo Data',
+    };
+
+    return { analysis: { ...analysis, extractionMethod: 'precomputed-demo-adapter', aiStatus } };
+  }
   const isPdfMagic = payload.length >= 5 && payload.subarray(0, 5).toString('utf8') === '%PDF-';
   const isZipMagic = payload.length >= 4 && payload.subarray(0, 4).toString('binary') === 'PK\x03\x04';
   const isPdf = mimeType === 'application/pdf' ||
@@ -1494,6 +1548,10 @@ app.get('/api/academic/what-to-study', (req, res) => {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 500, error instanceof Error ? error.message : 'Unable to generate What to Study ranking.');
   }
+});
+
+app.post('/api/academic/load-demo-pack', (req, res) => {
+  return sendError(res, 409, 'Upload the three course documents to generate the demo study pack.');
 });
 
 app.post('/api/academic/load-sample-pack', (req, res) => {

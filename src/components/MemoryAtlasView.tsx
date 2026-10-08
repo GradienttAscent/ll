@@ -6,7 +6,8 @@ interface MemoryAtlasViewProps {
   onCalendarChanged: () => void;
 }
 
-const MAX_CURVES = 6;
+const MAX_CURVES = 3;
+const CURVE_COLORS = ['#6D28D9', '#0F766E', '#B45309'];
 
 const chartWidth = 1000;
 const chartHeight = 384;
@@ -168,19 +169,64 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
     }
   };
 
+  const scheduleTopicRefresh = async (topicId: string) => {
+    setPlanLoading(true);
+    setMessage('');
+    try {
+      const planResponse = await fetch('/api/memory/refresh-plan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ topicId }),
+      });
+      const planData = await planResponse.json();
+      if (!planResponse.ok) throw new Error(planData.error || 'Unable to build a refresh plan.');
+      const plan = planData.refreshPlan as RefreshPlan;
+      if (!plan.items.length) {
+        setMessage(plan.message || 'This topic does not need a refresh yet.');
+        return;
+      }
+      const acceptResponse = await fetch('/api/memory/refresh-plan/accept', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: plan.items, topicId }),
+      });
+      const acceptData = await acceptResponse.json();
+      if (!acceptResponse.ok) throw new Error(acceptData.error || 'Unable to add the refresh to your calendar.');
+      setMessage(`${plan.items[0].topicName} was added to your calendar.`);
+      onCalendarChanged();
+      void loadAtlas(forecastDays).then(setAtlas);
+    } catch (scheduleError: any) {
+      setMessage(scheduleError.message || 'Unable to schedule this refresh.');
+    } finally {
+      setPlanLoading(false);
+    }
+  };
+
   const chartTopics = useMemo(() => {
     if (!atlas) return [];
-    const bySoonestCrossing = (left: MemoryTopicState, right: MemoryTopicState) => left.daysUntilDue - right.daysUntilDue;
-    const fading = atlas.topics.filter((topic) => topic.status === 'fading').sort(bySoonestCrossing);
-    const stableCrossingNow = atlas.topics
-      .filter((topic) => topic.status === 'stable' && topic.daysUntilDue > 0 && topic.daysUntilDue <= forecastDays)
-      .sort(bySoonestCrossing);
-    const dueClosestToThreshold = atlas.topics
-      .filter((topic) => topic.status === 'due')
-      .sort((left, right) => right.daysUntilDue - left.daysUntilDue);
-    return [...fading, ...stableCrossingNow, ...dueClosestToThreshold].slice(0, MAX_CURVES)
+    const urgency = (topic: MemoryTopicState) => topic.status === 'due' ? 0 : topic.status === 'fading' ? 1 : 2;
+    const candidates = atlas.topics.slice().sort((left, right) =>
+      urgency(left) - urgency(right) || left.daysUntilDue - right.daysUntilDue || left.predictedRetention - right.predictedRetention
+    );
+    const selected = candidates.slice(0, 1);
+    const curveDistance = (left: MemoryTopicState, right: MemoryTopicState) =>
+      [0, 7, 14].reduce((total, day) => total + Math.abs(
+        left.predictedRetention * Math.exp(-day / left.memoryStrengthDays)
+        - right.predictedRetention * Math.exp(-day / right.memoryStrengthDays)
+      ), 0);
+
+    // Keep the most urgent topic, then select the traces furthest from those already shown.
+    // Comparing the start, middle, and end of the forecast avoids lines that converge later.
+    while (selected.length < MAX_CURVES && selected.length < candidates.length) {
+      const next = candidates
+        .filter((topic) => !selected.some((item) => item.topicId === topic.topicId))
+        .sort((left, right) => {
+          const leftDistance = Math.min(...selected.map((item) => curveDistance(left, item)));
+          const rightDistance = Math.min(...selected.map((item) => curveDistance(right, item)));
+          return rightDistance - leftDistance || urgency(left) - urgency(right) || left.daysUntilDue - right.daysUntilDue;
+        })[0];
+      selected.push(next);
+    }
+    return selected
       .map((topic, index) => ({ topic, index: index + 1 }));
-  }, [atlas, forecastDays]);
+  }, [atlas]);
 
   const nowTopics = useMemo(() => {
     const source = nowAtlas || atlas;
@@ -206,6 +252,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
   if (!atlas) return null;
 
   const hasTopics = atlas.summary.studiedTopicCount > 0;
+  const topicsToSchedule = atlas.topics.filter((topic) => topic.daysUntilDue <= 7);
   const xTicks = compact ? [0, 4, 8, 12, 14] : [0, 2, 4, 6, 8, 10, 12, 14];
   const thresholdY = yOfRetention(0.5);
 
@@ -267,7 +314,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-5 border-b border-[#EDE7F3] dark:border-[#302B35] pb-4">
           <div>
             <h2 className="font-serif text-2xl sm:text-3xl italic text-[#17151A] dark:text-[#F5F3F7]">Retention Decay Forecast</h2>
-            <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-1 font-sans">See which studied concepts approach the revision threshold over the next 14 days.</p>
+            <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-1 font-sans">Three spaced retention traces show the most useful revision signals over the next 14 days.</p>
           </div>
           <label className="w-full max-w-xs text-[10px] uppercase tracking-[0.18em] font-bold text-[#17151A] dark:text-[#F5F3F7]">
             Forecast: <span className="text-[#6D28D9] dark:text-[#A78BFA]">{forecastDays === 0 ? 'Today' : `+${forecastDays} days`}</span>
@@ -336,8 +383,8 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
                   return <g key={`${topic.topicId}-${forecastDays}`} className="ma-fade cursor-pointer" tabIndex={0} role="button"
                     aria-label={`${pad(index)} ${topic.topicName}, ${formatPercent(topic.predictedRetention)} predicted retention`}
                     onMouseEnter={() => selectTopic(topic.topicId)} onFocus={() => selectTopic(topic.topicId)} onClick={() => selectTopic(topic.topicId)}
-                    style={{ opacity: dimmed ? 0.18 : active ? 1 : 0.5 }}>
-                    <path d={curvePath(topic)} className="ma-curve" fill="none" stroke={active ? '#8B5CF6' : '#887B95'} strokeWidth={active ? 3 : 1.5} style={{ opacity: 1 }} />
+                    style={{ opacity: dimmed ? 0.18 : active ? 1 : 0.9 }}>
+                    <path d={curvePath(topic)} className="ma-curve" fill="none" stroke={CURVE_COLORS[index - 1]} strokeWidth={active ? 4 : 2.5} style={{ opacity: 1 }} />
                     <path d={curvePath(topic)} fill="none" stroke="transparent" strokeWidth={16} className="cursor-pointer" />
                   </g>;
                 })}
@@ -346,9 +393,9 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
                   const dimmed = selectedInChart && engaged && !active;
                   return <g key={`marker-${topic.topicId}-${forecastDays}`} className="ma-rise cursor-pointer"
                     onMouseEnter={() => selectTopic(topic.topicId)} onFocus={() => selectTopic(topic.topicId)} onClick={() => selectTopic(topic.topicId)}
-                    style={{ opacity: dimmed ? 0.18 : active ? 1 : 0.7 }}>
-                    <circle cx={x} cy={y} r={9} fill={active ? '#8B5CF6' : '#FFFFFF'} stroke={active ? '#6D28D9' : '#887B95'} strokeWidth={1.5} />
-                    <text x={x} y={y + 2.5} textAnchor="middle" fontSize="7.5" fontWeight="700" fill={active ? '#FFFFFF' : '#1C1B1F'}>{pad(index)}</text>
+                    style={{ opacity: dimmed ? 0.18 : active ? 1 : 0.9 }}>
+                    <circle cx={x} cy={y} r={9} fill={CURVE_COLORS[index - 1]} stroke="#FFFFFF" strokeWidth={2} />
+                    <text x={x} y={y + 2.5} textAnchor="middle" fontSize="7.5" fontWeight="700" fill="#FFFFFF">{pad(index)}</text>
                   </g>;
                 })}
                 {crossings.map(({ topic, index, x, y }) => <g key={`cross-${topic.topicId}-${forecastDays}`} className="ma-fade">
@@ -390,11 +437,11 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
               <div className="flex items-baseline justify-between gap-4"><dt className="text-[#7B7484] dark:text-[#7A7480]">Actual focus</dt><dd className="text-right text-[#17151A] dark:text-[#F5F3F7]">{formatDuration(selectedTopic.totalActualStudySeconds)}</dd></div>
             </dl>
             <button
-              onClick={() => void buildPlan(selectedTopic.topicId)}
+              onClick={() => void scheduleTopicRefresh(selectedTopic.topicId)}
               disabled={planLoading}
               className="w-full mt-6 bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white rounded-lg px-4 py-2.5 text-xs font-medium tracking-wider transition-colors shadow-xs disabled:opacity-40 flex items-center justify-center gap-2"
             >
-              {planLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin text-white/80" />Building...</> : <>Schedule refresh <ArrowRight className="w-3.5 h-3.5 text-white/80" /></>}
+              {planLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin text-white/80" />Scheduling...</> : <>Schedule refresh <ArrowRight className="w-3.5 h-3.5 text-white/80" /></>}
             </button>
           </aside>}
         </div>
@@ -412,9 +459,9 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
       <section className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] shadow-2xs overflow-hidden">
         <div className="p-6 sm:p-8 flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-[#EDE7F3] dark:border-[#302B35]">
           <div>
-            <h2 className="font-serif text-2xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">Topics Due for Revision</h2>
+            <h2 className="font-serif text-2xl italic font-normal text-[#17151A] dark:text-[#F5F3F7]">Topics Ready to Schedule</h2>
           </div>
-          <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] max-w-sm font-sans">Topics are ordered by revision urgency. A refresh is always proposed before it reaches your calendar.</p>
+          <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] max-w-sm font-sans">Choose a topic and Schedule refresh will immediately place its conflict-free revision on your calendar.</p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-left text-xs">
@@ -430,7 +477,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
               </tr>
             </thead>
             <tbody className="divide-y divide-[#EDE7F3] dark:divide-[#302B35]">
-              {atlas.topics.map((topic, index) => (
+              {topicsToSchedule.map((topic, index) => (
                 <tr key={topic.topicId} className="hover:bg-[#FAF8FC] dark:hover:bg-[#1D1A21] transition-colors">
                   <td className="p-4 font-mono text-[#7B7484] dark:text-[#7A7480]">{String(index + 1).padStart(2, '0')}</td>
                   <td className="p-4">
@@ -443,11 +490,11 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
                   <td className="p-4 text-[#7B7484] dark:text-[#7A7480]">{topic.daysUntilDue <= 0 ? <span className="font-bold text-red-600 dark:text-red-400">Now</span> : formatDate(topic.dueAt)}</td>
                   <td className="p-4">
                     <button
-                      onClick={() => void buildPlan(topic.topicId)}
+                      onClick={() => void scheduleTopicRefresh(topic.topicId)}
                       disabled={planLoading}
                       className="rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#1D1A21] px-3 py-1.5 text-xs text-[#6D28D9] dark:text-[#A78BFA] hover:bg-[#FAF8FC] dark:hover:bg-[#251E30] transition-colors"
                     >
-                      Schedule
+                      Schedule refresh
                     </button>
                   </td>
                 </tr>

@@ -18,6 +18,9 @@ export type SchedulingAssistantIntent = {
   allMatches?: boolean;
   rangeEndDate?: string;
   shiftDays?: number;
+  blockPosition?: 'first' | 'next';
+  swapFirstTwo?: boolean;
+  durationMinutes?: number;
 };
 
 const WEEKDAYS: Record<string, number> = {
@@ -214,7 +217,7 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
   if (/\bwhat do i have\b|\bhow busy\b/.test(text)) {
     return { type: 'query_schedule', sourceDate: datePeriod.date || dateKey(now), period: datePeriod.period };
   }
-  if (/\bwhat(?:'s| is) my next session\b|\bnext session\b/.test(text)) {
+  if (/\bwhat(?:'s| is) my next session\b|\bnext session\b/.test(text) && !/\b(?:move|shift|reschedule|shorten|cancel|remove|delete)\b/.test(text)) {
     return { type: 'query_schedule' };
   }
   const whenTopic = /\bwhen (?:(?:do|am) i )?(?:study(?:ing)? )?(.+)$/.exec(text);
@@ -228,6 +231,30 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
       return { type: 'unavailable_period', sourceDate: dateKey(now), period: datePeriod.period || 'evening', excludedWeekdays };
     }
     return { type: 'unavailable_period', sourceDate: datePeriod.date || dateKey(now), period: datePeriod.period || 'evening' };
+  }
+
+  if (/\bswap my first two blocks?\b/.test(text)) {
+    return { type: 'swap_sessions', swapFirstTwo: true };
+  }
+
+  const positionalMove = /\b(?:move|shift|reschedule) my (first|next) block to (.+)$/.exec(text);
+  if (positionalMove) {
+    const target = targetClauseInfo(positionalMove[2], now);
+    if (!target.date || !target.time) return { type: 'unsupported' };
+    return {
+      type: 'move_topic', blockPosition: positionalMove[1] as 'first' | 'next', targetDate: target.date,
+      targetTime: target.time, targetTimeMode: 'exact',
+    };
+  }
+
+  const positionalShorten = /\bshorten my (first|next) session to (\d+)\s*minutes?\b/.exec(text);
+  if (positionalShorten) {
+    return { type: 'shorten_topic', blockPosition: positionalShorten[1] as 'first' | 'next', durationMinutes: Number(positionalShorten[2]) };
+  }
+
+  const positionalCancel = /\b(?:cancel|remove|delete) my (first|next) session\b/.exec(text);
+  if (positionalCancel) {
+    return { type: 'cancel_topic', blockPosition: positionalCancel[1] as 'first' | 'next' };
   }
 
   if (/\b(cancel|remove|delete|drop|clear)\b/.test(text)) {
