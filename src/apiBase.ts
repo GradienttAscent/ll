@@ -4,7 +4,7 @@
 // same-origin: `npm run dev` serves the API and the SPA from one Express process.
 // On Vercel the value must be set at BUILD time, because Vite inlines import.meta.env when
 // it bundles, and must point at the Render backend, e.g. https://lazylift-backend.onrender.com
-const configured = import.meta.env.VITE_API_BASE_URL ?? '';
+const configured = (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_API_BASE_URL : '') ?? '';
 
 export const API_BASE_URL = (() => {
   // If running in a browser on loopback (localhost / 127.0.0.1), always keep requests
