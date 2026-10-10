@@ -588,18 +588,23 @@ export interface WhatToStudyOccurrence {
   marks: number;
   questionText: string;
   pageNumber?: number;
+  exactSlide?: number;
+  lectureSource?: WhatToStudySourceMapping;
 }
 
 export interface WhatToStudySourceMapping {
   mapped: boolean;
   documentId?: string;
   documentTitle?: string;
+  documentFileName?: string;
   slideRange?: string;
   startSlide?: number;
   endSlide?: number;
+  exactSlide?: number;
   sectionTitle?: string;
   slideSnippet?: string;
   unmappedReason?: string;
+  sourceUrl?: string;
 }
 
 export interface WhatToStudyItem {
