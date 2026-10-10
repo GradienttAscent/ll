@@ -1,14 +1,121 @@
 import { inflateSync, inflateRawSync } from 'zlib';
 
-function decodePdfString(value: string): string {
-  return value
-    .replace(/\\([nrtbf()\\])/g, (_match, char) => ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\' }[char] || char))
-    .replace(/\\([0-7]{1,3})/g, (_match, octal) => String.fromCharCode(parseInt(octal, 8)));
+export function decodeAscii85(input: string | Buffer): Buffer {
+  const str = typeof input === 'string' ? input : input.toString('latin1');
+  const cleaned = str.replace(/<~|~>/g, '').replace(/\s+/g, '');
+  const out: number[] = [];
+  let tuple = 0;
+  let count = 0;
+  for (let i = 0; i < cleaned.length; i++) {
+    const c = cleaned.charCodeAt(i);
+    if (c === 122 && count === 0) {
+      // 'z' stands for 4 zero bytes
+      out.push(0, 0, 0, 0);
+      continue;
+    }
+    if (c < 33 || c > 117) continue;
+    tuple = tuple * 85 + (c - 33);
+    count++;
+    if (count === 5) {
+      out.push((tuple >> 24) & 0xff, (tuple >> 16) & 0xff, (tuple >> 8) & 0xff, tuple & 0xff);
+      tuple = 0;
+      count = 0;
+    }
+  }
+  if (count > 1) {
+    for (let i = count; i < 5; i++) {
+      tuple = tuple * 85 + 84;
+    }
+    for (let i = 0; i < count - 1; i++) {
+      out.push((tuple >> (24 - i * 8)) & 0xff);
+    }
+  }
+  return Buffer.from(out);
 }
 
-function decodePdfHexString(value: string): string {
+export function decodeAsciiHex(input: string | Buffer): Buffer {
+  const str = typeof input === 'string' ? input : input.toString('latin1');
+  const cleaned = str.replace(/[^0-9A-Fa-f]/g, '');
+  const padded = cleaned.length % 2 === 1 ? cleaned + '0' : cleaned;
+  return Buffer.from(padded, 'hex');
+}
+
+export function parseToUnicodeCMap(cmapText: string): Map<number, string> {
+  const map = new Map<number, string>();
+  // bfchar: <srcHex> <dstHex>
+  const bfcharBlocks = cmapText.matchAll(/\d+\s+beginbfchar([\s\S]*?)endbfchar/gi);
+  for (const block of bfcharBlocks) {
+    const lines = block[1].matchAll(/<([0-9A-Fa-f]+)>\s+<([0-9A-Fa-f]+)>/g);
+    for (const match of lines) {
+      const src = parseInt(match[1], 16);
+      const dstHex = match[2];
+      let str = '';
+      for (let i = 0; i < dstHex.length; i += 4) {
+        str += String.fromCharCode(parseInt(dstHex.slice(i, i + 4), 16));
+      }
+      map.set(src, str);
+    }
+  }
+
+  // bfrange: <startHex> <endHex> <dstStartHex> or <startHex> <endHex> [ <dstHex> ... ]
+  const bfrangeBlocks = cmapText.matchAll(/\d+\s+beginbfrange([\s\S]*?)endbfrange/gi);
+  for (const block of bfrangeBlocks) {
+    const lines = block[1].matchAll(/<([0-9A-Fa-f]+)>\s+<([0-9A-Fa-f]+)>\s+(?:<([0-9A-Fa-f]+)>|\[([\s\S]*?)\])/g);
+    for (const match of lines) {
+      const start = parseInt(match[1], 16);
+      const end = parseInt(match[2], 16);
+      if (match[3]) {
+        const dstStart = parseInt(match[3], 16);
+        for (let code = start; code <= end; code++) {
+          map.set(code, String.fromCharCode(dstStart + (code - start)));
+        }
+      } else if (match[4]) {
+        const hexes = [...match[4].matchAll(/<([0-9A-Fa-f]+)>/g)].map((m) => m[1]);
+        hexes.forEach((hex, idx) => {
+          let str = '';
+          for (let i = 0; i < hex.length; i += 4) {
+            str += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+          }
+          map.set(start + idx, str);
+        });
+      }
+    }
+  }
+  return map;
+}
+
+function decodePdfString(value: string, cmap?: Map<number, string>): string {
+  const decoded = value
+    .replace(/\\([nrtbf()\\])/g, (_match, char) => ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\' }[char] || char))
+    .replace(/\\([0-7]{1,3})/g, (_match, octal) => String.fromCharCode(parseInt(octal, 8)));
+
+  if (!cmap || cmap.size === 0) return decoded;
+  let result = '';
+  for (let i = 0; i < decoded.length; i++) {
+    const code = decoded.charCodeAt(i);
+    result += cmap.has(code) ? cmap.get(code)! : decoded[i];
+  }
+  return result;
+}
+
+function decodePdfHexString(value: string, cmap?: Map<number, string>): string {
   const cleaned = value.replace(/[^0-9A-Fa-f]/g, '');
   if (!cleaned) return '';
+
+  if (cmap && cmap.size > 0) {
+    let result = '';
+    const step = cleaned.length % 4 === 0 && cleaned.length >= 4 ? 4 : 2;
+    for (let i = 0; i < cleaned.length; i += step) {
+      const code = parseInt(cleaned.slice(i, i + step), 16);
+      if (cmap.has(code)) {
+        result += cmap.get(code)!;
+      } else if (code >= 32 && code <= 126) {
+        result += String.fromCharCode(code);
+      }
+    }
+    return result;
+  }
+
   const padded = cleaned.length % 2 === 1 ? cleaned + '0' : cleaned;
   const bytes: number[] = [];
   for (let i = 0; i < padded.length; i += 2) {
@@ -34,25 +141,60 @@ function decodePdfHexString(value: string): string {
 }
 
 /** Parses elements inside a TJ array: literal strings (...) and hex strings <...>. */
-function parseTjArray(source: string): string {
+function parseTjArray(source: string, cmap?: Map<number, string>): string {
   const tokenRegex = /\((?:\\.|[^\\)])*\)|<[0-9A-Fa-f\s]*>/g;
   const parts: string[] = [];
   for (const match of source.matchAll(tokenRegex)) {
     const token = match[0];
     if (token.startsWith('(')) {
-      parts.push(decodePdfString(token.slice(1, -1)));
+      parts.push(decodePdfString(token.slice(1, -1), cmap));
     } else if (token.startsWith('<')) {
-      parts.push(decodePdfHexString(token.slice(1, -1)));
+      parts.push(decodePdfHexString(token.slice(1, -1), cmap));
     }
   }
   return parts.join('');
 }
 
-// Text-positioning operators that begin a new line inside a PDF text object.
-const PDF_LINE_BREAK = /\b(?:Td|TD|Tm|T\*|ET)\b/g;
+function decompressPdfStream(dictHeader: string, rawStream: string): string | null {
+  let streamBuf = Buffer.from(rawStream, 'latin1');
+  const isAscii85 = /ASCII85Decode/i.test(dictHeader);
+  const isAsciiHex = /ASCIIHexDecode/i.test(dictHeader);
+  const isFlate = /FlateDecode/i.test(dictHeader);
+
+  if (isAscii85) {
+    streamBuf = decodeAscii85(streamBuf);
+  } else if (isAsciiHex) {
+    streamBuf = decodeAsciiHex(streamBuf);
+  }
+
+  if (isFlate) {
+    try {
+      return inflateSync(streamBuf).toString('latin1');
+    } catch {
+      try {
+        return inflateRawSync(streamBuf).toString('latin1');
+      } catch {
+        const trimmed = Buffer.from(rawStream.replace(/^\r?\n/, '').replace(/\r?\n$/, ''), 'latin1');
+        try {
+          return inflateSync(trimmed).toString('latin1');
+        } catch {
+          try {
+            return inflateRawSync(trimmed).toString('latin1');
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+  }
+  return streamBuf.toString('latin1');
+}
 
 /** Groups text operators into physical lines so question-paper structure is preserved. */
-export function pdfLineSegments(source: string): string[] {
+export function pdfLineSegments(
+  source: string,
+  fontMap?: Map<string, Map<number, string>> | Map<number, string>
+): string[] {
   // Normalize lexical newlines outside of literal strings (...) into spaces so raw PostScript/PDF
   // line wrapping does not fragment text runs into artificial single-token lines.
   let cleanSource = '';
@@ -69,14 +211,26 @@ export function pdfLineSegments(source: string): string[] {
     }
   }
 
-  // Replace text-positioning operators with line breaks, preserving same-line text runs:
-  // - Tm (a b c d e f Tm): breaks a line if vertical position f shifts beyond line threshold
-  // - Td / TD (tx ty Td): breaks a line if vertical displacement ty is non-zero
-  // - Standalone ET / Td / TD / Tm: breaks a line unconditionally
+  let activeCMap: Map<number, string> | undefined =
+    fontMap instanceof Map && !(fontMap.keys().next().value && typeof fontMap.keys().next().value === 'string')
+      ? (fontMap as Map<number, string>)
+      : undefined;
+
+  const fontResourceMap = fontMap instanceof Map && typeof fontMap.keys().next().value === 'string'
+    ? (fontMap as Map<string, Map<number, string>>)
+    : undefined;
+
+  // Track fonts and positioning operators
   let lastY: number | null = null;
   const marked = cleanSource.replace(
-    /(?:(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+Tm)|(?:(-?[\d.]+)\s+(-?[\d.]+)\s+(?:Td|TD))|\bET\b|\b(?:Td|TD|Tm)\b/g,
-    (match, _a, _b, _c, _d, _e, f, _tx, ty) => {
+    /\/([A-Za-z0-9]+)\s+[\d.]+\s+Tf|(?:(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+Tm)|(?:(-?[\d.]+)\s+(-?[\d.]+)\s+(?:Td|TD))|\bET\b|\b(?:Td|TD|Tm)\b/g,
+    (match, fontName, _a, _b, _c, _d, _e, f, _tx, ty) => {
+      if (fontName) {
+        if (fontResourceMap && fontResourceMap.has(fontName)) {
+          activeCMap = fontResourceMap.get(fontName);
+        }
+        return '';
+      }
       if (f !== undefined) {
         const y = parseFloat(f);
         if (lastY === null || Math.abs(lastY - y) > 6) {
@@ -92,17 +246,13 @@ export function pdfLineSegments(source: string): string[] {
           lastY = null;
           return '\n';
         }
-        return ' ';
+        return '';
       }
       lastY = null;
       return '\n';
     }
   );
 
-  // Match all PDF text extraction operators:
-  // - Literal string: `(...) Tj`
-  // - Hex string: `<...> Tj`
-  // - TJ array: `[...] TJ`
   const combined = /\((?:\\.|[^\\)])*\)\s*Tj|<[0-9A-Fa-f\s]*>\s*Tj|\[((?:\\.|[^\\\]])*)\]\s*TJ/g;
   const runs: Array<{ text: string; index: number }> = [];
 
@@ -110,13 +260,13 @@ export function pdfLineSegments(source: string): string[] {
     const rawMatch = match[0];
     let text = '';
     if (rawMatch.startsWith('[')) {
-      text = parseTjArray(match[1] ?? '');
+      text = parseTjArray(match[1] ?? '', activeCMap);
     } else if (rawMatch.startsWith('(')) {
       const strContent = rawMatch.replace(/\s*Tj$/, '').slice(1, -1);
-      text = decodePdfString(strContent);
+      text = decodePdfString(strContent, activeCMap);
     } else if (rawMatch.startsWith('<')) {
       const hexContent = rawMatch.replace(/\s*Tj$/, '').slice(1, -1);
-      text = decodePdfHexString(hexContent);
+      text = decodePdfHexString(hexContent, activeCMap);
     }
     if (text) {
       runs.push({ text, index: match.index ?? 0 });
@@ -141,13 +291,6 @@ export function pdfLineSegments(source: string): string[] {
     .filter(Boolean);
 }
 
-/**
- * Heuristics that flag extractions which lost their layout/structure. The worst offender
- * seen in production is "word-per-line" text: a scanned/vector PDF whose embedded runs
- * produce one token per physical line. Such text has no sentence structure to anchor the
- * question-number splitter and silently fabricates phantom questions, so callers should
- * force the AI OCR path instead of parsing it directly.
- */
 export function extractionIsLowQuality(text: string): boolean {
   const normalized = String(text || '').replace(/\r/g, '').trim();
   if (!normalized) return true;
@@ -165,8 +308,6 @@ export function extractionIsLowQuality(text: string): boolean {
   }
 
   const lines = normalized.split('\n').filter((line) => line.trim().length > 0);
-  // Documents with few physical lines are either well-formed single-line papers (pasted
-  // text) or short fragments; neither should be forced through OCR blindly.
   if (lines.length < 10) return false;
   const tokens = normalized.split(/\s+/).filter(Boolean);
   const singleTokenLines = lines.filter((line) => !/\s/.test(line.trim())).length;
@@ -174,15 +315,11 @@ export function extractionIsLowQuality(text: string): boolean {
   const singleTokenRatio = singleTokenLines / lines.length;
   const sentenceStops = (normalized.match(/[.!?](?=\s|["')\]]|$)/g) || []).length;
 
-  // If a document has rich text structure (e.g. multiple full sentence terminators and substantial length),
-  // it is not low-quality character soup even if vertical layout has narrow columns or short lines.
   if (sentenceStops >= 5 && normalized.length > 500) {
     return false;
   }
 
-  // Word-per-line breakdown: the overwhelming majority of lines are a lone token.
   if (avgTokensPerLine < 2.5 && singleTokenRatio > 0.5) return true;
-  // A long run of text with zero sentence terminators is unreadable character soup.
   if (sentenceStops === 0 && normalized.length > 1200) return true;
   return false;
 }
@@ -198,41 +335,127 @@ export interface PdfPage {
  */
 export function extractPdfPages(payload: Buffer): PdfPage[] {
   const raw = payload.toString('latin1');
+
+  // Match all PDF indirect objects
+  const objRegex = /(\d+)\s+(\d+)\s+obj([\s\S]*?)endobj/g;
+  const objects = new Map<number, string>();
+  for (const match of raw.matchAll(objRegex)) {
+    const id = parseInt(match[1], 10);
+    objects.set(id, match[3]);
+  }
+
+  // Find all ToUnicode CMaps
+  const cmaps = new Map<number, Map<number, string>>();
+  const allCMapEntries = new Map<number, string>();
+
+  const scanForCMap = (id: number, body: string) => {
+    if (/begincmap/i.test(body)) {
+      const cmap = parseToUnicodeCMap(body);
+      cmaps.set(id, cmap);
+      for (const [k, v] of cmap.entries()) allCMapEntries.set(k, v);
+    } else {
+      const sm = /stream\r?\n([\s\S]*?)endstream/.exec(body);
+      if (sm) {
+        const header = body.slice(0, sm.index);
+        const dec = decompressPdfStream(header, sm[1]);
+        if (dec && /begincmap/i.test(dec)) {
+          const cmap = parseToUnicodeCMap(dec);
+          cmaps.set(id, cmap);
+          for (const [k, v] of cmap.entries()) allCMapEntries.set(k, v);
+        }
+      }
+    }
+  };
+
+  for (const [id, body] of objects.entries()) {
+    scanForCMap(id, body);
+  }
+
+  // Map font objects to their CMap
+  const fontToCMap = new Map<number, Map<number, string>>();
+  for (const [id, body] of objects.entries()) {
+    const toUnicodeMatch = /\/ToUnicode\s+(\d+)\s+\d+\s+R/i.exec(body);
+    if (toUnicodeMatch) {
+      const cmapId = parseInt(toUnicodeMatch[1], 10);
+      const cmap = cmaps.get(cmapId);
+      if (cmap) fontToCMap.set(id, cmap);
+    }
+  }
+
+  // Attempt resolving pages via PDF page tree (/Type /Page)
+  const resolvedPages: Array<{ id: number; contents: number[]; fontMap: Map<string, Map<number, string>> }> = [];
+  for (const [id, body] of objects.entries()) {
+    if (/\/Type\s*\/Page\b/i.test(body)) {
+      const contentsMatch = /\/Contents\s+(?:(\d+)\s+\d+\s+R|\[([\s\S]*?)\])/i.exec(body);
+      const contents: number[] = [];
+      if (contentsMatch) {
+        if (contentsMatch[1]) {
+          contents.push(parseInt(contentsMatch[1], 10));
+        } else if (contentsMatch[2]) {
+          for (const ref of contentsMatch[2].matchAll(/(\d+)\s+\d+\s+R/g)) {
+            contents.push(parseInt(ref[1], 10));
+          }
+        }
+      }
+      const fontMap = new Map<string, Map<number, string>>();
+      const fontResMatch = /\/Font\s*<<([\s\S]*?)>>/i.exec(body);
+      if (fontResMatch) {
+        for (const f of fontResMatch[1].matchAll(/\/([A-Za-z0-9]+)\s+(\d+)\s+\d+\s+R/g)) {
+          const fontId = parseInt(f[2], 10);
+          const cmap = fontToCMap.get(fontId);
+          if (cmap) fontMap.set(f[1], cmap);
+        }
+      }
+      resolvedPages.push({ id, contents, fontMap });
+    }
+  }
+
+  // If page objects were successfully identified and contain content streams:
+  if (resolvedPages.length > 0) {
+    const resultPages: PdfPage[] = [];
+    let pageNumber = 1;
+
+    for (const pageObj of resolvedPages) {
+      const streamTexts: string[] = [];
+      for (const contentId of pageObj.contents) {
+        const body = objects.get(contentId);
+        if (!body) continue;
+        const sm = /stream\r?\n([\s\S]*?)endstream/.exec(body);
+        if (sm) {
+          const header = body.slice(0, sm.index);
+          const decomp = decompressPdfStream(header, sm[1]);
+          if (decomp) {
+            const fontArg = pageObj.fontMap.size > 0 ? pageObj.fontMap : allCMapEntries;
+            const lines = pdfLineSegments(decomp, fontArg);
+            const joined = lines.join('\n').trim();
+            if (joined) streamTexts.push(joined);
+          }
+        }
+      }
+      const pageText = streamTexts.join('\n').trim();
+      if (pageText) {
+        resultPages.push({ pageNumber: pageNumber++, text: pageText });
+      }
+    }
+
+    if (resultPages.length > 0) {
+      return resultPages;
+    }
+  }
+
+  // Fallback: Scan all streams sequentially
   const streamPattern = /([^]*?)stream\r?\n([^]*?)endstream/g;
   const decodedStreams: string[] = [];
 
   for (const match of raw.matchAll(streamPattern)) {
     const dictHeader = match[1].slice(-2048);
-    const isFlate = /FlateDecode/i.test(dictHeader);
-    const rawStream = match[2];
-
-    if (isFlate) {
-      let decompressed: string | null = null;
-      const streamBuf = Buffer.from(rawStream, 'latin1');
-      try {
-        decompressed = inflateSync(streamBuf).toString('latin1');
-      } catch {
-        try {
-          decompressed = inflateRawSync(streamBuf).toString('latin1');
-        } catch {
-          const trimmed = Buffer.from(rawStream.replace(/^\r?\n/, '').replace(/\r?\n$/, ''), 'latin1');
-          try {
-            decompressed = inflateSync(trimmed).toString('latin1');
-          } catch {
-            try {
-              decompressed = inflateRawSync(trimmed).toString('latin1');
-            } catch {
-              /* ignore uncompressed or unsupported filter */
-            }
-          }
-        }
-      }
-      if (decompressed) {
-        decodedStreams.push(decompressed);
-      }
-    } else {
-      // Uncompressed stream
-      decodedStreams.push(rawStream);
+    // Skip image and binary font streams
+    if (/\/Subtype\s*\/Image\b/i.test(dictHeader) || /\/Type\s*\/FontDescriptor\b/i.test(dictHeader)) {
+      continue;
+    }
+    const decomp = decompressPdfStream(dictHeader, match[2]);
+    if (decomp) {
+      decodedStreams.push(decomp);
     }
   }
 
@@ -242,7 +465,7 @@ export function extractPdfPages(payload: Buffer): PdfPage[] {
 
   const pageCandidates: string[] = [];
   for (const stream of decodedStreams) {
-    const lines = pdfLineSegments(stream);
+    const lines = pdfLineSegments(stream, allCMapEntries);
     const pageText = lines.join('\n').trim();
     if (pageText) {
       pageCandidates.push(pageText);
@@ -250,14 +473,13 @@ export function extractPdfPages(payload: Buffer): PdfPage[] {
   }
 
   if (pageCandidates.length === 0) {
-    const allLines = decodedStreams.flatMap(pdfLineSegments);
+    const allLines = decodedStreams.flatMap((s) => pdfLineSegments(s, allCMapEntries));
     const fullText = allLines.join('\n').trim();
     if (fullText) pageCandidates.push(fullText);
   }
 
-  // If streams produced no usable text, also check raw content for uncompressed text blocks
   if (pageCandidates.length === 0 || pageCandidates.every((c) => c.length < 20)) {
-    const rawLines = pdfLineSegments(raw);
+    const rawLines = pdfLineSegments(raw, allCMapEntries);
     const rawText = rawLines.join('\n').trim();
     if (rawText.length >= 20) {
       pageCandidates.length = 0;
