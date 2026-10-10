@@ -699,7 +699,7 @@ export function classifyAcademicDocument(options: {
   // 1. Strict Lecture Slides / Presentation detection
   const isPptExt = /\.(pptx?|key|odp)$/i.test(title);
   const isPptMime = /presentation|powerpoint/i.test(mimeType);
-  const titleHasSlideWord = /\b(?:ppt|pptx|slides?|lecture|deck|presentation)\b/i.test(normalizedTitle);
+  const titleHasSlideWord = /\b(?:ppt|pptx|slides?|lecture|deck|presentation|notes?)\b/i.test(normalizedTitle);
   const titleIsLectureTopic = /^(?:trees?|unit\s*\d|chapter\s*\d|module\s*\d|lec(?:ture)?\s*\d)/i.test(normalizedTitle);
   const hasSlideIndicators = /\b(?:slide\s+\d+|presentation\s+title|bullet\s+points?)\b/i.test(lowerContent);
 
@@ -707,10 +707,21 @@ export function classifyAcademicDocument(options: {
     return 'Lecture Slides';
   }
 
-  // 2. Strong Past Paper / Exam Paper detection
-  const titleHasExamWord = /\b(?:exam|examination|end\s*sem|mid\s*sem|midterm|question\s*paper|pyq|quiz|test|supplementary|makeup)\b/i.test(normalizedTitle);
+  // Respect explicit user hint when content does not have strong contradictory markers
   const contentHasExamMarkers =
     /\b(?:maximum\s*marks|max\s*marks|time\s*allowed|time\s*:\s*\d+\s*hours?|end\s*semester\s*examination|mid\s*semester\s*examination|makeup\s*examination|answer\s+(?:all|any)\s+questions?|roll\s*no[:.]|q\s*\.?\s*\d+\s*[\(\.]|part\s+[a-c]\s*\(\s*\d+\s*marks|course\s+instructor\b)/i.test(lowerContent);
+
+  if (/lecture|slide/i.test(hintDocType) && !contentHasExamMarkers) {
+    return 'Lecture Slides';
+  }
+  if (/syllabus/i.test(hintDocType) && !contentHasExamMarkers) {
+    return 'Syllabus';
+  }
+
+  // 2. Strong Past Paper / Exam Paper detection
+  // Distinguish 'software testing' (subject name) from actual examination tests
+  const isSubjectTesting = /\bsoftware\s+testing\b/i.test(normalizedTitle) && !contentHasExamMarkers;
+  const titleHasExamWord = !isSubjectTesting && /\b(?:exam|examination|end\s*sem|mid\s*sem|midterm|question\s*paper|pyq|quiz|test|supplementary|makeup)\b/i.test(normalizedTitle);
 
   if (titleHasExamWord || contentHasExamMarkers) {
     return 'Past Paper';
@@ -721,10 +732,7 @@ export function classifyAcademicDocument(options: {
   const contentHasCurriculumMarkers =
     /\b(?:scheme\s+of\s+(?:instruction|studies|examination)|b\.?tech\s*-\s*[a-z]+|course\s+code\b|prerequisites?\b|course\s+outcomes?\b|evaluation\s+scheme\b|text\s*books?\s*\/\s*references?|curriculum\s+version|senate\s+\d|contact\s+hours\b|credit\s+structure\b)/i.test(lowerContent);
 
-  if (titleHasSyllabusWord) {
-    return 'Syllabus';
-  }
-  if (contentHasCurriculumMarkers) {
+  if (titleHasSyllabusWord || contentHasCurriculumMarkers) {
     return 'Syllabus';
   }
 
@@ -939,7 +947,11 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
   // academic question verbs (e.g. in informal review questions or unnumbered past papers).
   if (drafts.length === 0) {
     let unnumberedIndex = 1;
+    let unnumberedCurrentPage = 1;
     for (const rawLine of lines) {
+      if (rawLine.includes('\f')) {
+        unnumberedCurrentPage += (rawLine.match(/\f/g) || []).length;
+      }
       const line = rawLine.replace(/\f/g, '').trim();
       if (!line || BOILERPLATE.test(line) || SECTION_HEADER.test(line) || isDocumentHeading(line) || isBibliographyOrMetadata(line)) continue;
       const stripped = sanitizeAcademicText(line);
@@ -954,7 +966,7 @@ export function extractNumberedQuestionRecords(content: string): QuestionRecord[
           lines: [text],
           marks,
           questionNumber: `Q${unnumberedIndex++}`,
-          pageNumber: currentPage,
+          pageNumber: unnumberedCurrentPage,
         });
       }
     }
@@ -4004,6 +4016,7 @@ export function markCommitmentMissed(userId: string, blockId?: string) {
 // ============================================================================
 
 export interface WhatToStudyOccurrence {
+  questionId?: string;
   paperTitle: string;
   examYear: string;
   questionNumber: string;
@@ -4012,6 +4025,8 @@ export interface WhatToStudyOccurrence {
   marks: number;
   questionText: string;
   pageNumber?: number;
+  exactSlide?: number;
+  lectureSource?: WhatToStudySourceMapping;
 }
 
 export interface WhatToStudySourceMapping {
@@ -4022,9 +4037,11 @@ export interface WhatToStudySourceMapping {
   slideRange?: string;
   startSlide?: number;
   endSlide?: number;
+  exactSlide?: number;
   sectionTitle?: string;
   slideSnippet?: string;
   unmappedReason?: string;
+  sourceUrl?: string;
 }
 
 export interface WhatToStudyItem {
@@ -4216,7 +4233,7 @@ export function stopWebsiteFocusSession(userId: string): boolean {
   return (result.changes || 0) > 0;
 }
 
-interface LectureSlideChunk {
+export interface LectureSlideChunk {
   slideNumber: number;
   title: string;
   text: string;
@@ -4473,6 +4490,9 @@ export function getDeterministicWhatToStudyRanking(userId: string): WhatToStudyI
       }
 
       if (scoredSlides.length > 0) {
+        const sortedByScore = [...scoredSlides].sort((a, b) => b.score - a.score || a.slide.slideNumber - b.slide.slideNumber);
+        const topSlide = sortedByScore[0].slide;
+
         const bestSlides = scoredSlides.map((s) => s.slide);
         const slideNums = bestSlides.map((s) => s.slideNumber).sort((a, b) => a - b);
         const minSlide = slideNums[0];
@@ -4487,10 +4507,49 @@ export function getDeterministicWhatToStudyRanking(userId: string): WhatToStudyI
           slideRange,
           startSlide: minSlide,
           endSlide: maxSlide,
-          sectionTitle: bestSlides[0].title || cluster.canonicalTitle,
-          slideSnippet: bestSlides[0].text.slice(0, 240),
+          exactSlide: topSlide.slideNumber,
+          sectionTitle: topSlide.title || cluster.canonicalTitle,
+          slideSnippet: topSlide.text.slice(0, 240),
         };
         break; // Stop at first confident lecture source match
+      }
+    }
+
+    // Exact slide matching for individual occurrences in this cluster
+    if (lectureSource.mapped && lectureSource.documentId) {
+      const docLectures = parsedLectures.find((p) => p.doc.id === lectureSource.documentId);
+      if (docLectures && docLectures.slides.length > 0) {
+        for (const occ of cluster.occurrences) {
+          const occTokens = clusterTokens(occ.questionText);
+          let bestOccSlide: LectureSlideChunk | null = null;
+          let bestOccScore = 0;
+          for (const slide of docLectures.slides) {
+            const slideTokens = clusterTokens(slide.title + ' ' + slide.text);
+            const matches = occTokens.filter((t) => slideTokens.includes(t)).length;
+            if (matches > bestOccScore && matches >= 2) {
+              bestOccScore = matches;
+              bestOccSlide = slide;
+            }
+          }
+          if (bestOccSlide) {
+            occ.exactSlide = bestOccSlide.slideNumber;
+            occ.lectureSource = {
+              mapped: true,
+              documentId: lectureSource.documentId,
+              documentTitle: lectureSource.documentTitle,
+              documentFileName: lectureSource.documentFileName,
+              slideRange: `Slide ${bestOccSlide.slideNumber}`,
+              startSlide: bestOccSlide.slideNumber,
+              endSlide: bestOccSlide.slideNumber,
+              exactSlide: bestOccSlide.slideNumber,
+              sectionTitle: bestOccSlide.title || lectureSource.sectionTitle,
+              slideSnippet: bestOccSlide.text.slice(0, 240),
+            };
+          } else {
+            occ.exactSlide = lectureSource.exactSlide || lectureSource.startSlide;
+            occ.lectureSource = { ...lectureSource };
+          }
+        }
       }
     }
 
