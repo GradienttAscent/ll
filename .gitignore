@@ -7,6 +7,7 @@ coverage/
 .env*
 !.env.example
 data/*.db*
+data/slides/
 _lzinspect.mts
    .e2e-data/
         CSE312_FINAL_REPORT_DATA.md
