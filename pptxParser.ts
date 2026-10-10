@@ -12,6 +12,9 @@ export interface PptxSlide {
  */
 export function readZipEntries(buffer: Buffer): Map<string, Buffer> {
   const entries = new Map<string, Buffer>();
+  if (!buffer || buffer.length < 22) {
+    return entries;
+  }
 
   // Find End of Central Directory record (search backwards from end of file for PK\x05\x06)
   let eocdOffset = -1;
@@ -19,7 +22,7 @@ export function readZipEntries(buffer: Buffer): Map<string, Buffer> {
   const startSearch = buffer.length - 22;
 
   for (let i = startSearch; i >= buffer.length - maxSearch; i--) {
-    if (buffer.readUInt32LE(i) === 0x06054b50) {
+    if (i >= 0 && i + 4 <= buffer.length && buffer.readUInt32LE(i) === 0x06054b50) {
       eocdOffset = i;
       break;
     }
@@ -144,7 +147,35 @@ function extractSlideXmlText(xml: string): { title: string; text: string } {
     return { title: combined.slice(0, 60), text: combined };
   }
 
-  const title = paragraphs[0];
+  // Try to find explicit title placeholder shape
+  let slideTitle = '';
+  const spRegex = /<p:sp\b[^>]*>([\s\S]*?)<\/p:sp>/gi;
+  let spMatch: RegExpExecArray | null;
+  while ((spMatch = spRegex.exec(xml)) !== null) {
+    const spContent = spMatch[1];
+    if (/<p:ph\b[^>]*type="(?:title|ctrTitle)"/i.test(spContent)) {
+      const titleRuns: string[] = [];
+      const tRegex = /<a:t\b[^>]*>([^<]*)<\/a:t>/gi;
+      let tMatch: RegExpExecArray | null;
+      while ((tMatch = tRegex.exec(spContent)) !== null) {
+        titleRuns.push(
+          tMatch[1]
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&apos;/g, "'")
+        );
+      }
+      const t = titleRuns.join('').trim();
+      if (t) {
+        slideTitle = t;
+        break;
+      }
+    }
+  }
+
+  const title = slideTitle || paragraphs[0] || '';
   const text = paragraphs.join('\n');
   return { title, text };
 }
