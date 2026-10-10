@@ -11,6 +11,8 @@ import { createApp } from '../server';
 export interface ApiResponse {
   status: number;
   json: any;
+  text?: string;
+  headers?: Headers;
 }
 
 export class Api {
@@ -33,13 +35,14 @@ export class Api {
       headers,
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
+    const rawText = await response.text();
     let json: any = null;
     try {
-      json = await response.json();
+      json = JSON.parse(rawText);
     } catch {
       // non-JSON response
     }
-    return { status: response.status, json };
+    return { status: response.status, json, text: rawText, headers: response.headers };
   }
 
   async register(email: string, password: string, displayName = ''): Promise<{ token: string; user: any }> {
