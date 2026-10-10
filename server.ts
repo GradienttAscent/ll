@@ -13,6 +13,7 @@ import * as auth from './auth';
 import * as services from './services';
 import * as fallbackAi from './fallbackAi';
 import { parseSchedulingAssistantIntent } from './schedulingAssistant';
+import { renderSlideImage, getOrConvertPptxToPdf } from './slideRenderer';
 import {
   HttpError,
   sendError,
@@ -132,12 +133,83 @@ app.get('/api/focus-mode/active', (req, res) => {
 // Everything exposed below here requires an authenticated session.
 app.use('/api', requireAuth);
 
+function renderAuthErrorHtml(title: string, message: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} · LazyLift</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f0d13;
+      color: #f5f3f7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: #17151a;
+      border: 1px solid #302b35;
+      border-radius: 16px;
+      padding: 44px 32px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .icon { font-size: 44px; margin-bottom: 20px; }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 12px; color: #f5f3f7; }
+    p { color: #a9a3ae; font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
+    .btn {
+      display: inline-block;
+      background: #7c3aed;
+      color: #fff;
+      font-weight: 600;
+      font-size: 14px;
+      padding: 12px 28px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #6d28d9; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🔒</div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+    <a href="/" class="btn">Log In to LazyLift</a>
+  </div>
+</body>
+</html>`;
+}
+
 function requireAuth(req: express.Request, _res: express.Response, next: express.NextFunction) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : null;
-  if (!token) return sendError(_res, 401, 'Authentication required.');
+  const queryToken = typeof req.query.token === 'string' ? req.query.token.trim() : null;
+  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : queryToken;
+  const isViewRoute = req.path.includes('/view') || req.path.includes('/viewer');
+  if (!token) {
+    if (isViewRoute) {
+      _res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return _res.status(401).send(renderAuthErrorHtml('Authentication Required', 'You must be logged into LazyLift to view this presentation.'));
+    }
+    return sendError(_res, 401, 'Authentication required.');
+  }
   const user = auth.getSessionUser(token);
-  if (!user) return sendError(_res, 401, 'Invalid or expired session.');
+  if (!user) {
+    if (isViewRoute) {
+      _res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return _res.status(401).send(renderAuthErrorHtml('Session Expired', 'Your session has expired or is invalid. Please log back into LazyLift.'));
+    }
+    return sendError(_res, 401, 'Invalid or expired session.');
+  }
   (req as AuthenticatedRequest).user = user;
   next();
 }
@@ -1394,7 +1466,22 @@ CRITICAL GROUNDING CONSTRAINTS:
             const minSlide = Math.min(start, end);
             const maxSlide = Math.max(start, end);
             const slideRange = minSlide === maxSlide ? `Slide ${minSlide}` : `Slides ${minSlide}–${maxSlide}`;
-            const targetSlide = matchedDocInfo.slides.find((s) => s.slideNumber === minSlide);
+            
+            // Score candidate slides within range to find the top matching slide
+            const candidateSlides = matchedDocInfo.slides.filter((s) => s.slideNumber >= minSlide && s.slideNumber <= maxSlide);
+            const conceptTokens = (c.canonicalTitle || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter((t: string) => t.length > 2);
+            let targetSlide = matchedDocInfo.slides.find((s) => s.slideNumber === minSlide);
+            let topScore = -1;
+            for (const slide of (candidateSlides.length > 0 ? candidateSlides : matchedDocInfo.slides)) {
+              const slideTokens = (slide.title + ' ' + slide.text).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/);
+              const score = conceptTokens.filter((t: string) => slideTokens.includes(t)).length;
+              if (score > topScore) {
+                topScore = score;
+                targetSlide = slide;
+              }
+            }
+            const exactSlide = targetSlide ? targetSlide.slideNumber : minSlide;
+
             lectureSource = {
               mapped: true,
               documentId: matchedDocInfo.doc.id,
@@ -1403,6 +1490,7 @@ CRITICAL GROUNDING CONSTRAINTS:
               slideRange,
               startSlide: minSlide,
               endSlide: maxSlide,
+              exactSlide,
               sectionTitle: typeof c.sectionTitle === 'string' && c.sectionTitle.trim() ? c.sectionTitle.trim() : (targetSlide?.title || c.canonicalTitle),
               slideSnippet: targetSlide?.text.slice(0, 240),
             };
@@ -1416,6 +1504,44 @@ CRITICAL GROUNDING CONSTRAINTS:
         const matchedDet = detRankings.find((d) => d.occurrences.some((o) => validQIds.includes(o.questionId || '')));
         if (matchedDet && matchedDet.lectureSource.mapped) {
           lectureSource = matchedDet.lectureSource;
+        }
+      }
+
+      // Carry exact slide mapping to each question occurrence
+      if (lectureSource.mapped && lectureSource.documentId) {
+        const matchedDocInfo = parsedLectures.find((p) => p.doc.id === lectureSource.documentId);
+        if (matchedDocInfo && matchedDocInfo.slides.length > 0) {
+          for (const occ of occurrences) {
+            const occTokens = (occ.questionText || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter((t: string) => t.length > 2);
+            let bestOccSlide: services.LectureSlideChunk | null = null;
+            let bestOccScore = 0;
+            for (const slide of matchedDocInfo.slides) {
+              const slideTokens = (slide.title + ' ' + slide.text).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/);
+              const matches = occTokens.filter((t: string) => slideTokens.includes(t)).length;
+              if (matches > bestOccScore && matches >= 2) {
+                bestOccScore = matches;
+                bestOccSlide = slide;
+              }
+            }
+            if (bestOccSlide) {
+              occ.exactSlide = bestOccSlide.slideNumber;
+              occ.lectureSource = {
+                mapped: true,
+                documentId: lectureSource.documentId,
+                documentTitle: lectureSource.documentTitle,
+                documentFileName: lectureSource.documentFileName,
+                slideRange: `Slide ${bestOccSlide.slideNumber}`,
+                startSlide: bestOccSlide.slideNumber,
+                endSlide: bestOccSlide.slideNumber,
+                exactSlide: bestOccSlide.slideNumber,
+                sectionTitle: bestOccSlide.title || lectureSource.sectionTitle,
+                slideSnippet: bestOccSlide.text.slice(0, 240),
+              };
+            } else {
+              occ.exactSlide = lectureSource.exactSlide || lectureSource.startSlide;
+              occ.lectureSource = { ...lectureSource };
+            }
+          }
         }
       }
 
@@ -1603,22 +1729,21 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
   const checkName = (typeof fileName === 'string' && fileName.trim()) ? fileName.toLowerCase() : title.toLowerCase();
   const isPdfMagic = payload.length >= 5 && payload.subarray(0, 5).toString('utf8') === '%PDF-';
   const isZipMagic = payload.length >= 4 && payload.subarray(0, 4).toString('binary') === 'PK\x03\x04';
+  const isOle2Magic = payload.length >= 8 && payload[0] === 0xd0 && payload[1] === 0xcf && payload[2] === 0x11 && payload[3] === 0xe0;
   const isPdf = mimeType === 'application/pdf' ||
     (mimeType !== 'text/plain' && checkName.endsWith('.pdf')) ||
     isPdfMagic;
+  const isDocx = mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    checkName.endsWith('.docx');
   const isPptx = mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-    (mimeType !== 'text/plain' && checkName.endsWith('.pptx')) ||
-    (isZipMagic && !isPdfMagic && !isPdf);
+    checkName.endsWith('.pptx') ||
+    checkName.endsWith('.ppt');
+
   let content: string;
   let extractionMethod: string;
-  let structuredPages: Array<{ pageNumber: number; text: string }> = [];
-  if (isPptx) {
-    const parsed = extractStructuredDocument(payload, title, mimeType);
-    content = parsed.fullText;
-    extractionMethod = parsed.extractionMethod;
-    structuredPages = parsed.pages.map((p) => ({ pageNumber: p.pageNumber, text: p.text }));
-    if (!content) throw new HttpError(422, 'No slides or readable text found in this PPTX presentation.');
-  } else if (isPdf) {
+  let structuredPages: Array<{ pageNumber: number; heading?: string; text: string }> = [];
+
+  if (isPdf) {
     let localContent = '';
     let localStructuredPages: Array<{ pageNumber: number; text: string }> = [];
     let localExtractionSucceeded = false;
@@ -1650,7 +1775,11 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
         if (extractionIsLowQuality(content)) {
           throw new HttpError(422, 'The PDF text could not be read reliably after OCR. Please upload a clearer text-based PDF.');
         }
-        structuredPages = [{ pageNumber: 1, text: content }];
+        if (content.includes('\f')) {
+          structuredPages = content.split('\f').map((p, idx) => ({ pageNumber: idx + 1, text: p.trim() })).filter((p) => p.text.length > 0);
+        } else {
+          structuredPages = [{ pageNumber: 1, text: content }];
+        }
       } catch (ocrErr: any) {
         // If AI OCR returns temporary high-demand / 503 / rate-limit errors BUT we have usable local text:
         if (localContent && localContent.trim().length >= 20 && isTransientGeminiError(ocrErr)) {
@@ -1662,6 +1791,15 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
           throw ocrErr;
         }
       }
+    }
+  } else if (isZipMagic || isPptx || isDocx || isOle2Magic || /\.(docx|pptx|ppt|doc)$/i.test(checkName)) {
+    const parsed = extractStructuredDocument(payload, checkName, mimeType);
+    content = parsed.fullText;
+    extractionMethod = parsed.extractionMethod;
+    structuredPages = parsed.pages.map((p) => ({ pageNumber: p.pageNumber, heading: p.heading, text: p.text }));
+    if (!content) {
+      const typeLabel = isDocx || checkName.endsWith('.docx') ? 'DOCX document' : isPptx || checkName.endsWith('.pptx') ? 'PPTX presentation' : 'document';
+      throw new HttpError(422, `No slides or readable text found in this ${typeLabel}.`);
     }
   } else {
     content = payload.toString('utf8').trim();
@@ -1681,11 +1819,20 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
   let topicMappings: TopicMapping[] = [];
   let aiStatus: AiClassificationStatus;
 
+  const effectiveMimeType = isPdf
+    ? 'application/pdf'
+    : (extractionMethod === 'docx-sections' || checkName.endsWith('.docx'))
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : (extractionMethod === 'pptx-slides' || checkName.endsWith('.pptx'))
+        ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        : String(mimeType || 'text/plain');
+
   const effectiveDocType = services.classifyAcademicDocument({
     title,
+    fileName: checkName,
     content,
     hintDocType: docType,
-    mimeType: isPdf ? 'application/pdf' : mimeType,
+    mimeType: effectiveMimeType,
   });
 
   const isExamDoc = /past|question|exam|paper|bank|test/i.test(effectiveDocType);
@@ -1754,7 +1901,7 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
     content,
     fileSize: `${payload.length} bytes`,
     fileData: payload,
-    mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'),
+    mimeType: effectiveMimeType,
     extractionMethod,
     topicMappings,
     questionRecords,
@@ -1827,6 +1974,809 @@ app.get('/api/documents/:id/pages/:pageNumber', (req, res) => {
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 500, 'Unable to retrieve document page.');
+  }
+});
+
+// ---- SLIDE PRESENTATION VIEWER (EXACT SLIDE NAVIGATION & VISUAL RENDERING) ----
+function renderNotFoundHtml(title: string, message: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} · LazyLift</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f0d13;
+      color: #f5f3f7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: #17151a;
+      border: 1px solid #302b35;
+      border-radius: 16px;
+      padding: 44px 32px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .icon { font-size: 44px; margin-bottom: 20px; }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 12px; color: #f5f3f7; }
+    p { color: #a9a3ae; font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
+    .btn {
+      display: inline-block;
+      background: #7c3aed;
+      color: #fff;
+      font-weight: 600;
+      font-size: 14px;
+      padding: 12px 28px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #6d28d9; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">📂</div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+    <a href="/" class="btn">Back to LazyLift</a>
+  </div>
+</body>
+</html>`;
+}
+
+function renderPresentationViewerHtml(doc: services.DocumentRow, pages: services.DocumentPageRecord[], selectedSlideNum: number, outOfRangeError: string | null, token?: string, googleSlidesUrl?: string): string {
+  const maxSlideNumber = Math.max(pages.length, ...(pages.map((p) => p.pageNumber)));
+  const totalSlides = maxSlideNumber;
+  const currentSlide = pages.find((p) => p.pageNumber === selectedSlideNum) || pages[0] || { pageNumber: 1, heading: doc.title, text: '' };
+  const isPdf = (doc.mimeType === 'application/pdf') || /\.pdf$/i.test(doc.title);
+  const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+  const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+
+  const escapeXml = (s: string) => (s || '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m] || m));
+
+  const slidesJson = JSON.stringify(pages.map((p) => ({
+    pageNumber: p.pageNumber,
+    heading: p.heading || `Slide ${p.pageNumber}`,
+    text: p.text || '',
+  })));
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeXml(doc.title)} · Slide ${selectedSlideNum} · LazyLift</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #0f0d13;
+      color: #f5f3f7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      background: #17151a;
+      border-bottom: 1px solid #302b35;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+    .back-btn {
+      color: #a9a3ae;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: 6px;
+      background: #211c27;
+      border: 1px solid #302b35;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+    .back-btn:hover { color: #fff; border-color: #8b5cf6; }
+    .doc-meta { min-width: 0; }
+    .doc-title {
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #f5f3f7;
+      max-width: 380px;
+    }
+    .doc-type-badge {
+      font-size: 11px;
+      color: #8b5cf6;
+      font-weight: 500;
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .mode-switcher {
+      display: flex;
+      background: #211c27;
+      border: 1px solid #302b35;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .mode-btn {
+      background: transparent;
+      border: none;
+      color: #a9a3ae;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .mode-btn.active {
+      background: #6d28d9;
+      color: #fff;
+    }
+    .mode-btn:hover:not(.active) {
+      color: #f5f3f7;
+      background: #2a2433;
+    }
+    .slide-badge {
+      background: #272230;
+      border: 1px solid #3d3546;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #d8c9ff;
+    }
+    .action-btn {
+      color: #d8c9ff;
+      background: #211c27;
+      border: 1px solid #302b35;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      text-decoration: none;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .action-btn:hover {
+      background: #2a2433;
+      border-color: #8b5cf6;
+      color: #fff;
+    }
+    .main-layout {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      position: relative;
+    }
+    .error-banner {
+      background: #451a03;
+      border-bottom: 1px solid #92400e;
+      color: #fef3c7;
+      padding: 10px 20px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .slide-stage {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      min-width: 0;
+      overflow-y: auto;
+      background: #0f0d13;
+    }
+    .canvas-container {
+      width: 100%;
+      max-width: 980px;
+      aspect-ratio: 16 / 9;
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 16px 36px rgba(0,0,0,0.6);
+      border: 1px solid #302b35;
+      background: #17151a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .slide-visual-view {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #141118;
+      position: relative;
+    }
+    .slide-rendered-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      transition: opacity 0.2s ease-in-out;
+    }
+    .slide-loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(20, 17, 24, 0.7);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: #a78bfa;
+      font-weight: 600;
+    }
+    .slide-card-view {
+      width: 100%;
+      height: 100%;
+      background: #17151a;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .slide-card-header {
+      padding: 18px 26px 12px;
+      border-bottom: 1px solid #272230;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .slide-heading {
+      font-size: 20px;
+      font-weight: 700;
+      color: #f5f3f7;
+      line-height: 1.3;
+    }
+    .slide-number-tag {
+      font-family: monospace;
+      font-size: 12px;
+      color: #a78bfa;
+      background: #241e2e;
+      padding: 2px 8px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .slide-body {
+      flex: 1;
+      padding: 22px 26px;
+      overflow-y: auto;
+      font-size: 15px;
+      line-height: 1.7;
+      color: #e2dee6;
+      white-space: pre-wrap;
+    }
+    .slide-footer {
+      padding: 8px 26px;
+      border-top: 1px solid #272230;
+      background: #141217;
+      font-size: 11px;
+      color: #7b7484;
+      display: flex;
+      justify-content: space-between;
+    }
+    .pdf-frame-view {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: none;
+    }
+    .sidebar {
+      width: 280px;
+      background: #141217;
+      border-left: 1px solid #302b35;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      transition: transform 0.2s;
+    }
+    .sidebar.hidden { display: none; }
+    .sidebar-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid #302b35;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #a9a3ae;
+    }
+    .sidebar-list {
+      flex: 1;
+      overflow-y: auto;
+      list-style: none;
+    }
+    .sidebar-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid #211c27;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    .sidebar-item:hover { background: #1c1822; }
+    .sidebar-item.active {
+      background: #251d30;
+      border-left: 3px solid #8b5cf6;
+      font-weight: 600;
+      color: #d8c9ff;
+    }
+    .sidebar-item-num {
+      font-size: 11px;
+      color: #7b7484;
+      margin-bottom: 2px;
+    }
+    .footer-bar {
+      background: #17151a;
+      border-top: 1px solid #302b35;
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      gap: 16px;
+    }
+    .nav-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .nav-btn {
+      background: #272230;
+      border: 1px solid #3d3546;
+      color: #f5f3f7;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .nav-btn:hover:not(:disabled) {
+      background: #342c42;
+      border-color: #8b5cf6;
+    }
+    .nav-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .jump-box {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #a9a3ae;
+    }
+    .jump-input {
+      width: 52px;
+      background: #0f0d13;
+      border: 1px solid #3d3546;
+      color: #fff;
+      border-radius: 4px;
+      padding: 4px 6px;
+      text-align: center;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <a href="/" class="back-btn">&larr; Back to LazyLift</a>
+      <div class="doc-meta">
+        <div class="doc-title">${escapeXml(doc.title)}</div>
+        <div class="doc-type-badge">${isPdf ? 'PDF Presentation' : 'PowerPoint Presentation'} &middot; Verified Academic Source</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="mode-switcher">
+        <button id="mode-visual-btn" class="mode-btn active" onclick="setMode('visual')">🖼️ Slide</button>
+        <button id="mode-text-btn" class="mode-btn" onclick="setMode('text')">📝 Text</button>
+        ${isPdf ? `<button id="mode-pdf-btn" class="mode-btn" onclick="setMode('pdf')">📄 PDF</button>` : ''}
+      </div>
+      <span id="slide-badge" class="slide-badge">Slide ${selectedSlideNum} of ${totalSlides}</span>
+      ${googleSlidesUrl ? `<a href="${escapeXml(googleSlidesUrl)}" target="_blank" rel="noreferrer" class="action-btn">Google Slides</a>` : ''}
+      <a href="/api/documents/${doc.id}/file${tokenQuery}" class="action-btn download-btn" download>Download Original File</a>
+      <button id="toggle-sidebar" class="action-btn" onclick="toggleSidebar()">Slides List</button>
+      <button id="fullscreen-btn" class="action-btn" onclick="toggleFullscreen()" title="Fullscreen">⛶</button>
+    </div>
+  </header>
+
+  ${outOfRangeError ? `
+  <div class="error-banner">
+    <span>⚠️ ${escapeXml(outOfRangeError)}</span>
+    <button onclick="goToSlide(1)" class="nav-btn" style="font-size:11px; padding:3px 8px;">Go to Slide 1</button>
+  </div>` : ''}
+
+  <div class="main-layout">
+    <main class="slide-stage" id="slide-stage">
+      <div class="canvas-container" id="canvas-container">
+        <!-- Visual Slide View (Default) -->
+        <div class="slide-visual-view" id="slide-visual-view">
+          <img
+            id="slide-img"
+            class="slide-rendered-img"
+            src="/api/documents/${doc.id}/slides/${selectedSlideNum}/image${tokenQuery}"
+            alt="Slide ${selectedSlideNum}"
+            onload="handleImageLoaded()"
+            onerror="handleImageError()"
+          />
+          <div id="slide-loading-overlay" class="slide-loading-overlay">Loading Slide...</div>
+        </div>
+
+        <!-- Text & Notes View -->
+        <div class="slide-card-view" id="slide-card-view">
+          <div class="slide-card-header">
+            <h1 id="slide-title" class="slide-heading">${escapeXml(currentSlide.heading || `Slide ${selectedSlideNum}`)}</h1>
+            <span id="slide-number-tag" class="slide-number-tag">Slide ${selectedSlideNum}</span>
+          </div>
+          <div class="slide-body" id="slide-body">${escapeXml(currentSlide.text || '(No readable slide text)')}</div>
+          <div class="slide-footer">
+            <span>${escapeXml(doc.title)}</span>
+            <span>LazyLift Verified Source Material</span>
+          </div>
+        </div>
+
+        <!-- PDF Reader View -->
+        ${isPdf ? `<iframe id="pdf-view" class="pdf-frame-view" src="/api/documents/${doc.id}/file#page=${selectedSlideNum}${tokenParam}"></iframe>` : ''}
+      </div>
+    </main>
+
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">Presentation Slides (${totalSlides})</div>
+      <ul class="sidebar-list" id="sidebar-list">
+        ${pages.map((p) => `
+          <li class="sidebar-item ${p.pageNumber === selectedSlideNum ? 'active' : ''}" id="sidebar-item-${p.pageNumber}" onclick="goToSlide(${p.pageNumber})">
+            <div class="sidebar-item-num">Slide ${p.pageNumber}</div>
+            <div class="sidebar-item-title">${escapeXml(p.heading || `Slide ${p.pageNumber}`)}</div>
+          </li>
+        `).join('')}
+      </ul>
+    </aside>
+  </div>
+
+  <footer class="footer-bar">
+    <div class="nav-controls">
+      <button id="prev-btn" class="nav-btn" onclick="prevSlide()" ${selectedSlideNum <= 1 ? 'disabled' : ''}>&larr; Previous</button>
+      <button id="next-btn" class="nav-btn" onclick="nextSlide()" ${selectedSlideNum >= totalSlides ? 'disabled' : ''}>Next &rarr;</button>
+    </div>
+    <div class="jump-box">
+      <span>Jump to slide:</span>
+      <input type="number" id="jump-input" class="jump-input" min="1" max="${totalSlides}" value="${selectedSlideNum}" onkeydown="if(event.key==='Enter') goToSlide(this.value)">
+      <span>of ${totalSlides}</span>
+    </div>
+    <div style="font-size: 11px; color: #7b7484;">
+      &larr; &rarr; arrows to navigate &middot; T to toggle text &middot; F for fullscreen
+    </div>
+  </footer>
+
+  <script>
+    const SLIDES = ${slidesJson};
+    let currentSlide = ${selectedSlideNum};
+    const totalSlides = ${totalSlides};
+    const isPdfDoc = ${isPdf};
+    let currentMode = 'visual'; // 'visual' | 'text' | 'pdf'
+    const tokenParam = "${tokenParam}";
+    const docId = "${doc.id}";
+
+    function setMode(mode) {
+      currentMode = mode;
+      const visualView = document.getElementById('slide-visual-view');
+      const cardView = document.getElementById('slide-card-view');
+      const pdfView = document.getElementById('pdf-view');
+
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+
+      if (mode === 'visual') {
+        visualView.style.display = 'flex';
+        cardView.style.display = 'none';
+        if (pdfView) pdfView.style.display = 'none';
+        document.getElementById('mode-visual-btn')?.classList.add('active');
+      } else if (mode === 'text') {
+        visualView.style.display = 'none';
+        cardView.style.display = 'flex';
+        if (pdfView) pdfView.style.display = 'none';
+        document.getElementById('mode-text-btn')?.classList.add('active');
+      } else if (mode === 'pdf' && isPdfDoc) {
+        visualView.style.display = 'none';
+        cardView.style.display = 'none';
+        if (pdfView) {
+          pdfView.style.display = 'block';
+          pdfView.src = "/api/documents/" + docId + "/file#page=" + currentSlide + tokenParam;
+        }
+        document.getElementById('mode-pdf-btn')?.classList.add('active');
+      }
+    }
+
+    function handleImageLoaded() {
+      const overlay = document.getElementById('slide-loading-overlay');
+      if (overlay) overlay.style.display = 'none';
+      const img = document.getElementById('slide-img');
+      if (img) img.style.opacity = '1';
+    }
+
+    function handleImageError() {
+      // If slide image fails to load, gracefully switch to text card
+      console.warn("Slide visual image failed to load for slide " + currentSlide + ", switching to text view.");
+      setMode('text');
+    }
+
+    function renderSlide(num) {
+      const slide = SLIDES.find(s => s.pageNumber === num);
+      if (!slide) return;
+      currentSlide = num;
+      
+      // Update Slide Image
+      const img = document.getElementById('slide-img');
+      const overlay = document.getElementById('slide-loading-overlay');
+      if (img) {
+        img.style.opacity = '0.5';
+        if (overlay) overlay.style.display = 'flex';
+        img.src = "/api/documents/" + docId + "/slides/" + num + "/image" + (tokenParam ? ("?" + tokenParam.slice(1)) : "");
+      }
+
+      // Update Text View
+      document.getElementById('slide-title').innerText = slide.heading || ("Slide " + num);
+      document.getElementById('slide-number-tag').innerText = "Slide " + num;
+      document.getElementById('slide-body').innerText = slide.text || "(No readable slide text)";
+
+      // Update Header & Footer
+      document.getElementById('slide-badge').innerText = "Slide " + num + " of " + totalSlides;
+      document.getElementById('jump-input').value = num;
+
+      const currIdx = SLIDES.findIndex(s => s.pageNumber === num);
+      document.getElementById('prev-btn').disabled = (currIdx <= 0);
+      document.getElementById('next-btn').disabled = (currIdx >= SLIDES.length - 1);
+
+      // Update Sidebar Active state
+      document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
+      const activeItem = document.getElementById('sidebar-item-' + num);
+      if (activeItem) {
+        activeItem.classList.add('active');
+        activeItem.scrollIntoView({ block: 'nearest' });
+      }
+
+      // Update PDF if currently viewing PDF mode
+      if (currentMode === 'pdf' && isPdfDoc) {
+        const frame = document.getElementById('pdf-view');
+        if (frame) frame.src = "/api/documents/" + docId + "/file#page=" + num + tokenParam;
+      }
+
+      // Update browser URL state without reloading
+      const url = new URL(window.location.href);
+      url.searchParams.set('slide', num);
+      window.history.replaceState({}, '', url.toString());
+      document.title = "${escapeXml(doc.title)} · Slide " + num + " · LazyLift";
+    }
+
+    function goToSlide(n) {
+      const num = parseInt(n, 10);
+      if (!isNaN(num)) {
+        const found = SLIDES.find(s => s.pageNumber === num);
+        if (found) renderSlide(num);
+      }
+    }
+    function prevSlide() {
+      const currIdx = SLIDES.findIndex(s => s.pageNumber === currentSlide);
+      if (currIdx > 0) renderSlide(SLIDES[currIdx - 1].pageNumber);
+    }
+    function nextSlide() {
+      const currIdx = SLIDES.findIndex(s => s.pageNumber === currentSlide);
+      if (currIdx >= 0 && currIdx < SLIDES.length - 1) renderSlide(SLIDES[currIdx + 1].pageNumber);
+    }
+
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.classList.toggle('hidden');
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); nextSlide(); }
+      else if (e.key === 'Home') goToSlide(1);
+      else if (e.key === 'End') goToSlide(totalSlides);
+      else if (e.key === 't' || e.key === 'T') setMode(currentMode === 'visual' ? 'text' : 'visual');
+      else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function handleDocumentPresentationView(req: express.Request, res: express.Response) {
+  try {
+    const doc = services.findOwnedDocument(userIdOf(req), req.params.id);
+    if (!doc) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(404).send(renderNotFoundHtml('Presentation Not Found', 'The requested presentation could not be found or you do not have permission to access it.'));
+    }
+
+    let pages = services.getDocumentPages(userIdOf(req), req.params.id);
+    if (pages.length === 0) {
+      const slides = services.extractLectureSlides(doc.content || '');
+      if (slides.length > 0) {
+        pages = slides.map((s) => ({
+          id: `fallback-${s.slideNumber}`,
+          documentId: doc.id,
+          userId: userIdOf(req),
+          pageNumber: s.slideNumber,
+          heading: s.title || `Slide ${s.slideNumber}`,
+          text: s.text,
+          createdAt: doc.createdAt,
+        }));
+      } else {
+        pages = [{
+          id: `fallback-1`,
+          documentId: doc.id,
+          userId: userIdOf(req),
+          pageNumber: 1,
+          heading: doc.title,
+          text: doc.content || '',
+          createdAt: doc.createdAt,
+        }];
+      }
+    }
+
+    const reqSlideStr = (req.query.slide ?? req.query.page)?.toString();
+    let requestedSlideNum: number | null = null;
+    let outOfRangeError: string | null = null;
+    let selectedSlideNum = 1;
+    const maxSlideNumber = Math.max(pages.length, ...pages.map((p) => p.pageNumber));
+    const minSlideNumber = Math.min(1, ...pages.map((p) => p.pageNumber));
+
+    if (reqSlideStr !== undefined && reqSlideStr !== '') {
+      const parsed = parseInt(reqSlideStr, 10);
+      if (Number.isNaN(parsed)) {
+        outOfRangeError = `Invalid slide number "${reqSlideStr}".`;
+        selectedSlideNum = pages[0]?.pageNumber || 1;
+      } else {
+        requestedSlideNum = parsed;
+        const targetPage = pages.find((p) => p.pageNumber === parsed);
+        if (!targetPage && (parsed < minSlideNumber || parsed > maxSlideNumber)) {
+          outOfRangeError = `Slide ${parsed} is out of range. This presentation has ${maxSlideNumber} slide${maxSlideNumber === 1 ? '' : 's'} (valid range: ${minSlideNumber}–${maxSlideNumber}).`;
+          selectedSlideNum = Math.max(minSlideNumber, Math.min(parsed, maxSlideNumber));
+        } else {
+          selectedSlideNum = parsed;
+        }
+      }
+    } else {
+      selectedSlideNum = pages[0]?.pageNumber || 1;
+    }
+
+    const token = typeof req.query.token === 'string' ? req.query.token : undefined;
+
+    let googleSlidesUrl: string | undefined;
+    const rawSourceUrl = typeof req.query.sourceUrl === 'string' ? req.query.sourceUrl : (doc.content?.match(/https:\/\/docs\.google\.com\/presentation\/d\/[^\s"')]+/i)?.[0]);
+    if (rawSourceUrl && /docs\.google\.com\/presentation/i.test(rawSourceUrl)) {
+      const cleanUrl = rawSourceUrl.replace(/#slide=.*$/, '');
+      const slideObjId = typeof req.query.slideObjectId === 'string' ? req.query.slideObjectId : `p${selectedSlideNum}`;
+      googleSlidesUrl = `${cleanUrl}#slide=id.${slideObjId}`;
+    }
+
+    // Only return JSON if explicitly requested via ?format=json
+    if (req.query.format === 'json') {
+      const targetPage = pages.find((p) => p.pageNumber === selectedSlideNum) || pages[0];
+      return res.json({
+        document: {
+          id: doc.id,
+          title: doc.title,
+          docType: doc.docType,
+          mimeType: doc.mimeType,
+        },
+        currentSlide: selectedSlideNum,
+        totalSlides: maxSlideNumber,
+        requestedSlide: requestedSlideNum,
+        error: outOfRangeError,
+        slide: targetPage,
+        pages: pages.map((p) => ({ pageNumber: p.pageNumber, heading: p.heading })),
+        googleSlidesUrl,
+      });
+    }
+
+    const html = renderPresentationViewerHtml(doc, pages, selectedSlideNum, outOfRangeError, token, googleSlidesUrl);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(html);
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(500).send(renderNotFoundHtml('Server Error', 'Unable to render presentation viewer.'));
+  }
+}
+
+app.get('/api/documents/:id/view', handleDocumentPresentationView);
+app.get('/api/documents/:id/viewer', handleDocumentPresentationView);
+
+app.get('/api/documents/:id/slides/:slideNumber/image', async (req, res) => {
+  try {
+    const doc = services.findOwnedDocument(userIdOf(req), req.params.id);
+    if (!doc) return sendError(res, 404, 'Presentation not found.');
+    const slideNum = parseInt(req.params.slideNumber, 10);
+    if (Number.isNaN(slideNum) || slideNum < 1) return sendError(res, 400, 'Invalid slide number.');
+
+    const pages = services.getDocumentPages(userIdOf(req), req.params.id);
+    const fileInfo = services.findOwnedDocumentFileData(userIdOf(req), req.params.id);
+
+    const rendered = await renderSlideImage(doc, pages, slideNum, fileInfo?.fileData);
+    res.setHeader('Content-Type', rendered.contentType);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.send(rendered.data);
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, 'Unable to render slide image.');
+  }
+});
+
+app.get('/api/documents/:id/pdf', async (req, res) => {
+  try {
+    const doc = services.findOwnedDocument(userIdOf(req), req.params.id);
+    if (!doc) return sendError(res, 404, 'Presentation not found.');
+    const fileInfo = services.findOwnedDocumentFileData(userIdOf(req), req.params.id);
+    if (!fileInfo || !fileInfo.fileData) return sendError(res, 404, 'Original document file not found.');
+
+    const isPdf = doc.mimeType === 'application/pdf' || /\.pdf$/i.test(doc.title);
+    if (isPdf) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.title)}"`);
+      return res.send(fileInfo.fileData);
+    }
+
+    const convertedPdfPath = await getOrConvertPptxToPdf(doc.id, fileInfo.fileData);
+    if (convertedPdfPath && fs.existsSync(convertedPdfPath)) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.title.replace(/\.pptx?$/i, '.pdf'))}"`);
+      return res.send(fs.readFileSync(convertedPdfPath));
+    }
+
+    return sendError(res, 415, 'PDF conversion not available for this file.');
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, 'Unable to retrieve PDF representation.');
   }
 });
 
