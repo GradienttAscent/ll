@@ -1,6 +1,27 @@
 import React, { useEffect, useState } from 'react';
 import { ActiveTab, PastPaper, ExtractedTopic, QuestionItem, WhatToStudyItem, WhatToStudySourceMapping } from '../types';
 import { FileUp, ArrowRight, Loader2, BookOpen, Calendar, ExternalLink, X } from 'lucide-react';
+import { getSessionToken } from '../api';
+
+export function getPresentationViewerUrl(source?: WhatToStudySourceMapping): string {
+  if (!source || !source.mapped) return '#';
+  
+  const targetSlide = source.exactSlide || source.startSlide || 1;
+  
+  if (source.sourceUrl) {
+    if (/docs\.google\.com\/presentation/i.test(source.sourceUrl)) {
+      const cleanUrl = source.sourceUrl.replace(/#slide=.*$/, '');
+      return `${cleanUrl}#slide=id.p${targetSlide}`;
+    }
+    return source.sourceUrl;
+  }
+
+  if (!source.documentId) return '#';
+  
+  const token = getSessionToken();
+  const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : '';
+  return `/api/documents/${source.documentId}/view?slide=${targetSlide}${tokenQuery}`;
+}
 
 interface UploadExtractViewProps {
   papers: PastPaper[];
@@ -103,6 +124,8 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
       pageNumber?: number | null;
       paperTitle?: string | null;
       topic?: string;
+      exactSlide?: number;
+      lectureSource?: WhatToStudySourceMapping;
     },
     parentItem?: WhatToStudyItem
   ) => {
@@ -115,16 +138,33 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
     let topicName = q.topic || parentItem?.unitTopic;
     let matchedItem = parentItem;
 
-    if (parentItem) {
-      lectureSource = parentItem.lectureSource;
+    if (q.lectureSource?.mapped) {
+      lectureSource = q.lectureSource;
+    } else if (parentItem) {
+      const occ = parentItem.occurrences.find((o) => (q.id && o.questionId === q.id) || o.questionText === text);
+      if (occ?.lectureSource?.mapped) {
+        lectureSource = occ.lectureSource;
+      } else if (parentItem.lectureSource.mapped) {
+        lectureSource = { ...parentItem.lectureSource };
+        if (occ?.exactSlide) {
+          lectureSource.exactSlide = occ.exactSlide;
+        }
+      }
     } else {
       for (const item of whatToStudyItems) {
-        const match = item.occurrences.find((o) => (q.id && o.questionId === q.id) || o.questionText === text);
-        if (match) {
-          lectureSource = item.lectureSource;
+        const occ = item.occurrences.find((o) => (q.id && o.questionId === q.id) || o.questionText === text);
+        if (occ) {
+          matchedItem = item;
           conceptTitle = item.conceptTitle;
           topicName = topicName || item.unitTopic;
-          matchedItem = item;
+          if (occ.lectureSource?.mapped) {
+            lectureSource = occ.lectureSource;
+          } else if (item.lectureSource.mapped) {
+            lectureSource = { ...item.lectureSource };
+            if (occ.exactSlide) {
+              lectureSource.exactSlide = occ.exactSlide;
+            }
+          }
           break;
         }
       }
@@ -603,16 +643,26 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
                       </div>
                     )}
                     {activeQuestionViewer.lectureSource.documentId && (
-                      <div className="pt-2 flex justify-end">
-                        <a
-                          href={`/api/documents/${activeQuestionViewer.lectureSource.documentId}/file${activeQuestionViewer.lectureSource.startSlide ? `#page=${activeQuestionViewer.lectureSource.startSlide}` : ''}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1.5 text-xs text-[#6D28D9] dark:text-[#8B5CF6] hover:underline font-semibold"
-                        >
-                          <span>Open presentation at {activeQuestionViewer.lectureSource.slideRange || `Slide ${activeQuestionViewer.lectureSource.startSlide}`}</span>
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </a>
+                      <div className="pt-3 space-y-2">
+                        <div className="rounded-xl overflow-hidden border border-[#EDE7F3] dark:border-[#302B35] bg-[#141118] flex items-center justify-center p-1.5 shadow-2xs group relative">
+                          <img
+                            src={`/api/documents/${activeQuestionViewer.lectureSource.documentId}/slides/${activeQuestionViewer.lectureSource.exactSlide || activeQuestionViewer.lectureSource.startSlide || 1}/image${getSessionToken() ? `?token=${encodeURIComponent(getSessionToken()!)}` : ''}`}
+                            alt={`Slide ${activeQuestionViewer.lectureSource.exactSlide || activeQuestionViewer.lectureSource.startSlide || 1}`}
+                            className="max-h-52 w-auto object-contain rounded-lg transition-transform group-hover:scale-[1.01]"
+                            onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
+                          />
+                        </div>
+                        <div className="pt-1 flex justify-end">
+                          <a
+                            href={getPresentationViewerUrl(activeQuestionViewer.lectureSource)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 text-xs text-[#6D28D9] dark:text-[#8B5CF6] hover:underline font-semibold"
+                          >
+                            <span>Open presentation at {activeQuestionViewer.lectureSource.slideRange || (activeQuestionViewer.lectureSource.exactSlide ? `Slide ${activeQuestionViewer.lectureSource.exactSlide}` : `Slide ${activeQuestionViewer.lectureSource.startSlide || 1}`)}</span>
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -716,17 +766,27 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
               )}
 
               {activeSourceItem.lectureSource.documentId && (
-                <div className="flex items-center justify-between text-xs text-[#7B7484] pt-1">
-                  <span>Studying from professor&apos;s verified material.</span>
-                  <a
-                    href={`/api/documents/${activeSourceItem.lectureSource.documentId}/file${activeSourceItem.lectureSource.startSlide ? `#page=${activeSourceItem.lectureSource.startSlide}` : ''}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-[#6D28D9] dark:text-[#8B5CF6] hover:underline font-semibold text-[11px]"
-                  >
-                    <span>Open presentation at {activeSourceItem.lectureSource.slideRange || `Slide ${activeSourceItem.lectureSource.startSlide}`}</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+                <div className="space-y-2 pt-1">
+                  <div className="rounded-xl overflow-hidden border border-[#EDE7F3] dark:border-[#302B35] bg-[#141118] flex items-center justify-center p-1.5 shadow-2xs group relative">
+                    <img
+                      src={`/api/documents/${activeSourceItem.lectureSource.documentId}/slides/${activeSourceItem.lectureSource.exactSlide || activeSourceItem.lectureSource.startSlide || 1}/image${getSessionToken() ? `?token=${encodeURIComponent(getSessionToken()!)}` : ''}`}
+                      alt={`Slide ${activeSourceItem.lectureSource.exactSlide || activeSourceItem.lectureSource.startSlide || 1}`}
+                      className="max-h-52 w-auto object-contain rounded-lg transition-transform group-hover:scale-[1.01]"
+                      onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-[#7B7484] pt-1">
+                    <span>Studying from professor&apos;s verified material.</span>
+                    <a
+                      href={getPresentationViewerUrl(activeSourceItem.lectureSource)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[#6D28D9] dark:text-[#8B5CF6] hover:underline font-semibold text-[11px]"
+                    >
+                      <span>Open presentation at {activeSourceItem.lectureSource.slideRange || (activeSourceItem.lectureSource.exactSlide ? `Slide ${activeSourceItem.lectureSource.exactSlide}` : `Slide ${activeSourceItem.lectureSource.startSlide || 1}`)}</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
                 </div>
               )}
             </div>
