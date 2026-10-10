@@ -34,6 +34,8 @@ export interface QuestionItem {
   documentId?: string | null;
   mappingStatus?: 'mapped' | 'unmatched';
   mappingEvidence?: string[];
+  pageNumber?: number | null;
+  paperTitle?: string | null;
 }
 
 export interface PastPaper {
@@ -577,6 +579,7 @@ export interface AscentState {
 // --- Teacher's Exam Intelligence ("What to Study") ---
 
 export interface WhatToStudyOccurrence {
+  questionId?: string;
   paperTitle: string;
   examYear: string;
   questionNumber: string;

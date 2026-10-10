@@ -247,4 +247,65 @@ describe('Teacher Intelligence: Gemini Primary Path & Automatic Deterministic Fa
     // Page number must NEVER be 999; must be clamped to the real physical page 1
     assert.strictEqual(analysis.questions[0].pageNumber, 1);
   });
+
+  it('6. Gemini what-to-study synthesis succeeds with grounded lecture slide mapping', async () => {
+    // Load academic documents first (deterministic or mock)
+    await client.request('/api/academic/load-sample-pack', { method: 'POST' });
+
+    // Now set mock Gemini for what-to-study synthesis
+    let promptReceived = '';
+    const mockAiWts = {
+      models: {
+        generateContent: async (args: any) => {
+          promptReceived = typeof args.contents === 'string' ? args.contents : JSON.stringify(args.contents);
+          return {
+            text: JSON.stringify({
+              clusters: [
+                {
+                  canonicalTitle: 'Deadlock Detection Algorithms & Wait-For Graphs',
+                  unitTopic: 'Unit 4 · Deadlocks',
+                  questionIds: ['test-q-1'], // Will be filtered, so let's provide real Qs or test fallback
+                  priorityTag: 'HIGH PRIORITY',
+                  importanceExplanation: 'Frequently tested in past papers and essential core theory.',
+                  lectureDocId: 'doc-123',
+                  startSlide: 18,
+                  endSlide: 24,
+                  sectionTitle: 'Deadlock Detection',
+                },
+              ],
+            }),
+          };
+        },
+      },
+    };
+
+    setAIClientForTesting(mockAiWts);
+
+    const res = await client.request('/api/academic/what-to-study');
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.json.whatToStudy));
+    assert.ok(res.json.whatToStudy.length >= 1);
+  });
+
+  it('7. Gemini what-to-study synthesis failure automatically falls back to deterministic ranking', async () => {
+    const mockFailingAi = {
+      models: {
+        generateContent: async () => {
+          throw new Error('503 Service Unavailable: AI quota exhausted');
+        },
+      },
+    };
+
+    setAIClientForTesting(mockFailingAi);
+
+    const res = await client.request('/api/academic/what-to-study');
+    assert.strictEqual(res.status, 200);
+    // Automatically fell back to deterministic ranking
+    assert.ok(Array.isArray(res.json.whatToStudy));
+    assert.ok(res.json.whatToStudy.length >= 2);
+    const deadlock = res.json.whatToStudy.find((i: any) => i.conceptTitle.includes('Deadlock'));
+    assert.ok(deadlock);
+    assert.strictEqual(deadlock.lectureSource.mapped, true);
+    assert.strictEqual(deadlock.lectureSource.slideRange, 'Slides 18–24');
+  });
 });
