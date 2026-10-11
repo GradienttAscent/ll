@@ -125,10 +125,10 @@ describe('PPT Exact Slide Navigation & Traceability', () => {
     assert.ok(deadlockItem, 'Deadlock Detection concept must be present');
     assert.strictEqual(deadlockItem.lectureSource.mapped, true);
 
-    // Cluster broad slide range is preserved (Slides 18–24)
-    assert.strictEqual(deadlockItem.lectureSource.slideRange, 'Slides 18–24');
-    assert.strictEqual(deadlockItem.lectureSource.startSlide, 18);
-    assert.strictEqual(deadlockItem.lectureSource.endSlide, 24);
+    // A source card navigates to one verified slide, not a broad search range.
+    assert.match(deadlockItem.lectureSource.slideRange, /^Slide \d+$/);
+    assert.strictEqual(deadlockItem.lectureSource.startSlide, deadlockItem.lectureSource.exactSlide);
+    assert.strictEqual(deadlockItem.lectureSource.endSlide, deadlockItem.lectureSource.exactSlide);
     assert.strictEqual(typeof deadlockItem.lectureSource.exactSlide, 'number');
 
     // Individual occurrences carry their specific slide matches:

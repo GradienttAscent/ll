@@ -7,6 +7,7 @@ import {
   extractNumberedQuestionRecords,
   ingestAcademicDocument,
   getDeterministicWhatToStudyRanking,
+  questionRows,
 } from '../services';
 import { createTestServer, removeTempDir, TestServer } from './helpers';
 
@@ -251,12 +252,68 @@ describe('Academic Document Ingestion & Grounding Pipeline', () => {
       const ranking = getDeterministicWhatToStudyRanking(userId);
       assert.ok(ranking.length > 0, 'Ranking should contain identified study concepts');
 
-      const deadlockItem = ranking.find((item) => /deadlock/i.test(item.conceptTitle));
-      assert.ok(deadlockItem, 'Deadlock concept should be present in ranking');
-      assert.strictEqual(deadlockItem.lectureSource.mapped, true, 'Deadlock concept must be mapped to lecture slides');
-      assert.strictEqual(deadlockItem.lectureSource.startSlide, 18);
-      assert.ok(deadlockItem.lectureSource.endSlide >= 18);
-      assert.strictEqual(deadlockItem.lectureSource.documentTitle, 'Operating Systems Unit 4 - Deadlocks');
+      const deadlockItem = ranking.find((item) => item.occurrences.some((occurrence) => /deadlock/i.test(occurrence.questionText)));
+      assert.ok(deadlockItem, 'Deadlock question should remain present in ranking');
+    });
+
+    it('does not verify a slide from course-wide architecture keywords alone', () => {
+      const weakMatchUserId = 'test-academic-weak-slide-match-user';
+      ingestAcademicDocument(weakMatchUserId, {
+        title: 'Software Architecture Overview.pptx',
+        docType: 'Lecture Slides',
+        content: 'Course overview',
+        structuredPages: [
+          { pageNumber: 1, heading: 'Software Architecture', text: 'System design and quality attributes overview.' },
+        ],
+      });
+      ingestAcademicDocument(weakMatchUserId, {
+        title: '2025 Mid Sem Exam.pdf',
+        docType: 'Past Paper',
+        content: 'Q3. Explain software architecture and system quality attributes. (10 marks)',
+      });
+
+      const ranking = getDeterministicWhatToStudyRanking(weakMatchUserId);
+      assert.strictEqual(ranking.length, 1);
+      assert.strictEqual(ranking[0].lectureSource.mapped, false);
+      assert.strictEqual(ranking[0].occurrences[0].lectureSource, undefined);
+    });
+
+    it('uses syllabus taxonomy instead of question prefixes and rejects unrelated lecture slides', () => {
+      const taxonomyUserId = 'test-academic-syllabus-taxonomy-user';
+      const syllabusTopics = [
+        'Software Life Cycle Models', 'Software Metrics & Estimation', 'Software Testing',
+        'Requirements Engineering', 'Software Design & Architecture',
+      ].map((name) => ({ name }));
+      ingestAcademicDocument(taxonomyUserId, {
+        title: 'Course Syllabus.pdf', docType: 'Syllabus', content: 'Course syllabus.', syllabusTopics,
+      });
+      ingestAcademicDocument(taxonomyUserId, {
+        title: 'Requirements Lecture.pptx', docType: 'Lecture Slides', content: 'Requirements engineering lecture.',
+        structuredPages: [{ pageNumber: 15, heading: 'Requirements specification', text: 'Form-based requirements specification with inputs, outputs, preconditions and postconditions.' }],
+      });
+      ingestAcademicDocument(taxonomyUserId, {
+        title: '2025 Final Exam.pdf', docType: 'Past Paper', content: 'Exam questions.',
+        questionRecords: [
+          { text: "Describe Boehm's spiral model.", marks: 5, questionNumber: '1' },
+          { text: 'List shortcomings of the classical waterfall model.', marks: 5, questionNumber: '2' },
+          { text: 'Explain LOC estimation.', marks: 5, questionNumber: '3' },
+          { text: 'Construct a flow graph and calculate cyclomatic complexity.', marks: 5, questionNumber: '4' },
+          { text: 'Explain form-based requirements specification.', marks: 5, questionNumber: '5' },
+          { text: 'Identify an architecture pattern for distributed storage.', marks: 5, questionNumber: '6' },
+        ],
+      });
+
+      assert.ok(questionRows(taxonomyUserId).every((question) => question.topicId), 'Every regression question should map to an existing syllabus topic');
+
+      const ranking = getDeterministicWhatToStudyRanking(taxonomyUserId);
+      assert.deepStrictEqual(
+        ranking.map((item) => item.conceptTitle).sort(),
+        ['Requirements Engineering', 'Software Design & Architecture', 'Software Life Cycle Models', 'Software Metrics & Estimation', 'Software Testing'].sort(),
+      );
+      const requirements = ranking.find((item) => item.conceptTitle === 'Requirements Engineering')!;
+      assert.strictEqual(requirements.lectureSource.exactSlide, 15);
+      const testing = ranking.find((item) => item.conceptTitle === 'Software Testing')!;
+      assert.strictEqual(testing.lectureSource.mapped, false);
     });
   });
 });

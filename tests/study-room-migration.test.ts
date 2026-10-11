@@ -35,7 +35,7 @@ describe('Study Room migration', () => {
     rmSync(dbDir, { recursive: true, force: true });
   });
 
-  it('upgrades a pre-v16 database in place without losing rooms', async () => {
+  it('repairs a database that recorded the colliding legacy v16 migration without losing rooms', async () => {
     dbDir = mkdtempSync(join(tmpdir(), 'lazylift-upgrade-'));
     server = await startServer(dbDir);
     const owner = new Api(server.baseUrl);
@@ -45,8 +45,8 @@ describe('Study Room migration', () => {
     assert.strictEqual(legacyRoom.status, 201);
     const roomId = legacyRoom.json.room.id;
 
-    // Rewind the database to its pre-v16 shape: the migration under test must cope with a
-    // study_rooms table that has none of the discovery columns and no collaboration tables.
+    // A prior main branch used schema version 16 for unrelated material-library changes. Its
+    // database skips the current Study Room v16 migration, so emulate that already-stamped state.
     const db = await getDatabase();
     for (const table of ['focus_sessions', 'focus_session_participants', 'study_doubts', 'study_doubt_answers']) {
       db.prepare(`DROP TABLE IF EXISTS ${table}`).run();
@@ -56,14 +56,14 @@ describe('Study Room migration', () => {
     for (const column of ['description', 'subject', 'visibility', 'max_participants', 'status', 'expires_at']) {
       db.prepare(`ALTER TABLE study_rooms DROP COLUMN ${column}`).run();
     }
-    db.prepare("UPDATE meta SET value = '15' WHERE key = 'schema_version'").run();
+    db.prepare("UPDATE meta SET value = '16' WHERE key = 'schema_version'").run();
 
     await server.close();
     closeDatabase();
     server = await startServer(dbDir);
 
     const version = (await getDatabase()).prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
-    assert.ok(Number(version.value) >= 16);
+    assert.ok(Number(version.value) >= 18);
 
     const reloaded = new Api(server.baseUrl);
     await reloaded.signInAs('legacy-owner@lazylift.app', 'secret123');

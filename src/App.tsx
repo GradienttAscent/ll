@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ActiveTab, AdaptiveProposal, PastPaper, ExtractedTopic, QuestionItem, PeerUser, StudyRoomMessage, ScheduleBlock, StudySession, UserAccount } from './types';
 import { hasStoredSession, logout as logoutSession, restoreSession, setSessionExpiredHandler } from './api';
 import { Header } from './components/Header';
@@ -50,6 +50,9 @@ export default function App() {
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
   const [peers, setPeers] = useState<PeerUser[]>([]);
   const [messages, setMessages] = useState<StudyRoomMessage[]>([]);
+  const activeAcademicUserIdRef = useRef<string | null>(null);
+  const academicRefreshRequestRef = useRef(0);
+  const [academicRevision, setAcademicRevision] = useState(0);
 
   const clearUserState = () => {
     setActiveTab('dashboard');
@@ -73,7 +76,14 @@ export default function App() {
     setPeers([]);
     setMessages([]);
     setScheduleBlocks([]);
+    setAcademicRevision(0);
   };
+
+  useEffect(() => {
+    if (activeAcademicUserIdRef.current === (user?.id || null)) return;
+    activeAcademicUserIdRef.current = user?.id || null;
+    clearUserState();
+  }, [user?.id]);
 
   useEffect(() => {
     setSessionExpiredHandler(() => {
@@ -170,9 +180,13 @@ export default function App() {
   }, [authState, scheduleRefreshKey]);
 
   const refreshAcademicData = async () => {
+    const requestedUserId = user?.id;
+    if (!requestedUserId) return;
+    const requestId = ++academicRefreshRequestRef.current;
     const response = await fetch('/api/academic-evidence');
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Unable to load academic evidence.');
+    if (activeAcademicUserIdRef.current !== requestedUserId || requestId !== academicRefreshRequestRef.current) return;
     const academic = data.academic;
     setPapers(academic.documents.map((document: any) => ({
       id: document.id,
@@ -215,6 +229,7 @@ export default function App() {
       mappingStatus: question.mappingStatus,
       mappingEvidence: question.mappingEvidence,
     })));
+    setAcademicRevision((revision) => revision + 1);
   };
 
   useEffect(() => {
@@ -472,6 +487,7 @@ export default function App() {
               papers={papers}
               topics={topics}
               questions={questions}
+              academicRevision={academicRevision}
               onAcademicUpdated={refreshAcademicData}
               setActiveTab={setActiveTab}
               onOpenUpload={() => setIsUploadModalOpen(true)}
@@ -496,6 +512,7 @@ export default function App() {
               onAcceptAdaptiveProposal={acceptAdaptiveProposal}
               onRejectAdaptiveProposal={rejectAdaptiveProposal}
               onReconsiderAdaptiveProposal={requestAdaptiveProposal}
+              onCalendarChanged={() => setScheduleRefreshKey((key) => key + 1)}
             />
           )}
 

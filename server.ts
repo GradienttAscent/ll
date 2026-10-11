@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import dotenv from 'dotenv';
 import { pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
@@ -12,6 +13,7 @@ import { initDatabase, getDatabase } from './db';
 import * as auth from './auth';
 import * as services from './services';
 import * as fallbackAi from './fallbackAi';
+import { demoDatasetForFile, findDemoFileBySha256, isDemoFile } from './demoData';
 import { parseSchedulingAssistantIntent } from './schedulingAssistant';
 import { renderSlideImage, getOrConvertPptxToPdf } from './slideRenderer';
 import {
@@ -1294,18 +1296,18 @@ export async function synthesizeTeacherIntelligence(
   aiClient: any = getAIClient()
 ): Promise<services.WhatToStudyItem[]> {
   const fallback = () => services.getDeterministicWhatToStudyRanking(userId);
-
-  if (!aiClient) {
-    return fallback();
-  }
-
-  const questions = services.questionRows(userId);
-  if (questions.length === 0) {
+  const documents = services.documentRows(userId);
+  if (documents.length === 0) {
     return [];
   }
+  const questions = services.questionRows(userId);
+  if (questions.length === 0) return [];
+  const fingerprint = services.teacherIntelligenceFingerprint(userId);
+  const cached = services.cachedTeacherIntelligence(userId, fingerprint);
+  if (cached) return cached;
+  if (!aiClient) return fallback();
 
   const allTopics = services.topicRows(userId);
-  const documents = services.documentRows(userId);
 
   const lectureDocs = documents.filter((d) => {
     const t = d.docType.toLowerCase();
@@ -1469,7 +1471,10 @@ CRITICAL GROUNDING CONSTRAINTS:
             
             // Score candidate slides within range to find the top matching slide
             const candidateSlides = matchedDocInfo.slides.filter((s) => s.slideNumber >= minSlide && s.slideNumber <= maxSlide);
-            const conceptTokens = (c.canonicalTitle || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter((t: string) => t.length > 2);
+            // These course-wide words are not evidence that a slide teaches the specific concept.
+            const genericConceptTerms = new Set(['architecture', 'attributes', 'design', 'requirement', 'requirements', 'software', 'system', 'systems']);
+            const conceptTokens = (c.canonicalTitle || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/)
+              .filter((t: string) => t.length > 2 && !genericConceptTerms.has(t));
             let targetSlide = matchedDocInfo.slides.find((s) => s.slideNumber === minSlide);
             let topScore = -1;
             for (const slide of (candidateSlides.length > 0 ? candidateSlides : matchedDocInfo.slides)) {
@@ -1480,30 +1485,22 @@ CRITICAL GROUNDING CONSTRAINTS:
                 targetSlide = slide;
               }
             }
-            const exactSlide = targetSlide ? targetSlide.slideNumber : minSlide;
-
-            lectureSource = {
-              mapped: true,
-              documentId: matchedDocInfo.doc.id,
-              documentTitle: matchedDocInfo.doc.title.replace(/\.(pdf|pptx|ppt|txt)$/i, ''),
-              documentFileName: matchedDocInfo.doc.title,
-              slideRange,
-              startSlide: minSlide,
-              endSlide: maxSlide,
-              exactSlide,
-              sectionTitle: typeof c.sectionTitle === 'string' && c.sectionTitle.trim() ? c.sectionTitle.trim() : (targetSlide?.title || c.canonicalTitle),
-              slideSnippet: targetSlide?.text.slice(0, 240),
-            };
+            const minimumConceptMatches = Math.min(2, conceptTokens.length);
+            if (targetSlide && minimumConceptMatches > 0 && topScore >= minimumConceptMatches) {
+              lectureSource = {
+                mapped: true,
+                documentId: matchedDocInfo.doc.id,
+                documentTitle: matchedDocInfo.doc.title.replace(/\.(pdf|pptx|ppt|txt)$/i, ''),
+                documentFileName: matchedDocInfo.doc.title,
+                slideRange,
+                startSlide: minSlide,
+                endSlide: maxSlide,
+                exactSlide: targetSlide.slideNumber,
+                sectionTitle: typeof c.sectionTitle === 'string' && c.sectionTitle.trim() ? c.sectionTitle.trim() : (targetSlide.title || c.canonicalTitle),
+                slideSnippet: targetSlide.text.slice(0, 240),
+              };
+            }
           }
-        }
-      }
-
-      // If Gemini didn't map or hallucinated slide numbers, attempt grounding via deterministic slide search
-      if (!lectureSource.mapped) {
-        const detRankings = fallback();
-        const matchedDet = detRankings.find((d) => d.occurrences.some((o) => validQIds.includes(o.questionId || '')));
-        if (matchedDet && matchedDet.lectureSource.mapped) {
-          lectureSource = matchedDet.lectureSource;
         }
       }
 
@@ -1512,10 +1509,12 @@ CRITICAL GROUNDING CONSTRAINTS:
         const matchedDocInfo = parsedLectures.find((p) => p.doc.id === lectureSource.documentId);
         if (matchedDocInfo && matchedDocInfo.slides.length > 0) {
           for (const occ of occurrences) {
-            const occTokens = (occ.questionText || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter((t: string) => t.length > 2);
+            const genericQuestionTerms = new Set(['architecture', 'attributes', 'design', 'requirement', 'requirements', 'software', 'system', 'systems']);
+            const occTokens = (occ.questionText || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/)
+              .filter((t: string) => t.length > 2 && !genericQuestionTerms.has(t));
             let bestOccSlide: services.LectureSlideChunk | null = null;
             let bestOccScore = 0;
-            for (const slide of matchedDocInfo.slides) {
+            for (const slide of matchedDocInfo.slides.filter((slide) => slide.slideNumber >= (lectureSource.startSlide || 1) && slide.slideNumber <= (lectureSource.endSlide || Number.MAX_SAFE_INTEGER))) {
               const slideTokens = (slide.title + ' ' + slide.text).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/);
               const matches = occTokens.filter((t: string) => slideTokens.includes(t)).length;
               if (matches > bestOccScore && matches >= 2) {
@@ -1537,9 +1536,6 @@ CRITICAL GROUNDING CONSTRAINTS:
                 sectionTitle: bestOccSlide.title || lectureSource.sectionTitle,
                 slideSnippet: bestOccSlide.text.slice(0, 240),
               };
-            } else {
-              occ.exactSlide = lectureSource.exactSlide || lectureSource.startSlide;
-              occ.lectureSource = { ...lectureSource };
             }
           }
         }
@@ -1576,6 +1572,15 @@ CRITICAL GROUNDING CONSTRAINTS:
           }
         }
       }
+      // Existing syllabus headings are the only valid parent taxonomy. Do not
+      // persist a model-generated phrase such as "For A Product" as a topic.
+      if (allTopics.length > 0) {
+        const exactTopic = allTopics.find((topic) => topic.name.toLowerCase() === cleanUnitTopic.toLowerCase());
+        const inferredTopic = exactTopic || clusterQuestions
+          .map((question) => services.mapQuestionToTopic(question.questionText, allTopics)?.topic)
+          .find(Boolean);
+        cleanUnitTopic = inferredTopic?.name || 'Unclassified Questions';
+      }
 
       items.push({
         id: `wts-ai-${cIdx}-${Date.now().toString(36)}`,
@@ -1602,7 +1607,7 @@ CRITICAL GROUNDING CONSTRAINTS:
       for (const item of items) {
         const parentName = item.unitTopic.trim();
         let parentTopic = allTopics.find((t) => t.name.toLowerCase() === parentName.toLowerCase());
-        if (!parentTopic) {
+        if (!parentTopic && allTopics.length === 0) {
           const existing = db.prepare('SELECT id, name FROM topics WHERE user_id = ? AND lower(name) = lower(?)').get(userId, parentName) as any;
           if (existing) {
             parentTopic = existing;
@@ -1626,6 +1631,10 @@ CRITICAL GROUNDING CONSTRAINTS:
       console.warn('[academic] Failed to sync question topic mappings in DB:', syncErr);
     }
 
+    // Do not let a synthesis started before an upload replace the newer revision's cache.
+    if (services.teacherIntelligenceFingerprint(userId) === fingerprint) {
+      services.cacheTeacherIntelligence(userId, fingerprint, items);
+    }
     return items;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1727,6 +1736,79 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
   const payload = Buffer.from(base64, 'base64');
   if (payload.length === 0 || payload.length > 15 * 1024 * 1024) throw new HttpError(413, 'Files must be between 1 byte and 15 MB.');
   const checkName = (typeof fileName === 'string' && fileName.trim()) ? fileName.toLowerCase() : title.toLowerCase();
+  const payloadSha256 = createHash('sha256').update(payload).digest('hex');
+  const demoMatch = findDemoFileBySha256(payloadSha256) || isDemoFile(checkName) || isDemoFile(title);
+  if (demoMatch) {
+    const demoDataset = demoDatasetForFile(demoMatch);
+    let questionRecords: services.QuestionRecord[] = [];
+    let topicMappings: TopicMapping[] = [];
+    if (demoMatch.docType === 'Past Paper') {
+      questionRecords = demoDataset.questions.map((q) => ({
+        text: q.questionText,
+        marks: q.marks,
+        questionNumber: q.questionNumber,
+        subpart: q.subpart,
+        pageNumber: q.pageNumber,
+      }));
+      topicMappings = demoDataset.questions.map((q) => ({
+        questionText: q.questionText,
+        topicName: q.topicName,
+        confidence: 1.0,
+      }));
+    } else if (demoMatch.docType === 'Syllabus') {
+      services.saveTopics(userId, demoDataset.topics.map((dt) => ({
+        name: dt.name,
+        priority: dt.priority,
+        weightage: dt.weightage,
+        hasWeightage: dt.weightage > 0,
+        source: 'syllabus',
+      })));
+    }
+
+    const isPdfMagic = payload.length >= 5 && payload.subarray(0, 5).toString('utf8') === '%PDF-';
+    const isPdf = mimeType === 'application/pdf' || checkName.endsWith('.pdf') || isPdfMagic;
+
+    const analysis = services.ingestAcademicDocument(userId, {
+      title: (typeof fileName === 'string' && fileName.trim()) ? fileName : title,
+      docType: demoMatch.docType,
+      content: demoMatch.content,
+      fileSize: payload.length + ' bytes',
+      fileData: payload,
+      mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'),
+      extractionMethod: `precomputed-demo-adapter:${demoDataset.id}:${demoMatch.id}`,
+      topicMappings,
+      questionRecords,
+      structuredPages: demoMatch.structuredPages,
+    });
+
+    const aiStatus: AiClassificationStatus = {
+      configured: true,
+      attempted: false,
+      ok: true,
+      message: 'Curated document analysis loaded without an LLM.',
+      model: 'Precomputed Demo Data',
+    };
+
+    console.log(`[academic-upload] user=${userId} document=${analysis.document.id} "${analysis.document.title}" -> method=precomputed-demo-adapter:${demoDataset.id}:${demoMatch.id}, text=${demoMatch.content.length}, pages=${demoMatch.structuredPages.length}, parsed=${analysis.parsedQuestionCount}, indexed=${analysis.createdQuestionCount}, duplicates=${analysis.duplicateQuestionCount}, rejected=${analysis.rejectedQuestionCount}, status=${analysis.processingStatus}`);
+    return {
+      analysis: {
+        ...analysis,
+        extractionMethod: `precomputed-demo-adapter:${demoDataset.id}:${demoMatch.id}`,
+        aiStatus,
+        processing: {
+          textExtracted: Boolean(demoMatch.content.trim()),
+          extractedCharacterCount: demoMatch.content.length,
+          pageCount: demoMatch.structuredPages?.length || 0,
+          parsedQuestionCount: analysis.parsedQuestionCount,
+          indexedQuestionCount: analysis.createdQuestionCount,
+          duplicateQuestionCount: analysis.duplicateQuestionCount,
+          rejectedQuestionCount: analysis.rejectedQuestionCount,
+          status: analysis.processingStatus,
+          cacheInvalidated: analysis.cacheInvalidated,
+        },
+      },
+    };
+  }
   const isPdfMagic = payload.length >= 5 && payload.subarray(0, 5).toString('utf8') === '%PDF-';
   const isZipMagic = payload.length >= 4 && payload.subarray(0, 4).toString('binary') === 'PK\x03\x04';
   const isOle2Magic = payload.length >= 8 && payload[0] === 0xd0 && payload[1] === 0xcf && payload[2] === 0x11 && payload[3] === 0xe0;
@@ -1909,9 +1991,26 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
     syllabusTopics,
   });
 
-  console.log(`[academic-upload] "${title}" (${payload.length} bytes, ${mimeType || (isPdf ? 'application/pdf' : 'unknown')}) -> extractionMethod: "${extractionMethod}", text: ${content.length} chars, pages: ${structuredPages.length}, questions: ${questionRecords.length}`);
+  console.log(`[academic-upload] user=${userId} document=${analysis.document.id} "${title}" -> method=${extractionMethod}, text=${content.length}, pages=${structuredPages.length}, parsed=${analysis.parsedQuestionCount}, indexed=${analysis.createdQuestionCount}, duplicates=${analysis.duplicateQuestionCount}, rejected=${analysis.rejectedQuestionCount}, status=${analysis.processingStatus}`);
 
-  return { analysis: { ...analysis, extractionMethod, aiStatus } };
+  return {
+    analysis: {
+      ...analysis,
+      extractionMethod,
+      aiStatus,
+      processing: {
+        textExtracted: content.length > 0,
+        extractedCharacterCount: content.length,
+        pageCount: structuredPages.length,
+        parsedQuestionCount: analysis.parsedQuestionCount,
+        indexedQuestionCount: analysis.createdQuestionCount,
+        duplicateQuestionCount: analysis.duplicateQuestionCount,
+        rejectedQuestionCount: analysis.rejectedQuestionCount,
+        status: analysis.processingStatus,
+        cacheInvalidated: analysis.cacheInvalidated,
+      },
+    },
+  };
 }
 
 app.post('/api/academic-documents/upload', async (req, res) => {
@@ -2833,12 +2932,23 @@ app.post('/api/focus-mode/blocklist', (req, res) => {
 // ---- TEACHER'S EXAM INTELLIGENCE ("WHAT TO STUDY") ----
 app.get('/api/academic/what-to-study', async (req, res) => {
   try {
-    const items = await synthesizeTeacherIntelligence(userIdOf(req), getAIClient());
-    return res.json({ whatToStudy: items });
+    const userId = userIdOf(req);
+    const fingerprint = services.teacherIntelligenceFingerprint(userId);
+    const cached = services.cachedTeacherIntelligence(userId, fingerprint);
+    if (cached) return res.json({ whatToStudy: cached, synthesisPending: false });
+    const items = services.getDeterministicWhatToStudyRanking(userId);
+    if (items.length > 0 && getAIClient()) {
+      void synthesizeTeacherIntelligence(userId, getAIClient()).catch((error) => console.warn('[academic] background synthesis failed:', error));
+    }
+    return res.json({ whatToStudy: items, synthesisPending: items.length > 0 });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 500, error instanceof Error ? error.message : 'Unable to generate What to Study ranking.');
   }
+});
+
+app.post('/api/academic/load-demo-pack', (req, res) => {
+  return sendError(res, 409, 'Upload the three course documents to generate the demo study pack.');
 });
 
 app.post('/api/academic/clear', (req, res) => {
@@ -2851,6 +2961,7 @@ app.post('/api/academic/clear', (req, res) => {
 });
 
 app.post('/api/academic/load-sample-pack', (req, res) => {
+  if (process.env.NODE_ENV !== 'test') return sendError(res, 404, 'Sample packs are unavailable. Upload your course documents instead.');
   try {
     const items = services.loadSampleAcademicPack(userIdOf(req));
     return res.status(201).json({

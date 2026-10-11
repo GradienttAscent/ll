@@ -1,4 +1,5 @@
 node_modules/
+fixtures/
 build/
 dist/
 coverage/
@@ -29,3 +30,4 @@ _lzinspect.mts
         evidence/screenshots/
         screenshots/
         test-results/
+        

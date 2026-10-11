@@ -24,6 +24,17 @@ describe('Teacher Intelligence: Gemini Primary Path & Automatic Deterministic Fa
     setAIClientForTesting(null);
   });
 
+  it('does not call Gemini for an account with no uploaded academic documents', async () => {
+    const empty = new Api(server.baseUrl);
+    const { token } = await empty.register(`empty-intelligence-${Date.now()}@example.com`, 'secret123');
+    empty.token = token;
+    let calls = 0;
+    setAIClientForTesting({ models: { generateContent: async () => { calls++; return { text: '{}' }; } } });
+    const response = await empty.request('/api/academic/what-to-study');
+    assert.deepStrictEqual(response.json.whatToStudy, []);
+    assert.strictEqual(calls, 0);
+  });
+
   it('1. Gemini success → Gemini result is used with exact physical page numbers preserved', async () => {
     const mockGemini = {
       models: {
@@ -306,6 +317,6 @@ describe('Teacher Intelligence: Gemini Primary Path & Automatic Deterministic Fa
     const deadlock = res.json.whatToStudy.find((i: any) => i.conceptTitle.includes('Deadlock'));
     assert.ok(deadlock);
     assert.strictEqual(deadlock.lectureSource.mapped, true);
-    assert.strictEqual(deadlock.lectureSource.slideRange, 'Slides 18–24');
+    assert.match(deadlock.lectureSource.slideRange, /^Slide \d+$/);
   });
 });

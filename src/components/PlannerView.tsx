@@ -11,6 +11,7 @@ interface PlannerViewProps {
   onAcceptAdaptiveProposal: (proposal: AdaptiveProposal) => Promise<void>;
   onRejectAdaptiveProposal: (proposal: AdaptiveProposal) => Promise<void>;
   onReconsiderAdaptiveProposal: (studySessionId: string) => Promise<void>;
+  onCalendarChanged: () => void;
 }
 
 type PlannedBlock = Omit<ScheduleBlock, 'id' | 'topicName' | 'createdAt' | 'blockType'>;
@@ -104,7 +105,7 @@ export function generateBlocks(
   return blocks;
 }
 
-export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshKey, adaptiveProposal, dismissedAdaptiveSessionId, adaptiveMessage, onAcceptAdaptiveProposal, onRejectAdaptiveProposal, onReconsiderAdaptiveProposal }) => {
+export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshKey, adaptiveProposal, dismissedAdaptiveSessionId, adaptiveMessage, onAcceptAdaptiveProposal, onRejectAdaptiveProposal, onReconsiderAdaptiveProposal, onCalendarChanged }) => {
   const [examName, setExamName] = useState('Algorithms Final Examination');
   const [examDate, setExamDate] = useState(() => {
     const date = new Date();
@@ -226,6 +227,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
         throw new Error(data.error || 'Unable to confirm these changes.');
       }
       setScheduleBlocks(data.scheduleBlocks);
+      onCalendarChanged();
       setActiveChatPreview(null);
       setChatMessages((messages) => [...messages, { id: Date.now(), role: 'assistant', text: 'Your calendar has been updated safely.' }]);
     } catch (error: any) {

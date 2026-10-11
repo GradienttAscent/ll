@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ActiveTab, PastPaper, ExtractedTopic, QuestionItem, WhatToStudyItem, WhatToStudySourceMapping } from '../types';
 import { FileUp, ArrowRight, Loader2, BookOpen, Calendar, ExternalLink, X } from 'lucide-react';
 import { getSessionToken } from '../api';
@@ -27,6 +28,7 @@ interface UploadExtractViewProps {
   papers: PastPaper[];
   topics: ExtractedTopic[];
   questions: QuestionItem[];
+  academicRevision: number;
   onAcademicUpdated: () => Promise<void>;
   setActiveTab: (tab: ActiveTab) => void;
   onOpenUpload?: () => void;
@@ -48,6 +50,7 @@ interface ActiveQuestionViewerData {
 export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   topics,
   questions,
+  academicRevision,
   onAcademicUpdated,
   setActiveTab,
   onOpenUpload,
@@ -60,6 +63,8 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
 
   // Question-to-Slide Navigation Modal State (when clicking any individual question)
   const [activeQuestionViewer, setActiveQuestionViewer] = useState<ActiveQuestionViewerData | null>(null);
+  const [isQuestionPreviewLoading, setIsQuestionPreviewLoading] = useState(false);
+  const [questionPreviewFailed, setQuestionPreviewFailed] = useState(false);
 
   // Schedule Study Modal State
   const [schedulingItem, setSchedulingItem] = useState<WhatToStudyItem | null>(null);
@@ -72,27 +77,36 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
   const [scheduleDuration, setScheduleDuration] = useState(60);
   const [isScheduling, setIsScheduling] = useState(false);
   const [scheduleSuccessMsg, setScheduleSuccessMsg] = useState('');
+  const whatToStudyRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (!activeSourceItem && !activeQuestionViewer && !schedulingItem) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [activeSourceItem, activeQuestionViewer, schedulingItem]);
 
   const hasSyllabusTopics = topics.some((topic) => topic.syllabusEvidence);
 
   const fetchWhatToStudy = async () => {
+    const requestId = ++whatToStudyRequestRef.current;
     setIsLoadingWts(true);
     try {
       const res = await fetch('/api/academic/what-to-study');
       if (res.ok) {
         const data = await res.json();
-        setWhatToStudyItems(data.whatToStudy || []);
+        if (requestId === whatToStudyRequestRef.current) setWhatToStudyItems(data.whatToStudy || []);
       }
     } catch (err) {
       console.error('Failed to load what to study ranking:', err);
     } finally {
-      setIsLoadingWts(false);
+      if (requestId === whatToStudyRequestRef.current) setIsLoadingWts(false);
     }
   };
 
   useEffect(() => {
     void fetchWhatToStudy();
-  }, [questions.length, topics.length]);
+  }, [academicRevision]);
 
   const groupedHierarchy = React.useMemo(() => {
     const map = new Map<string, WhatToStudyItem[]>();
@@ -144,11 +158,6 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
       const occ = parentItem.occurrences.find((o) => (q.id && o.questionId === q.id) || o.questionText === text);
       if (occ?.lectureSource?.mapped) {
         lectureSource = occ.lectureSource;
-      } else if (parentItem.lectureSource.mapped) {
-        lectureSource = { ...parentItem.lectureSource };
-        if (occ?.exactSlide) {
-          lectureSource.exactSlide = occ.exactSlide;
-        }
       }
     } else {
       for (const item of whatToStudyItems) {
@@ -159,18 +168,13 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
           topicName = topicName || item.unitTopic;
           if (occ.lectureSource?.mapped) {
             lectureSource = occ.lectureSource;
-          } else if (item.lectureSource.mapped) {
-            lectureSource = { ...item.lectureSource };
-            if (occ.exactSlide) {
-              lectureSource.exactSlide = occ.exactSlide;
-            }
           }
           break;
         }
       }
     }
 
-    setActiveQuestionViewer({
+    const nextViewer = {
       questionText: text,
       questionNumber: q.questionNumber,
       subpart: q.subpart,
@@ -181,7 +185,10 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
       conceptTitle,
       lectureSource,
       parentItem: matchedItem,
-    });
+    };
+    setQuestionPreviewFailed(false);
+    setIsQuestionPreviewLoading(Boolean(nextViewer.lectureSource.mapped && nextViewer.lectureSource.documentId));
+    setActiveQuestionViewer(nextViewer);
   };
 
   const handleScheduleStudySubmit = async (e: React.FormEvent) => {
@@ -294,7 +301,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
           <div className="py-16 text-center rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A]">
             <div className="inline-flex items-center gap-2 text-xs font-medium text-[#7B7484] dark:text-[#A9A3AE]">
               <Loader2 className="w-4 h-4 animate-spin text-[#6D28D9] dark:text-[#8B5CF6]" />
-              Synthesizing Teacher Intelligence and matching lecture slides...
+              Loading ranked study priorities...
             </div>
           </div>
         ) : whatToStudyItems.length === 0 ? (
@@ -583,9 +590,9 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
       {/* ========================================================================= */}
       {/* 3. MODAL: QUESTION-TO-SLIDE DIRECT NAVIGATION VIEWER */}
       {/* ========================================================================= */}
-      {activeQuestionViewer && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] shadow-xl max-w-2xl w-full p-6 sm:p-8 space-y-6 relative max-h-[85vh] flex flex-col">
+      {activeQuestionViewer && typeof document !== 'undefined' && createPortal(
+        <div className="bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in" style={{ position: 'fixed', inset: 0, zIndex: 9999 }}>
+          <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] shadow-xl p-6 sm:p-8 space-y-6 relative max-h-[calc(100dvh-32px)] overflow-hidden flex flex-col" style={{ width: 'min(640px, calc(100vw - 32px))' }}>
             
             <div className="flex items-start justify-between border-b border-[#EDE7F3] dark:border-[#302B35] pb-4">
               <div className="space-y-1">
@@ -644,12 +651,15 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
                     )}
                     {activeQuestionViewer.lectureSource.documentId && (
                       <div className="pt-3 space-y-2">
-                        <div className="rounded-xl overflow-hidden border border-[#EDE7F3] dark:border-[#302B35] bg-[#141118] flex items-center justify-center p-1.5 shadow-2xs group relative">
+                        <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-[#EDE7F3] dark:border-[#302B35] bg-[#141118] shadow-2xs">
+                          {isQuestionPreviewLoading && <div className="absolute inset-0 z-10 flex items-center justify-center text-xs text-white/70">Rendering slide preview...</div>}
+                          {!isQuestionPreviewLoading && questionPreviewFailed && <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-xs text-white/70">Slide preview could not be rendered. Open the presentation to view the verified source.</div>}
                           <img
                             src={`/api/documents/${activeQuestionViewer.lectureSource.documentId}/slides/${activeQuestionViewer.lectureSource.exactSlide || activeQuestionViewer.lectureSource.startSlide || 1}/image${getSessionToken() ? `?token=${encodeURIComponent(getSessionToken()!)}` : ''}`}
                             alt={`Slide ${activeQuestionViewer.lectureSource.exactSlide || activeQuestionViewer.lectureSource.startSlide || 1}`}
-                            className="max-h-52 w-auto object-contain rounded-lg transition-transform group-hover:scale-[1.01]"
-                            onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
+                            className={`absolute inset-0 h-full w-full object-contain transition-opacity ${isQuestionPreviewLoading ? 'opacity-0' : 'opacity-100'}`}
+                            onLoad={() => setIsQuestionPreviewLoading(false)}
+                            onError={() => { setIsQuestionPreviewLoading(false); setQuestionPreviewFailed(true); }}
                           />
                         </div>
                         <div className="pt-1 flex justify-end">
@@ -702,15 +712,16 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
             </div>
 
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* ========================================================================= */}
       {/* 4. MODAL: SOURCE MATERIAL / SLIDE VIEWER (CONCEPT LEVEL) */}
       {/* ========================================================================= */}
-      {activeSourceItem && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] shadow-xl max-w-2xl w-full p-6 sm:p-8 space-y-6 relative max-h-[85vh] flex flex-col">
+      {activeSourceItem && typeof document !== 'undefined' && createPortal(
+        <div className="bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in" style={{ position: 'fixed', inset: 0, zIndex: 9999 }}>
+          <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] shadow-xl max-w-2xl w-full p-6 sm:p-8 space-y-6 relative max-h-[90dvh] overflow-y-auto flex flex-col">
             
             <div className="flex items-start justify-between border-b border-[#EDE7F3] dark:border-[#302B35] pb-4">
               <div className="space-y-1">
@@ -813,17 +824,18 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
             </div>
 
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* ========================================================================= */}
       {/* 5. MODAL: SCHEDULE STUDY BLOCK (CONNECTS DIRECTLY TO CALENDAR) */}
       {/* ========================================================================= */}
-      {schedulingItem && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
+      {schedulingItem && typeof document !== 'undefined' && createPortal(
+        <div className="bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in" style={{ position: 'fixed', inset: 0, zIndex: 9999 }}>
           <form
             onSubmit={(e) => void handleScheduleStudySubmit(e)}
-            className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] shadow-xl max-w-md w-full p-6 space-y-5 relative"
+            className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] shadow-xl max-w-md w-full p-6 space-y-5 relative max-h-[90dvh] overflow-y-auto"
           >
             <div className="flex items-center justify-between border-b border-[#EDE7F3] dark:border-[#302B35] pb-3">
               <div>
@@ -922,7 +934,8 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
               </button>
             </div>
           </form>
-        </div>
+        </div>,
+        document.body,
       )}
 
     </div>

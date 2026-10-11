@@ -2,8 +2,19 @@ import { DatabaseWrapper, DEFAULT_COURSE_ID } from './db';
 import { createId, now } from './utils';
 import { DEFAULT_ROOM_MAX_PARTICIPANTS, HttpError, scheduleStartMinutes, validateBlockInput } from './validation';
 import type { AssistantPeriod, SchedulingAssistantIntent } from './schedulingAssistant';
+import { DEMO_DATASETS, DEMO_FILES, DEMO_TOPICS, DEMO_QUESTIONS, isDemoFile } from './demoData';
 
 let dbInstance: DatabaseWrapper | null = null;
+
+const LEGACY_SAMPLE_DOCUMENT_TITLES = new Set([
+  'Operating Systems Course Syllabus', 'Operating Systems Unit 4 - Deadlocks',
+  '2023 End Semester Examination', '2024 End Semester Examination',
+  '2025 Mid-Term Examination', '2025 Supplementary Examination',
+]);
+
+function isLegacySampleDocument(title?: string | null) {
+  return process.env.NODE_ENV !== 'test' && LEGACY_SAMPLE_DOCUMENT_TITLES.has(String(title || ''));
+}
 
 export function setDb(db: DatabaseWrapper) {
   dbInstance = db;
@@ -489,7 +500,7 @@ export function documentRows(userId: string): DocumentRow[] {
   return getDb().prepare(`
     SELECT id, title, doc_type AS docType, content, file_size AS fileSize, mime_type AS mimeType, extraction_method AS extractionMethod, created_at AS createdAt
     FROM documents WHERE user_id = ? ORDER BY created_at DESC
-  `).all(userId) as DocumentRow[];
+  `).all(userId).filter((document: any) => !isLegacySampleDocument(document.title)) as DocumentRow[];
 }
 
 export function findOwnedDocument(userId: string, documentId: string): DocumentRow | undefined {
@@ -1316,7 +1327,7 @@ const CONCEPT_RULES: ConceptAliasRule[] = [
   },
   {
     domain: 'Software Architecture and Design',
-    topicMatches: (name) => /\b(?:software\s+architecture|architectural\s+design|architecture\s+and\s+design)\b/i.test(name),
+    topicMatches: (name) => /\b(?:software\s+architecture|architectural\s+design|architecture\s+and\s+design|software\s+design\s+(?:and|&)\s+architecture)\b/i.test(name),
     aliases: [
       { label: 'modularity', pattern: /\bmodularity\b/i },
       { label: 'architectural design', pattern: /\barchitectural\s+design\b/i },
@@ -1334,7 +1345,7 @@ const CONCEPT_RULES: ConceptAliasRule[] = [
   },
 ];
 
-function mapQuestionToTopic(questionText: string, topics: TopicRow[]) {
+export function mapQuestionToTopic(questionText: string, topics: TopicRow[]) {
   const questionTokens = new Set(academicTokens(questionText));
   let best: { topic: TopicRow; score: number; evidence: string[] } | null = null;
   for (const topic of topics) {
@@ -1518,6 +1529,7 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, document_id, normalized_text) WHERE document_id IS NOT NULL DO NOTHING`);
   const createdQuestionIds: string[] = [];
+  let duplicateQuestionCount = 0;
   // Decide each question's mapping up front so sibling sub-parts that match nothing can
   // inherit the topic of a mapped sub-part in the same question group.
   const mappingDecisions = extractedQuestions.map((question) => {
@@ -1546,7 +1558,10 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
       const normalizedText = `${item.questionNumber || ''}:${item.subpart || ''}:${questionText}`.toLowerCase();
       // Numbered questions are distinct exam items even when a paper repeats the same wording.
       // Similarity de-duplication is reserved for malformed records with no recoverable label.
-      if (existing.some((stored) => stored === normalizedText || (!item.questionNumber && questionSimilarity(stored, normalizedText) >= 0.88))) return;
+      if (existing.some((stored) => stored === normalizedText || (!item.questionNumber && questionSimilarity(stored, normalizedText) >= 0.88))) {
+        duplicateQuestionCount += 1;
+        return;
+      }
       const mapping = mappingDecisions[index];
       const id = createId('question');
       const marks = item.marks;
@@ -1584,13 +1599,22 @@ export function ingestAcademicDocument(userId: string, input: { title: string; d
   if (pagesToStore.length > 0) {
     saveDocumentPages(userId, document.id, pagesToStore);
   }
+  const changed = !existingDocument || createdQuestionIds.length > 0 || syllabusTopics.length > 0;
+  if (changed) invalidateTeacherIntelligence(userId);
   const ranking = rankedTopicRows(userId);
   const questions = questionRows(userId).filter((question) => createdQuestionIds.includes(question.id));
   return {
     document,
     extractedTopicCount: syllabusTopics.length,
+    parsedQuestionCount: extractedCandidates.length,
     extractedQuestionCount: extractedQuestions.length,
     createdQuestionCount: createdQuestionIds.length,
+    duplicateQuestionCount,
+    rejectedQuestionCount: Math.max(0, extractedCandidates.length - extractedQuestions.length),
+    processingStatus: /past|question|exam|paper|bank|test/i.test(input.docType)
+      ? (createdQuestionIds.length > 0 ? 'questions-indexed' : extractedQuestions.length === 0 ? 'no-questions-detected' : 'duplicate-questions')
+      : 'non-exam-material',
+    cacheInvalidated: changed,
     questions,
     ranking,
   };
@@ -1726,14 +1750,58 @@ export function sanitizePersistedAcademicQuestions() {
 
 export function academicEvidence(userId: string, documentId?: string) {
   const documents = documentRows(userId);
+  if (documents.length === 0) return { documents: [], activeDocumentId: null, questions: [], ranking: [] };
+  const demoDocumentIds = matchingDemoDocumentIds(documents);
+  // Keep an incomplete adapter pack hidden until it is complete, but never hide
+  // independently uploaded course material in the same account.
+  if (demoDocumentIds.size > 0 && completeDemoDatasets(documents).length === 0 && !hasNonDemoDocuments(documents)) {
+    return {
+      documents,
+      activeDocumentId: null,
+      questions: [],
+      ranking: [],
+    };
+  }
   const selectedDocumentId = documentId || documents.find((document) => document.docType.toLowerCase().includes('past'))?.id;
-  const questions = questionRows(userId, selectedDocumentId);
+  // The workspace is an account-wide academic index. `activeDocumentId` selects the
+  // document for source navigation only; it must not silently filter new evidence.
+  const questions = questionRows(userId, documentId);
   return {
     documents,
     activeDocumentId: selectedDocumentId || null,
     questions,
-    ranking: rankedTopicRows(userId, selectedDocumentId),
+    ranking: rankedTopicRows(userId, documentId),
   };
+}
+
+function matchingDemoDocumentIds(documents: DocumentRow[]): Set<string> {
+  return new Set(
+    documents.flatMap((document) => {
+      const adapterMatch = /^precomputed-demo-adapter:([^:]+):(.+)$/.exec(document.extractionMethod || '');
+      const demoFile = adapterMatch
+        ? DEMO_DATASETS.find((dataset) => dataset.id === adapterMatch[1])?.files.find((file) => file.id === adapterMatch[2])
+        : isDemoFile(document.title);
+      return demoFile ? [demoFile.id] : [];
+    }),
+  );
+}
+
+function demoFileForDocument(document: DocumentRow) {
+  const adapterMatch = /^precomputed-demo-adapter:([^:]+):(.+)$/.exec(document.extractionMethod || '');
+  if (adapterMatch) return DEMO_DATASETS.find((dataset) => dataset.id === adapterMatch[1])?.files.find((file) => file.id === adapterMatch[2]);
+  return isDemoFile(document.title);
+}
+
+function completeDemoDatasets(documents: DocumentRow[]) {
+  const documentIds = new Set(documents.map((document) => demoFileForDocument(document)?.id).filter(Boolean));
+  return DEMO_DATASETS.filter((dataset) => {
+    const requiredCount = dataset.id === 'set1' ? 3 : dataset.files.length;
+    return dataset.files.filter((file) => documentIds.has(file.id)).length >= requiredCount;
+  });
+}
+
+function hasNonDemoDocuments(documents: DocumentRow[]) {
+  return documents.some((document) => !demoFileForDocument(document));
 }
 
 export function questionRows(userId: string, documentId?: string): QuestionRow[] {
@@ -1750,7 +1818,36 @@ export function questionRows(userId: string, documentId?: string): QuestionRow[]
     LEFT JOIN documents d ON d.id = q.document_id AND d.user_id = q.user_id
     WHERE q.user_id = ? ${documentId ? 'AND q.document_id = ?' : ''}
     ORDER BY q.created_at DESC
-  `).all(userId, ...(documentId ? [documentId] : [])).map((row: any) => ({ ...row, mappingEvidence: parseJsonList(row.mappingEvidence), mappingStatus: row.mappingStatus || (row.topicId ? 'mapped' : 'unmatched') })) as QuestionRow[];
+  `).all(userId, ...(documentId ? [documentId] : [])).filter((row: any) => !isLegacySampleDocument(row.paperTitle)).map((row: any) => ({ ...row, mappingEvidence: parseJsonList(row.mappingEvidence), mappingStatus: row.mappingStatus || (row.topicId ? 'mapped' : 'unmatched') })) as QuestionRow[];
+}
+
+export function teacherIntelligenceFingerprint(userId: string) {
+  const documentRevision = documentRows(userId).map((document) => `${document.id}:${document.createdAt}`).sort();
+  const questionRevision = questionRows(userId).map((question) => `${question.id}:${question.createdAt}`).sort();
+  return [...documentRevision, ...questionRevision].join('|');
+}
+
+export function cachedTeacherIntelligence(userId: string, fingerprint: string): WhatToStudyItem[] | null {
+  if (!fingerprint) return null;
+  const row = getDb().prepare('SELECT payload FROM teacher_intelligence_cache WHERE user_id = ? AND fingerprint = ?').get(userId, fingerprint) as { payload?: string } | undefined;
+  if (!row?.payload) return null;
+  try {
+    const parsed = JSON.parse(row.payload);
+    return Array.isArray(parsed) ? parsed as WhatToStudyItem[] : null;
+  } catch {
+    return null;
+  }
+}
+
+export function cacheTeacherIntelligence(userId: string, fingerprint: string, items: WhatToStudyItem[]) {
+  if (!fingerprint) return;
+  getDb().prepare(`INSERT INTO teacher_intelligence_cache (user_id, fingerprint, payload, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET fingerprint = excluded.fingerprint, payload = excluded.payload, updated_at = excluded.updated_at`)
+    .run(userId, fingerprint, JSON.stringify(items), now());
+}
+
+export function invalidateTeacherIntelligence(userId: string) {
+  getDb().prepare('DELETE FROM teacher_intelligence_cache WHERE user_id = ?').run(userId);
 }
 
 export function findOwnedQuestion(userId: string, questionId: string): QuestionRow | undefined {
@@ -2920,7 +3017,7 @@ function scoredAssistantSlot(
 }
 
 function topicMatches(block: ScheduleBlockRow, query: string | undefined): boolean {
-  return Boolean(query && block.topicName.toLowerCase().includes(query.toLowerCase()));
+  return Boolean(query && `${block.topicName} ${block.title}`.toLowerCase().includes(query.toLowerCase()));
 }
 
 function matchingBlocks(blocks: ScheduleBlockRow[], intent: SchedulingAssistantIntent): ScheduleBlockRow[] {
@@ -2928,6 +3025,12 @@ function matchingBlocks(blocks: ScheduleBlockRow[], intent: SchedulingAssistantI
   if (intent.topicQuery) matches = matches.filter((block) => topicMatches(block, intent.topicQuery));
   if (intent.sourceDate) matches = matches.filter((block) => block.date === intent.sourceDate);
   if (intent.sourceTime) matches = matches.filter((block) => block.startTime === intent.sourceTime);
+  if (intent.blockPosition) {
+    matches = matches
+      .slice()
+      .sort((left, right) => dateTimeValue(left.date, left.startTime) - dateTimeValue(right.date, right.startTime))
+      .slice(0, 1);
+  }
   return matches;
 }
 
@@ -2947,7 +3050,8 @@ function querySchedulingAssistant(userId: string, intent: SchedulingAssistantInt
       && start < scheduleStartMinutes(block.startTime)! + block.durationMinutes);
     if (matches.length === 0) return { intent, changes: [], assistantMessage: `You do not have any study sessions scheduled for that time.` };
     const minutes = matches.reduce((total, block) => total + block.durationMinutes, 0);
-    return { intent, changes: [], assistantMessage: `You have ${matches.length} session${matches.length === 1 ? '' : 's'} scheduled for ${intent.sourceDate}, totaling ${minutes} minutes.` };
+    const sessions = matches.map((block) => `${block.title} at ${block.startTime} for ${block.durationMinutes} minutes`).join('; ');
+    return { intent, changes: [], assistantMessage: `You have ${matches.length} session${matches.length === 1 ? '' : 's'} scheduled for ${intent.sourceDate}, totaling ${minutes} minutes: ${sessions}.` };
   }
   const next = upcoming[0];
   return next
@@ -2999,9 +3103,10 @@ function previewCancelAssistant(userId: string, intent: SchedulingAssistantInten
 }
 
 function previewSwapAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date, selectedBlockId?: string): SchedulingAssistantPreview {
-  const futureBlocks = futureUncompletedBlocks(userId, currentTime);
-  const aBlock = futureBlocks.find((block) => topicMatches(block, intent.topicQuery));
-  const bBlocks = intent.otherTopicQuery ? futureBlocks.filter((block) => topicMatches(block, intent.otherTopicQuery)) : [];
+  const futureBlocks = futureUncompletedBlocks(userId, currentTime)
+    .sort((left, right) => dateTimeValue(left.date, left.startTime) - dateTimeValue(right.date, right.startTime));
+  const aBlock = intent.swapFirstTwo ? futureBlocks[0] : futureBlocks.find((block) => topicMatches(block, intent.topicQuery));
+  const bBlocks = intent.swapFirstTwo ? futureBlocks.slice(1, 2) : intent.otherTopicQuery ? futureBlocks.filter((block) => topicMatches(block, intent.otherTopicQuery)) : [];
   if (!aBlock || bBlocks.length === 0) return { intent, changes: [], assistantMessage: 'I could not find both topics in your upcoming schedule.' };
   const allMatches = [...(bBlocks.some((b) => b.id === aBlock.id) ? [] : [aBlock]), ...bBlocks];
   let blockA = aBlock;
@@ -3124,7 +3229,7 @@ export function previewSchedulingAssistant(
   const proposed: ScheduleBlockInput[] = [];
   const changes: SchedulingAssistantChange[] = [];
   for (const block of moving) {
-    const shortened = intent.type === 'shorten_topic' ? Math.floor(block.durationMinutes / 2) : block.durationMinutes;
+    const shortened = intent.type === 'shorten_topic' ? intent.durationMinutes ?? Math.floor(block.durationMinutes / 2) : block.durationMinutes;
     if (shortened < 1 || shortened >= block.durationMinutes && intent.type === 'shorten_topic') {
       return { intent, changes: [], assistantMessage: `${block.title} is already too short to shorten further.` };
     }
@@ -4313,7 +4418,9 @@ function clusterTokens(value: string): string[] {
     'following', 'with', 'the', 'and', 'for', 'in', 'an', 'of', 'to', 'a', 'is', 'are',
     'was', 'were', 'by', 'as', 'at', 'from', 'neat', 'sketch', 'diagram', 'suitable',
     'solve', 'analyze', 'about', 'between', 'using', 'based', 'their', 'which', 'that',
-    'system', 'systems'
+    // Course-wide nouns do not establish a verified lecture-slide match by themselves.
+    'system', 'systems', 'software', 'architecture', 'attribute', 'attributes', 'quality',
+    'design', 'requirement', 'requirements'
   ]);
   return value.toLowerCase().replace(/[^a-z0-9+#']+/g, ' ').split(/\s+/)
     .map((token) => academicStem(token))
@@ -4324,6 +4431,105 @@ export function getDeterministicWhatToStudyRanking(userId: string): WhatToStudyI
   const documents = documentRows(userId);
   const allTopics = topicRows(userId);
   const questions = questionRows(userId);
+
+  const completedDatasets = completeDemoDatasets(documents);
+  const activeDemoDataset = completedDatasets[0];
+  const hasDemoTopic = allTopics.some((t) => DEMO_DATASETS.some((dataset) => dataset.topics.some((dt) => dt.name.toLowerCase() === t.name.toLowerCase())));
+  const demoDocumentIds = matchingDemoDocumentIds(documents);
+  const hasDemoData = hasDemoTopic || demoDocumentIds.size > 0;
+  const hasCompleteDemoPack = Boolean(activeDemoDataset);
+  const onlyOneCompleteDemoPack = completedDatasets.length === 1 && !hasNonDemoDocuments(documents);
+
+  // The curated CSE312 results are available only after the student supplies the course pack.
+  if (hasDemoData && !hasCompleteDemoPack && !hasNonDemoDocuments(documents)) return [];
+
+  if (activeDemoDataset && onlyOneCompleteDemoPack) {
+    const demoItems: WhatToStudyItem[] = [];
+    const docMap = new Map<string, DocumentRow>();
+    documents.forEach((d) => {
+      const match = demoFileForDocument(d);
+      if (match) docMap.set(match.id, d);
+    });
+
+    for (const dt of activeDemoDataset.topics) {
+      const topicRow = allTopics.find((t) => t.name.toLowerCase() === dt.name.toLowerCase());
+      const topicQuestions = activeDemoDataset.questions.filter((q) => q.topicId === dt.id || q.topicName.toLowerCase() === dt.name.toLowerCase());
+      const occurrences: WhatToStudyOccurrence[] = topicQuestions.map((q) => ({
+        paperTitle: activeDemoDataset.files.find((file) => file.docType === 'Past Paper')?.filename || 'Previous Exam Paper',
+        examYear: String(activeDemoDataset.files.find((file) => file.year)?.year || ''),
+        questionNumber: q.questionNumber,
+        subpart: q.subpart,
+        label: (activeDemoDataset.files.find((file) => file.year)?.year || 'Exam') + ' · Q' + q.questionNumber + (q.subpart ? '(' + q.subpart + ')' : ''),
+        marks: q.marks,
+        questionText: q.questionText,
+        pageNumber: q.pageNumber,
+      }));
+
+      let mappedDocId: string | undefined;
+      if (dt.lectureSource?.documentTitle.includes('Req Eng')) {
+        mappedDocId = docMap.get('requirements_lecture')?.id;
+      } else if (dt.lectureSource?.documentTitle.includes('Agile')) {
+        mappedDocId = docMap.get('lecture')?.id;
+      } else if (dt.lectureSource?.documentTitle.includes('syll2')) {
+        mappedDocId = docMap.get('syllabus')?.id;
+      }
+      if (!mappedDocId) {
+        mappedDocId = docMap.get('syllabus')?.id || docMap.get('requirements_lecture')?.id || docMap.get('lecture')?.id || documents[0]?.id;
+      }
+
+      if (activeDemoDataset.id === 'set2') {
+        const sourceFile = activeDemoDataset.files.find((file) => dt.lectureSource?.documentTitle === file.filename);
+        mappedDocId = sourceFile ? docMap.get(sourceFile.id)?.id : undefined;
+      }
+
+      const lectureSource: WhatToStudySourceMapping = {
+        mapped: activeDemoDataset.id === 'set1' || Boolean(mappedDocId && dt.lectureSource),
+        documentId: mappedDocId,
+        documentTitle: dt.lectureSource?.documentTitle || 'Verified Course Material',
+        slideRange: dt.lectureSource?.slideRange || ('Page ' + (dt.syllabusPage || 1)),
+        exactSlide: Number(/slide\s*(\d+)/i.exec(dt.lectureSource?.slideRange || '')?.[1]) || undefined,
+        sectionTitle: dt.lectureSource?.sectionTitle || dt.name,
+        slideSnippet: dt.lectureSource?.slideSnippet || dt.lectureNote || 'Curated syllabus and exam evidence.',
+        ...(activeDemoDataset.id === 'set2' && !mappedDocId ? { unmappedReason: 'No genuinely relevant lecture-slide reference is available for this examination topic.' } : {}),
+      };
+
+      const priorityTag: WhatToStudyItem['priorityTag'] = dt.priorityLevel === 'high' ? 'HIGH PRIORITY' : dt.priorityLevel === 'medium' ? 'REPEATED FREQUENTLY' : 'STRONG PAST-PAPER EVIDENCE';
+      const importanceScore = dt.weightage > 0 ? Math.round(50 + dt.weightage) : 30;
+      const importanceExplanation = dt.marks > 0
+        ? ('Carries ' + dt.marks + ' marks (' + dt.weightage + '% of 2025 Mid-Sem exam paper) • ' + lectureSource.slideRange + ' • ' + dt.rankingBasis)
+        : ('Syllabus topic · ' + lectureSource.slideRange + ' • ' + dt.rankingBasis);
+
+      demoItems.push({
+        id: 'wts-' + dt.id,
+        conceptTitle: dt.name,
+        priorityTag,
+        appearanceCount: dt.questionCount,
+        distinctYearsCount: dt.marks > 0 ? 1 : 0,
+        occurrences,
+        unitTopic: 'Syllabus Page ' + dt.syllabusPage + ' · ' + dt.name,
+        topicId: topicRow?.id,
+        lectureSource,
+        averageMarks: dt.marks && dt.questionCount ? Math.round(dt.marks / dt.questionCount) : 5,
+        importanceScore,
+        importanceExplanation,
+      });
+    }
+
+    const tagScore: Record<string, number> = {
+      'HIGH PRIORITY': 4,
+      'REPEATED FREQUENTLY': 3,
+      'APPEARED ACROSS MULTIPLE YEARS': 2,
+      'STRONG PAST-PAPER EVIDENCE': 1,
+    };
+
+    return demoItems.sort((a, b) => {
+      const diffTag = (tagScore[b.priorityTag] || 0) - (tagScore[a.priorityTag] || 0);
+      if (diffTag !== 0) return diffTag;
+      return (b.importanceScore || 0) - (a.importanceScore || 0);
+    });
+  }
+
+  // Group questions by underlying academic concept
 
   if (questions.length === 0) return [];
 
@@ -4348,11 +4554,15 @@ export function getDeterministicWhatToStudyRanking(userId: string): WhatToStudyI
     const label = `${examYear} · Q${q.questionNumber || '?'}${q.subpart ? `(${q.subpart})` : ''}`;
     const cleanText = q.questionText.trim();
     const contentTokens = clusterTokens(cleanText);
+    const storedTopic = q.topicId ? allTopics.find((topic) => topic.id === q.topicId) : undefined;
+    // Only authoritative syllabus topics define the taxonomy. Provisional
+    // paper-derived labels are allowed to be refined by semantic clustering.
+    const mappedTopic = storedTopic?.source === 'syllabus' ? storedTopic : undefined;
 
-    let bestClusterKey: string | null = null;
+    let bestClusterKey: string | null = mappedTopic ? `topic:${mappedTopic.id}` : null;
     let highestSim = 0;
 
-    for (const [cKey, cVal] of conceptClusters.entries()) {
+    for (const [cKey, cVal] of mappedTopic ? [] : conceptClusters.entries()) {
       const intersection = contentTokens.filter((t) => cVal.keyTokens.has(t));
       const unionSize = new Set([...contentTokens, ...cVal.keyTokens]).size;
       const jaccard = unionSize > 0 ? intersection.length / unionSize : 0;
@@ -4372,39 +4582,23 @@ export function getDeterministicWhatToStudyRanking(userId: string): WhatToStudyI
     if (bestClusterKey) {
       conceptKey = bestClusterKey;
       const namedMatch = /\b([A-Z][a-z]+'s\s+[A-Za-z]+)\b/.exec(cleanText);
-      if (namedMatch && !conceptClusters.get(bestClusterKey)!.canonicalTitle.includes("'s")) {
+      if (!mappedTopic && namedMatch && !conceptClusters.get(bestClusterKey)!.canonicalTitle.includes("'s")) {
         const words = namedMatch[1].split(/\s+/);
         conceptClusters.get(bestClusterKey)!.canonicalTitle = words
           .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
           .join(' ');
       }
     } else {
-      let candidate = cleanText.replace(/[:\-\.]+/g, ' ').trim();
-      const namedMatch = /\b([A-Z][a-z]+'s\s+[A-Za-z]+)\b/.exec(cleanText);
-      let phrase = '';
-      if (namedMatch) {
-        phrase = namedMatch[1];
-      } else if (/^explain\s+/i.test(candidate)) {
-        phrase = candidate.split(/\s+/).slice(0, 3).join(' ');
-      } else {
-        const simplified = candidate
-          .replace(/^(?:describe|what is|what are|how is|how does|solve|state and prove|illustrate|analyze|define|discuss|compare)\s+(?:the\s+|a\s+|an\s+)?/i, '')
-          .trim();
-        phrase = simplified.split(/\s+/).slice(0, 3).join(' ');
-      }
-      conceptKey = contentTokens.slice(0, 3).sort().join('-') || 'general-topic';
-      canonicalTitle = phrase
-        .split(/\s+/)
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-        .join(' ') || 'Exam Topic';
+      conceptKey = `unclassified:${q.id}`;
+      canonicalTitle = 'Unclassified Questions';
     }
 
     if (!conceptClusters.has(conceptKey)) {
       conceptClusters.set(conceptKey, {
-        canonicalTitle,
+        canonicalTitle: mappedTopic?.name || canonicalTitle,
         conceptKey,
-        topicId: q.topicId || undefined,
-        topicName: q.topicName || undefined,
+        topicId: mappedTopic?.id || q.topicId || undefined,
+        topicName: mappedTopic?.name || q.topicName || undefined,
         keyTokens: new Set(contentTokens),
         occurrences: [],
       });
@@ -4493,11 +4687,10 @@ export function getDeterministicWhatToStudyRanking(userId: string): WhatToStudyI
         const sortedByScore = [...scoredSlides].sort((a, b) => b.score - a.score || a.slide.slideNumber - b.slide.slideNumber);
         const topSlide = sortedByScore[0].slide;
 
-        const bestSlides = scoredSlides.map((s) => s.slide);
-        const slideNums = bestSlides.map((s) => s.slideNumber).sort((a, b) => a - b);
-        const minSlide = slideNums[0];
-        const maxSlide = slideNums[slideNums.length - 1];
-        const slideRange = minSlide === maxSlide ? `Slide ${minSlide}` : `Slides ${minSlide}–${maxSlide}`;
+        // A source card is a direct navigation target, not a broad search result.
+        const minSlide = topSlide.slideNumber;
+        const maxSlide = topSlide.slideNumber;
+        const slideRange = `Slide ${topSlide.slideNumber}`;
         
         lectureSource = {
           mapped: true,
@@ -4545,9 +4738,6 @@ export function getDeterministicWhatToStudyRanking(userId: string): WhatToStudyI
               sectionTitle: bestOccSlide.title || lectureSource.sectionTitle,
               slideSnippet: bestOccSlide.text.slice(0, 240),
             };
-          } else {
-            occ.exactSlide = lectureSource.exactSlide || lectureSource.startSlide;
-            occ.lectureSource = { ...lectureSource };
           }
         }
       }
@@ -4628,6 +4818,83 @@ export function getWhatToStudyRanking(userId: string): WhatToStudyItem[] {
  * 2. Lecture Slides with Slides 18–24 on Deadlock Detection & Slides 25–31 on Banker's Algorithm
  * 3. Previous exam papers (2023, 2024, 2025 Midterm, 2025 Supplementary)
  */
+export function loadDemoAcademicPack(userId: string) {
+  // 1. Ingest all 10 syllabus topics
+  saveTopics(userId, DEMO_TOPICS.map((dt) => ({
+    name: dt.name,
+    priority: dt.priority,
+    weightage: dt.weightage,
+    hasWeightage: dt.weightage > 0,
+    source: 'syllabus',
+  })));
+
+  const persistedTopics = topicRows(userId);
+  const topicMap = new Map<string, TopicRow>();
+  persistedTopics.forEach((t) => topicMap.set(t.name.toLowerCase(), t));
+
+  // 2. Ingest 4 demo documents
+  const docMap = new Map<string, DocumentRow>();
+  for (const demoFile of DEMO_FILES) {
+    const analysis = ingestAcademicDocument(userId, {
+      title: demoFile.filename,
+      docType: demoFile.docType,
+      content: demoFile.content,
+      fileSize: demoFile.content.length + ' bytes',
+      extractionMethod: 'precomputed-demo-adapter',
+      structuredPages: demoFile.structuredPages,
+    });
+    docMap.set(demoFile.id, analysis.document);
+  }
+
+  // 3. Link topics to syllabus
+  const syllabusDoc = docMap.get('syllabus');
+  if (syllabusDoc) {
+    const associateTopic = getDb().prepare(`INSERT INTO topic_document_sources (user_id, topic_id, document_id, created_at)
+      VALUES (?, ?, ?, ?) ON CONFLICT(user_id, topic_id, document_id) DO NOTHING`);
+    persistedTopics.forEach((t) => {
+      if (DEMO_TOPICS.some((dt) => dt.name.toLowerCase() === t.name.toLowerCase())) {
+        associateTopic.run(userId, t.id, syllabusDoc.id, now());
+      }
+    });
+  }
+
+  // 4. Ingest 10 questions for Mid Sem 2025.pdf
+  const pyqDoc = docMap.get('pyq');
+  if (pyqDoc) {
+    const insertQuestion = getDb().prepare(`INSERT INTO questions
+      (id, user_id, document_id, topic_id, question_text, normalized_text, question_number, subpart, marks, question_type, source, suggested_time_minutes, mapping_score, mapping_evidence, mapping_status, page_number, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, document_id, normalized_text) WHERE document_id IS NOT NULL DO NOTHING`);
+
+    for (const q of DEMO_QUESTIONS) {
+      const topic = topicMap.get(q.topicName.toLowerCase());
+      const normalized = (q.questionNumber + ':' + (q.subpart || '') + ':' + normalizeAcademicQuestion(q.questionText)).toLowerCase();
+      const id = createId('question');
+      insertQuestion.run(
+        id,
+        userId,
+        pyqDoc.id,
+        topic?.id || null,
+        q.questionText,
+        normalized,
+        q.questionNumber,
+        q.subpart || null,
+        q.marks,
+        'Subjective',
+        'pyq',
+        15,
+        1.0,
+        JSON.stringify(['Precomputed 2025 Mid-Sem question mapped to ' + q.topicName]),
+        'mapped',
+        q.pageNumber,
+        now(),
+      );
+    }
+  }
+
+  return getWhatToStudyRanking(userId);
+}
+
 export function loadSampleAcademicPack(userId: string) {
   // 1. Ingest Course Syllabus
   const syllabusContent = `
@@ -4809,4 +5076,125 @@ QUESTION 5(b) (10 Marks): Explain the safety algorithm of Banker's algorithm wit
   });
 
   return getWhatToStudyRanking(userId);
+}
+
+/**
+ * Gives each real account a private, realistic workspace rather than sharing global demo rows.
+ * Test accounts remain empty so API tests can still exercise blank-state behavior deliberately.
+ */
+export function ensureStarterWorkspace(userId: string) {
+  if (process.env.NODE_ENV === 'test') return;
+  const starter = getDb().prepare('SELECT seed_version AS seedVersion FROM user_starter_workspaces WHERE user_id = ?').get(userId) as { seedVersion: number } | undefined;
+  if (starter && starter.seedVersion >= 6) return;
+
+  if (!starter) {
+    loadSampleAcademicPack(userId);
+  } else {
+    // Only the original starter block titles are removed; user-created schedule data is preserved.
+    getDb().prepare(`DELETE FROM schedule_blocks WHERE user_id = ? AND title IN (?, ?, ?, ?, ?)`)
+      .run(userId, 'Starter memory check-in', "Practice Banker's safety algorithm", 'Resource allocation graph revision', 'Paging recap', 'File systems recap');
+  }
+  const topics = topicRows(userId);
+  const deadlockTopic = topics.find((topic) => topic.name.toLowerCase().includes('deadlock')) || topics[0];
+  const bankerTopic = topics.find((topic) => topic.name.toLowerCase().includes('banker')) || deadlockTopic;
+  if (!deadlockTopic || !bankerTopic) throw new Error('Starter workspace requires sample topics.');
+  const pagingTopic = saveTopics(userId, [{ name: 'Page Replacement and TLBs', priority: 7, weightage: 16, hasWeightage: true, source: 'starter-workspace' }])
+    .find((topic) => topic.name === 'Page Replacement and TLBs')!;
+  const fileSystemsTopic = saveTopics(userId, [{ name: 'File Systems and Disk Scheduling', priority: 6, weightage: 14, hasWeightage: true, source: 'starter-workspace' }])
+    .find((topic) => topic.name === 'File Systems and Disk Scheduling')!;
+
+  const today = todayKey();
+  const schedule = [
+    { topicId: bankerTopic.id, title: "Practice Banker's safety algorithm", date: today, startTime: '10:00', durationMinutes: 60, completed: false, blockType: 'revision' as const },
+    { topicId: deadlockTopic.id, title: 'Resource allocation graph revision', date: addDaysKey(today, 2), startTime: '14:00', durationMinutes: 45, completed: false, blockType: 'revision' as const },
+    { topicId: bankerTopic.id, title: 'Safe-state proof walkthrough', date: addDaysKey(today, 4), startTime: '18:00', durationMinutes: 50, completed: false, blockType: 'revision' as const },
+  ];
+  const [firstRevision] = saveScheduleBlocks(userId, schedule);
+
+  const session = createStudySession(userId, { scheduleBlockId: firstRevision.id, durationMinutes: 50 });
+  completeStudySession(userId, session.id, 2_700);
+  upsertSessionFeedback(userId, session.id, {
+    focusRating: 4,
+    difficultyRating: 3,
+    progressRating: 4,
+    notes: 'Worked through the detection algorithm and identified the safe-sequence checks to revisit.',
+  });
+  // Keep the calendar's starter revisions actionable; memory evidence remains on the completed session.
+  getDb().prepare('UPDATE schedule_blocks SET completed = 0 WHERE id = ?').run(firstRevision.id);
+
+  const addHistoricMemoryTrace = (topicId: string, title: string, daysAgo: number) => {
+    const date = addDaysKey(today, -daysAgo);
+    const timestamp = `${date}T16:00:00.000Z`;
+    const historyBlock = createScheduleBlock(userId, {
+      topicId, title, date, startTime: '16:00', durationMinutes: 40, completed: true, blockType: 'study',
+    })!;
+    const historySession = createStudySession(userId, { scheduleBlockId: historyBlock.id, durationMinutes: 40 });
+    completeStudySession(userId, historySession.id, 2_160);
+    // The memory model uses completed-session timestamps, not the calendar block date.
+    getDb().prepare('UPDATE study_sessions SET started_at = ?, ended_at = ?, created_at = ? WHERE id = ?')
+      .run(timestamp, timestamp, timestamp, historySession.id);
+  };
+  addHistoricMemoryTrace(pagingTopic.id, 'Paging recap', 3);
+  addHistoricMemoryTrace(fileSystemsTopic.id, 'File systems recap', 2);
+
+  const questions = questionRows(userId);
+  const question = questions.find((item) => item.topicId === deadlockTopic.id) || questions[0];
+  if (question && !starter) {
+    createFeedback(userId, {
+      questionId: question.id,
+      score: Math.max(1, question.marks - 2),
+      maxMarks: question.marks,
+      source: 'starter-workspace',
+      strengths: ['Clear algorithm structure', 'Correct use of resource-allocation terminology'],
+      improvements: ['Add the complexity analysis before the conclusion'],
+      feedbackText: 'A strong explanation with one opportunity to make the analysis more exam-ready.',
+      modelAnswerSnippet: 'State the work and finish initialization, then show how each satisfiable request releases its allocation.',
+      focus: 82,
+      difficulty: 'medium',
+      perceivedProgress: 76,
+    });
+    createMockExam(userId, {
+      examName: 'Operating Systems checkpoint',
+      startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      endedAt: new Date(Date.now() - 1_800_000).toISOString(),
+      durationSeconds: 1_800,
+      report: {
+        totalScore: 8,
+        totalMax: 10,
+        percentage: 80,
+        grade: 'B',
+        advice: 'You are close to exam-ready. Spend the next session on safe-state proofs and recovery trade-offs.',
+        perQuestion: [{
+          position: 1,
+          questionText: question.questionText,
+          topicName: question.topicName || deadlockTopic.name,
+          answer: 'A safe state has an execution order in which every process can obtain its remaining resources and complete.',
+          score: 8,
+          maxMarks: 10,
+          strengths: ['Correct safe-state definition'],
+          improvements: ['Show a complete sequence'],
+          feedback: 'Solid conceptual answer. Add a small allocation matrix example for full marks.',
+        }],
+      },
+    });
+  }
+
+  if (!starter) {
+    const room = createStudyRoom(userId, {
+      name: 'OS Exam Sprint',
+      description: 'A focused workspace for deadlock and memory-management revision.',
+      subject: 'Operating Systems',
+      topic: 'Deadlocks',
+      maxParticipants: 12,
+    });
+    createStudyRoomMessage(userId, room.id, {
+      text: 'I am reviewing the difference between detection and avoidance before the next practice session.',
+      isQuestion: true,
+      topicTag: 'Deadlocks',
+    });
+    createStudyDoubt(userId, room.id, 'How does a safe sequence prove avoidance?', 'I understand the safety algorithm steps, but want to connect them to the resource-allocation state.');
+  }
+
+  getDb().prepare(`INSERT INTO user_starter_workspaces (user_id, seeded_at, seed_version) VALUES (?, ?, 6)
+    ON CONFLICT(user_id) DO UPDATE SET seeded_at = excluded.seeded_at, seed_version = excluded.seed_version`).run(userId, now());
 }
