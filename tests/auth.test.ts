@@ -18,10 +18,12 @@ describe('auth', () => {
     removeTempDir(server.dbDir);
   });
 
-  it('health is public and no longer exposes hasGeminiKey', async () => {
+  it('health is public and exposes only non-secret deployment metadata', async () => {
     const { status, json } = await api.request('/api/health');
     assert.strictEqual(status, 200);
-    assert.deepStrictEqual(json, { status: 'ok' });
+    assert.strictEqual(json.status, 'ok');
+    assert.strictEqual(typeof json.buildCommit, 'string');
+    assert.strictEqual(typeof json.nodeEnv, 'string');
     assert.ok(!('hasGeminiKey' in json));
   });
 

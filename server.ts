@@ -46,6 +46,20 @@ app.use(corsMiddleware(process.env.LAZYLIFT_CORS_ORIGINS));
 app.use(express.json({ limit: '25mb' }));
 
 const PORT = Number(process.env.APP_PORT || process.env.PORT || 3000);
+const BUILD_COMMIT = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'unknown';
+const teacherIntelligenceJobs = new Map<string, Promise<unknown>>();
+
+function logAcademicDiagnostic(stage: string, fields: Record<string, string | number | boolean | undefined>) {
+  const details = Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(' ');
+  console.info(`[academic-diagnostic] build=${BUILD_COMMIT} stage=${stage}${details ? ` ${details}` : ''}`);
+}
+
+function revisionId(fingerprint: string) {
+  return createHash('sha256').update(fingerprint).digest('hex').slice(0, 12);
+}
 
 type TopicInput = {
   name: string;
@@ -63,7 +77,7 @@ const userIdOf = (req: express.Request): string => (req as AuthenticatedRequest)
 
 // Health check endpoint (public)
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', buildCommit: BUILD_COMMIT, nodeEnv: process.env.NODE_ENV || 'development' });
 });
 
 // ---- Auth (public) ----
@@ -1304,7 +1318,11 @@ export async function synthesizeTeacherIntelligence(
   if (questions.length === 0) return [];
   const fingerprint = services.teacherIntelligenceFingerprint(userId);
   const cached = services.cachedTeacherIntelligence(userId, fingerprint);
-  if (cached) return cached;
+  if (cached) {
+    logAcademicDiagnostic('teacher-intelligence', { userId, revision: revisionId(fingerprint), cache: 'hit', geminiConfigured: Boolean(aiClient) });
+    return cached;
+  }
+  logAcademicDiagnostic('teacher-intelligence', { userId, revision: revisionId(fingerprint), cache: 'miss', geminiConfigured: Boolean(aiClient) });
   if (!aiClient) return fallback();
 
   const allTopics = services.topicRows(userId);
@@ -1634,6 +1652,7 @@ CRITICAL GROUNDING CONSTRAINTS:
     // Do not let a synthesis started before an upload replace the newer revision's cache.
     if (services.teacherIntelligenceFingerprint(userId) === fingerprint) {
       services.cacheTeacherIntelligence(userId, fingerprint, items);
+      logAcademicDiagnostic('slide-matching', { userId, revision: revisionId(fingerprint), cache: 'stored', mappedItems: items.filter((item) => item.lectureSource.mapped).length });
     }
     return items;
   } catch (error) {
@@ -1789,7 +1808,11 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
       model: 'Precomputed Demo Data',
     };
 
-    console.log(`[academic-upload] user=${userId} document=${analysis.document.id} "${analysis.document.title}" -> method=precomputed-demo-adapter:${demoDataset.id}:${demoMatch.id}, text=${demoMatch.content.length}, pages=${demoMatch.structuredPages.length}, parsed=${analysis.parsedQuestionCount}, indexed=${analysis.createdQuestionCount}, duplicates=${analysis.duplicateQuestionCount}, rejected=${analysis.rejectedQuestionCount}, status=${analysis.processingStatus}`);
+    logAcademicDiagnostic('upload', {
+      userId, documentId: analysis.document.id, documentHash: payloadSha256, extraction: `demo:${demoDataset.id}:${demoMatch.id}`,
+      classification: 'precomputed', parsed: analysis.parsedQuestionCount, indexed: analysis.createdQuestionCount,
+      duplicates: analysis.duplicateQuestionCount, rejected: analysis.rejectedQuestionCount,
+    });
     return {
       analysis: {
         ...analysis,
@@ -1991,7 +2014,12 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
     syllabusTopics,
   });
 
-  console.log(`[academic-upload] user=${userId} document=${analysis.document.id} "${title}" -> method=${extractionMethod}, text=${content.length}, pages=${structuredPages.length}, parsed=${analysis.parsedQuestionCount}, indexed=${analysis.createdQuestionCount}, duplicates=${analysis.duplicateQuestionCount}, rejected=${analysis.rejectedQuestionCount}, status=${analysis.processingStatus}`);
+  const classificationPath = aiStatus.attempted ? (aiStatus.ok ? 'gemini' : 'deterministic-fallback') : (isExamDoc ? 'deterministic' : 'skipped');
+  logAcademicDiagnostic('upload', {
+    userId, documentId: analysis.document.id, documentHash: payloadSha256, extraction: extractionMethod,
+    classification: classificationPath, parsed: analysis.parsedQuestionCount, indexed: analysis.createdQuestionCount,
+    duplicates: analysis.duplicateQuestionCount, rejected: analysis.rejectedQuestionCount,
+  });
 
   return {
     analysis: {
@@ -2935,10 +2963,22 @@ app.get('/api/academic/what-to-study', async (req, res) => {
     const userId = userIdOf(req);
     const fingerprint = services.teacherIntelligenceFingerprint(userId);
     const cached = services.cachedTeacherIntelligence(userId, fingerprint);
-    if (cached) return res.json({ whatToStudy: cached, synthesisPending: false });
+    if (cached) {
+      logAcademicDiagnostic('what-to-study', { userId, revision: revisionId(fingerprint), cache: 'hit', slideMatching: 'cached' });
+      return res.json({ whatToStudy: cached, synthesisPending: false });
+    }
     const items = services.getDeterministicWhatToStudyRanking(userId);
     if (items.length > 0 && getAIClient()) {
-      void synthesizeTeacherIntelligence(userId, getAIClient()).catch((error) => console.warn('[academic] background synthesis failed:', error));
+      const jobKey = `${userId}:${fingerprint}`;
+      if (!teacherIntelligenceJobs.has(jobKey)) {
+        const job = synthesizeTeacherIntelligence(userId, getAIClient())
+          .catch((error) => console.warn('[academic] background synthesis failed:', error))
+          .finally(() => teacherIntelligenceJobs.delete(jobKey));
+        teacherIntelligenceJobs.set(jobKey, job);
+      }
+      logAcademicDiagnostic('what-to-study', { userId, revision: revisionId(fingerprint), cache: 'miss', slideMatching: 'deterministic', mappedItems: items.filter((item) => item.lectureSource.mapped).length, synthesis: teacherIntelligenceJobs.has(jobKey) ? 'in-flight' : 'none' });
+    } else {
+      logAcademicDiagnostic('what-to-study', { userId, revision: revisionId(fingerprint), cache: 'miss', slideMatching: 'deterministic', mappedItems: items.filter((item) => item.lectureSource.mapped).length, synthesis: 'not-started' });
     }
     return res.json({ whatToStudy: items, synthesisPending: items.length > 0 });
   } catch (error) {
@@ -3559,6 +3599,11 @@ export async function createApp() {
 
 async function startServer() {
   await createApp();
+  logAcademicDiagnostic('startup', {
+    nodeEnv: process.env.NODE_ENV || 'development',
+    geminiConfigured: Boolean(getAIClient()),
+    geminiModel: GEMINI_MODEL,
+  });
 
   app.use('/api', (_req, res) => sendError(res, 404, 'API route not found.'));
 
