@@ -5,7 +5,11 @@ services:
     repo: https://github.com/GradienttAscent/ll
     branch: main
     autoDeploy: true
-    plan: free
+    plan: starter
+    disk:
+      name: lazylift-data
+      mountPath: /var/data
+      sizeGB: 1
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
@@ -13,7 +17,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: LAZYLIFT_DATA_DIR
-        value: /tmp/lazylift-data
+        value: /var/data
       - key: GEMINI_API_KEY
         sync: false
       - key: LAZYLIFT_CORS_ORIGINS
