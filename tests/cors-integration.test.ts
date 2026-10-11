@@ -227,7 +227,10 @@ describe('COR cross-origin requests against the real application', () => {
   it('COR-14 serves the public health check with the allow header', async () => {
     const response = await fetch(`${server.baseUrl}/api/health`, { headers: { Origin: VERCEL_ORIGIN } });
     assert.strictEqual(response.status, 200);
-    assert.deepStrictEqual(await response.json(), { status: 'ok' });
+    const health = await response.json();
+    assert.strictEqual(health.status, 'ok');
+    assert.strictEqual(typeof health.buildCommit, 'string');
+    assert.strictEqual(typeof health.nodeEnv, 'string');
     assert.strictEqual(response.headers.get('access-control-allow-origin'), VERCEL_ORIGIN);
   });
 

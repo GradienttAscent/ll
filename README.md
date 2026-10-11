@@ -20,7 +20,9 @@ Register or log in through the web client. LazyLift stores an authenticated sess
 
 ## Split Deployment
 
-For the Vercel frontend, define the Production environment variable `VITE_API_BASE_URL` as `https://lazylift-backend.onrender.com` before building. On Render, set `LAZYLIFT_CORS_ORIGINS` to `https://ll-three-gilt.vercel.app` and keep `LAZYLIFT_DATA_DIR` on the persistent disk mount `/var/data`; changing either deployment setting requires a redeploy. The Render service must use a paid service tier because persistent disks are unavailable on the free tier, and the disk must be declared in `render.yaml`. Do not use `/tmp` for the database because Render may clear it when the service restarts or is redeployed.
+Vercel hosts only the frontend bundle; Render hosts the API and its persistent SQLite database. For Vercel Production, define `VITE_API_BASE_URL` as `https://lazylift-backend.onrender.com` before building. `vercel.json` embeds Vercel's Git SHA as `VITE_BUILD_COMMIT`. On Render, set `LAZYLIFT_CORS_ORIGINS` to `https://ll-three-gilt.vercel.app` and keep `LAZYLIFT_DATA_DIR` on the persistent disk mount `/var/data`; changing either deployment setting requires a redeploy. The Render service must use a paid service tier because persistent disks are unavailable on the free tier, and the disk must be declared in `render.yaml`. Do not use `/tmp` for the database because Render may clear it when the service restarts or is redeployed.
+
+To verify a deployment, inspect the browser console for `[lazylift-runtime]` (frontend build SHA and API origin), then open `<api-origin>/api/health` (backend build SHA and environment). Both deployment builds must contain the expected commit. For an upload comparison, match the uploaded file's SHA256 and `revision` from `[academic-diagnostic]` logs; do not log document contents or credentials.
 
 ## Scripts
 

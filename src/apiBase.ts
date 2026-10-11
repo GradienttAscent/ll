@@ -5,6 +5,7 @@
 // On Vercel the value must be set at BUILD time, because Vite inlines import.meta.env when
 // it bundles, and must point at the Render backend, e.g. https://lazylift-backend.onrender.com
 const configured = (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_API_BASE_URL : '') ?? '';
+export const FRONTEND_BUILD_COMMIT = (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_BUILD_COMMIT : '') || 'unknown';
 
 export const API_BASE_URL = (() => {
   // If running in a browser on loopback (localhost / 127.0.0.1), always keep requests
@@ -32,4 +33,12 @@ export function apiUrl(path: string): string {
   if (ABSOLUTE_URL.test(path)) return path;
   if (!path.startsWith('/')) return path;
   return `${API_BASE_URL}${path}`;
+}
+
+/** Non-secret deployment details for correlating browser requests with API logs. */
+export function frontendRuntimeInfo() {
+  return {
+    apiOrigin: API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : 'same-origin'),
+    buildCommit: FRONTEND_BUILD_COMMIT,
+  };
 }

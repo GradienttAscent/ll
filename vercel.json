@@ -1,0 +1,3 @@
+{
+  "buildCommand": "VITE_BUILD_COMMIT=$VERCEL_GIT_COMMIT_SHA npm run build"
+}
