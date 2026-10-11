@@ -15,7 +15,7 @@ import * as services from './services';
 import * as fallbackAi from './fallbackAi';
 import { demoDatasetForFile, findDemoFileBySha256, isDemoFile } from './demoData';
 import { parseSchedulingAssistantIntent } from './schedulingAssistant';
-import { renderSlideImage, getOrConvertPptxToPdf } from './slideRenderer';
+import { renderSlideImage, getOrConvertPptxToPdf, SlideRenderError } from './slideRenderer';
 import {
   HttpError,
   sendError,
@@ -2372,6 +2372,22 @@ function renderPresentationViewerHtml(doc: services.DocumentRow, pages: services
       color: #a78bfa;
       font-weight: 600;
     }
+    .slide-render-error {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+      text-align: center;
+      color: #fef3c7;
+      background: rgba(69, 26, 3, 0.96);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .slide-render-error button {
+      margin-top: 12px;
+    }
     .slide-card-view {
       width: 100%;
       height: 100%;
@@ -2452,7 +2468,7 @@ function renderPresentationViewerHtml(doc: services.DocumentRow, pages: services
       list-style: none;
     }
     .sidebar-item {
-      padding: 12px 16px;
+      padding: 8px 12px;
       border-bottom: 1px solid #211c27;
       cursor: pointer;
       font-size: 13px;
@@ -2470,6 +2486,17 @@ function renderPresentationViewerHtml(doc: services.DocumentRow, pages: services
       color: #7b7484;
       margin-bottom: 2px;
     }
+    .sidebar-thumbnail {
+      width: 72px;
+      aspect-ratio: 16 / 9;
+      object-fit: contain;
+      background: #0f0d13;
+      border: 1px solid #302b35;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .sidebar-item-content { min-width: 0; }
+    .sidebar-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .footer-bar {
       background: #17151a;
       border-top: 1px solid #302b35;
@@ -2564,8 +2591,11 @@ function renderPresentationViewerHtml(doc: services.DocumentRow, pages: services
             alt="Slide ${selectedSlideNum}"
             onload="handleImageLoaded()"
             onerror="handleImageError()"
-          />
-          <div id="slide-loading-overlay" class="slide-loading-overlay">Loading Slide...</div>
+           />
+           <div id="slide-loading-overlay" class="slide-loading-overlay">Loading Slide...</div>
+           <div id="slide-render-error" class="slide-render-error">
+             <div><strong>Visual slide rendering is unavailable.</strong><br><span id="slide-render-error-message">The original file could not be rendered.</span><br><button class="nav-btn" onclick="setMode('text')">View extracted text instead</button></div>
+           </div>
         </div>
 
         <!-- Text & Notes View -->
@@ -2590,9 +2620,9 @@ function renderPresentationViewerHtml(doc: services.DocumentRow, pages: services
       <div class="sidebar-header">Presentation Slides (${totalSlides})</div>
       <ul class="sidebar-list" id="sidebar-list">
         ${pages.map((p) => `
-          <li class="sidebar-item ${p.pageNumber === selectedSlideNum ? 'active' : ''}" id="sidebar-item-${p.pageNumber}" onclick="goToSlide(${p.pageNumber})">
-            <div class="sidebar-item-num">Slide ${p.pageNumber}</div>
-            <div class="sidebar-item-title">${escapeXml(p.heading || `Slide ${p.pageNumber}`)}</div>
+          <li class="sidebar-item ${p.pageNumber === selectedSlideNum ? 'active' : ''}" id="sidebar-item-${p.pageNumber}" onclick="goToSlide(${p.pageNumber})" style="display:flex; gap:9px; align-items:center;">
+            <img class="sidebar-thumbnail" loading="lazy" src="/api/documents/${doc.id}/slides/${p.pageNumber}/image?size=thumbnail${token ? `&token=${encodeURIComponent(token)}` : ''}" alt="Slide ${p.pageNumber} thumbnail" onerror="this.style.display='none'" />
+            <div class="sidebar-item-content"><div class="sidebar-item-num">Slide ${p.pageNumber}</div><div class="sidebar-item-title">${escapeXml(p.heading || `Slide ${p.pageNumber}`)}</div></div>
           </li>
         `).join('')}
       </ul>
@@ -2657,12 +2687,15 @@ function renderPresentationViewerHtml(doc: services.DocumentRow, pages: services
       if (overlay) overlay.style.display = 'none';
       const img = document.getElementById('slide-img');
       if (img) img.style.opacity = '1';
+      const error = document.getElementById('slide-render-error');
+      if (error) error.style.display = 'none';
     }
 
     function handleImageError() {
-      // If slide image fails to load, gracefully switch to text card
-      console.warn("Slide visual image failed to load for slide " + currentSlide + ", switching to text view.");
-      setMode('text');
+      const overlay = document.getElementById('slide-loading-overlay');
+      if (overlay) overlay.style.display = 'none';
+      const error = document.getElementById('slide-render-error');
+      if (error) error.style.display = 'flex';
     }
 
     function renderSlide(num) {
@@ -2676,6 +2709,8 @@ function renderPresentationViewerHtml(doc: services.DocumentRow, pages: services
       if (img) {
         img.style.opacity = '0.5';
         if (overlay) overlay.style.display = 'flex';
+        const error = document.getElementById('slide-render-error');
+        if (error) error.style.display = 'none';
         img.src = "/api/documents/" + docId + "/slides/" + num + "/image" + (tokenParam ? ("?" + tokenParam.slice(1)) : "");
       }
 
@@ -2869,11 +2904,12 @@ app.get('/api/documents/:id/slides/:slideNumber/image', async (req, res) => {
     const pages = services.getDocumentPages(userIdOf(req), req.params.id);
     const fileInfo = services.findOwnedDocumentFileData(userIdOf(req), req.params.id);
 
-    const rendered = await renderSlideImage(doc, pages, slideNum, fileInfo?.fileData);
+    const rendered = await renderSlideImage(doc, pages, slideNum, fileInfo?.fileData, req.query.size === 'thumbnail');
     res.setHeader('Content-Type', rendered.contentType);
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
     return res.send(rendered.data);
   } catch (error) {
+    if (error instanceof SlideRenderError) return sendError(res, 422, error.message);
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 500, 'Unable to render slide image.');
   }

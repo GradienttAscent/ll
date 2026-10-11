@@ -10,7 +10,8 @@ services:
       name: lazylift-data
       mountPath: /var/data
       sizeGB: 1
-    buildCommand: npm install && npm run build
+    # LibreOffice produces faithful PPTX-to-PDF output; Poppler renders PDF pages to PNG.
+    buildCommand: apt-get update && apt-get install -y --no-install-recommends libreoffice-impress poppler-utils && rm -rf /var/lib/apt/lists/* && npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:

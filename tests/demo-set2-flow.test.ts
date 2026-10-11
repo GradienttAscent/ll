@@ -54,7 +54,9 @@ describe('hash-verified CSE312 2023 course pack', () => {
     const requirements = ranking.find((item: any) => item.conceptTitle === 'Requirements Specification');
     assert.strictEqual(requirements.lectureSource.exactSlide, 15);
     assert.ok(requirements.lectureSource.documentId);
-    assert.strictEqual((await api.request(`/api/documents/${requirements.lectureSource.documentId}/slides/15/image`)).status, 200);
+    const demoSlideImage = await api.request(`/api/documents/${requirements.lectureSource.documentId}/slides/15/image`);
+    assert.strictEqual(demoSlideImage.status, 422, 'text-only demo fixtures must not be presented as rendered slides');
+    assert.match(demoSlideImage.json.error, /render/i);
     assert.ok(ranking.filter((item: any) => item.conceptTitle !== 'Requirements Specification').every((item: any) => !item.lectureSource.mapped));
 
     const duplicate = await upload(api, files[4][0], files[4][1]);

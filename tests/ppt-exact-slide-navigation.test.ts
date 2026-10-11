@@ -4,6 +4,7 @@ import { deflateRawSync } from 'zlib';
 import { createTestServer, Api, TestServer, removeTempDir } from './helpers';
 import { resolveApiUrl } from '../src/apiBase';
 import { getPresentationViewerUrl, getSlidePreviewUrl } from '../src/components/UploadExtractView';
+import { slideRenderCacheKey, SLIDE_RENDERER_VERSION } from '../slideRenderer';
 
 function createMinimalZip(files: Array<{ name: string; content: string }>): Buffer {
   const fileBuffers: Array<{
@@ -180,6 +181,12 @@ describe('PPT Exact Slide Navigation & Traceability', () => {
     assert.strictEqual(slide19Res.json.currentSlide, 19);
     assert.strictEqual(slide19Res.json.requestedSlide, 19);
     assert.ok(slide19Res.json.slide.heading.includes('Wait-For Graph') || slide19Res.json.slide.text.includes('wait-for graph'));
+
+    // A later slide verifies direct navigation does not depend on a short visible range.
+    const slide25Res = await client.request(`/api/documents/${docId}/view?slide=25&format=json`);
+    assert.strictEqual(slide25Res.status, 200);
+    assert.strictEqual(slide25Res.json.currentSlide, 25);
+    assert.strictEqual(slide25Res.json.slide.pageNumber, 25);
 
     // Request HTML representation as viewed in a browser tab
     const htmlRes = await fetch(`${server.baseUrl}/api/documents/${docId}/view?slide=20`, {
@@ -387,7 +394,14 @@ describe('PPT Exact Slide Navigation & Traceability', () => {
     assert.ok(getSlidePreviewUrl(source).endsWith('/api/documents/doc-xyz-123/slides/25/image'));
   });
 
-  it('7. Slide image endpoint /api/documents/:id/slides/:slide/image delivers rendered slide image with valid auth', async () => {
+  it('6b. keys rendered slide caches by original source hash and renderer version', () => {
+    const first = slideRenderCacheKey(Buffer.from('previously-unseen-presentation-with-diagram-a'));
+    const second = slideRenderCacheKey(Buffer.from('previously-unseen-presentation-with-diagram-b'));
+    assert.notStrictEqual(first, second);
+    assert.ok(first.endsWith(`-${SLIDE_RENDERER_VERSION}`));
+  });
+
+  it('7. Slide image endpoint keeps authorization and reports unavailable visual rendering explicitly', async () => {
     const { client } = await createClient('nav-images');
     const loadRes = await client.request('/api/academic/load-sample-pack', { method: 'POST' });
     const whatToStudy = loadRes.json.whatToStudy;
@@ -395,21 +409,18 @@ describe('PPT Exact Slide Navigation & Traceability', () => {
 
     // Fetch slide 1 image with query token
     const imgRes = await fetch(`${server.baseUrl}/api/documents/${docId}/slides/1/image?token=${client.token}`);
-    assert.strictEqual(imgRes.status, 200);
-    const contentType = imgRes.headers.get('content-type') || '';
-    assert.ok(
-      contentType.includes('image/png') || contentType.includes('image/svg+xml'),
-      `Content-Type must be image/png or image/svg+xml, got: ${contentType}`
-    );
-    const imgBuf = await imgRes.arrayBuffer();
-    assert.ok(imgBuf.byteLength > 100, 'Image payload must not be empty');
+    assert.strictEqual(imgRes.status, 422);
+    assert.match((await imgRes.json()).error, /render/i);
 
-    // Slide image with Bearer header
+    // The route still accepts Bearer credentials and never returns a synthetic text SVG.
     const imgBearerRes = await fetch(`${server.baseUrl}/api/documents/${docId}/slides/2/image`, {
       headers: { Authorization: `Bearer ${client.token}` },
     });
-    assert.strictEqual(imgBearerRes.status, 200);
-    assert.ok((imgBearerRes.headers.get('content-type') || '').includes('image/'));
+    assert.strictEqual(imgBearerRes.status, 422);
+    assert.ok((imgBearerRes.headers.get('content-type') || '').includes('application/json'));
+
+    const unauthenticated = await fetch(`${server.baseUrl}/api/documents/${docId}/slides/2/image`);
+    assert.strictEqual(unauthenticated.status, 401);
   });
 
   it('8. Presentation view route serves text/html, includes visual slide image, and never triggers browser Pretty Print', async () => {
@@ -432,8 +443,11 @@ describe('PPT Exact Slide Navigation & Traceability', () => {
     // Verify visual slide image element is present and points to slide 2
     assert.ok(html.includes('id="slide-img"'), 'Must contain slide image element');
     assert.ok(html.includes(`/api/documents/${docId}/slides/2/image`), 'Slide image src must point to slide 2 image endpoint');
+    assert.ok(html.includes('size=thumbnail'), 'Viewer must request lazy visual thumbnails');
     assert.ok(html.includes('id="slide-visual-view"'), 'Must contain slide visual view container');
     assert.ok(html.includes('mode-switcher'), 'Must contain mode switcher');
+    assert.ok(html.includes('id="slide-render-error"'), 'Viewer must explicitly report visual rendering failures');
+    assert.ok(html.includes('View extracted text instead'), 'Text must remain an explicit fallback, not a fake rendered slide');
   });
 
   it('9. Missing or expired token on /view returns styled HTML error page instead of raw JSON Pretty Print', async () => {
