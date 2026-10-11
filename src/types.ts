@@ -34,6 +34,8 @@ export interface QuestionItem {
   documentId?: string | null;
   mappingStatus?: 'mapped' | 'unmatched';
   mappingEvidence?: string[];
+  pageNumber?: number | null;
+  paperTitle?: string | null;
 }
 
 export interface PastPaper {
@@ -577,6 +579,7 @@ export interface AscentState {
 // --- Teacher's Exam Intelligence ("What to Study") ---
 
 export interface WhatToStudyOccurrence {
+  questionId?: string;
   paperTitle: string;
   examYear: string;
   questionNumber: string;
@@ -585,18 +588,23 @@ export interface WhatToStudyOccurrence {
   marks: number;
   questionText: string;
   pageNumber?: number;
+  exactSlide?: number;
+  lectureSource?: WhatToStudySourceMapping;
 }
 
 export interface WhatToStudySourceMapping {
   mapped: boolean;
   documentId?: string;
   documentTitle?: string;
+  documentFileName?: string;
   slideRange?: string;
   startSlide?: number;
   endSlide?: number;
+  exactSlide?: number;
   sectionTitle?: string;
   slideSnippet?: string;
   unmappedReason?: string;
+  sourceUrl?: string;
 }
 
 export interface WhatToStudyItem {

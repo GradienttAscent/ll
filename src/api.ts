@@ -11,7 +11,7 @@ const originalFetch: typeof globalThis.fetch =
     : ((..._args: any[]) => Promise.reject(new Error('fetch is not available'))) as typeof globalThis.fetch;
 
 export function getSessionToken(): string | null {
-  return sessionToken;
+  return sessionToken || storedToken();
 }
 
 export function hasStoredSession(): boolean {

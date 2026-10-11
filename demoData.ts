@@ -6,6 +6,8 @@
 
 export interface DemoFileSpec {
   id: string;
+  datasetId?: string;
+  sha256?: string;
   filename: string;
   type: string;
   pages?: number;
@@ -665,17 +667,50 @@ export const DEMO_QUESTIONS: DemoQuestionSpec[] = [
 export function isDemoFile(fileNameOrTitle: string): DemoFileSpec | null {
   const norm = (fileNameOrTitle || '').toLowerCase().trim();
   if (!norm) return null;
-  if (norm.includes('syll2') || (norm.includes('syll') && norm.endsWith('.pdf'))) {
-    return DEMO_FILES.find((f) => f.id === 'syllabus') || null;
-  }
-  if (norm.includes('mid sem') || norm.includes('2025') || norm.includes('cse312')) {
-    return DEMO_FILES.find((f) => f.id === 'pyq') || null;
-  }
-  if (norm.includes('lect3') || (norm.includes('agile') && norm.includes('sw dev'))) {
-    return DEMO_FILES.find((f) => f.id === 'lecture') || null;
-  }
-  if (norm.includes('lect4') || (norm.includes('req') && norm.includes('eng'))) {
-    return DEMO_FILES.find((f) => f.id === 'requirements_lecture') || null;
-  }
-  return null;
+  return DEMO_FILES.find((file) => file.filename.toLowerCase() === norm) || null;
+}
+
+const SET2_FILES: DemoFileSpec[] = [
+  { id: 'set2-syllabus', datasetId: 'set2', sha256: 'db758584431b1c3cb279243a15d0498924b027651189968517ac2cd9631c2f95', filename: 'Software_Architecture_Syllabus (1).pdf', type: 'syllabus', pages: 1, title: 'Software Architecture Syllabus', docType: 'Syllabus', content: 'CSE312 Software Engineering and Project Management syllabus.', structuredPages: [{ pageNumber: 1, heading: 'CSE312 Syllabus', text: 'Software Engineering and Project Management.' }] },
+  { id: 'set2-paper', datasetId: 'set2', sha256: 'f84d68bd7eb0d94e0f41e31a36168dd458723d59e8bdd9bc64dfbb4fe9c81bfd', filename: 'Repeat Examination  Jan 2023-  CSE312 Software Engineering and Project Management (1).pdf', type: 'previous_year_question_paper', pages: 2, totalMarks: 100, year: 2023, title: 'Repeat Examination January 2023', docType: 'Past Paper', content: 'CSE312 Repeat Examination, January 2023.', structuredPages: [{ pageNumber: 1, heading: 'Part A', text: 'Questions 1 to 12, five marks each.' }, { pageNumber: 2, heading: 'Part B', text: 'Questions 1 to 4, ten marks each.' }] },
+  { id: 'set2-re-1', datasetId: 'set2', sha256: '2e2d96135b952ca6d397a7d68d30fc9a3b8ffb40cd15c9a4e3cfc4df87dee84c', filename: 'Requirements Engineering - Part 1.pptx', type: 'lecture_slides', slides: 30, title: 'Requirements Engineering - Part 1', docType: 'Lecture Slides', content: 'Requirements engineering: user and system requirements; functional and non-functional requirements.', structuredPages: [{ pageNumber: 8, heading: 'User requirements', text: 'High-level statements of services and constraints.' }, { pageNumber: 9, heading: 'System requirements', text: 'Detailed specification of functions, services, and constraints.' }, { pageNumber: 15, heading: 'Non-functional requirements', text: 'Product, organisational, and external requirements.' }] },
+  { id: 'set2-re-2', datasetId: 'set2', sha256: 'decd789db49a1f9fc9daea8a154b057cdb253cfe63b66e9a0ccdbaff401a2ce3', filename: 'Requirements Engineering  - Part 2 (1).pptx', type: 'lecture_slides', slides: 17, title: 'Requirements Engineering - Part 2', docType: 'Lecture Slides', content: 'Requirements engineering process: feasibility, elicitation, specification, validation.', structuredPages: [{ pageNumber: 2, heading: 'Requirements engineering process', text: 'Feasibility study, elicitation and analysis, specification, and validation.' }, { pageNumber: 4, heading: 'Requirements elicitation and analysis', text: 'Discovery, classification, prioritization, and specification.' }] },
+  { id: 'set2-re-3', datasetId: 'set2', sha256: 'bb2360a2c118ed368380fc6fbed5bab992a3390244e84d40e668396de8cbb1ac', filename: 'Requirements Engineering – Part3.pptx', type: 'lecture_slides', slides: 29, title: 'Requirements Engineering - Part 3', docType: 'Lecture Slides', content: 'Requirements specification: user requirements, system requirements, and requirements documents.', structuredPages: [{ pageNumber: 15, heading: 'Requirements specification', text: 'User requirements and system requirements form a requirements document.' }, { pageNumber: 16, heading: 'Writing a system requirements specification', text: 'Natural language, structured natural language, and design description language.' }, { pageNumber: 21, heading: 'Form-based specification', text: 'Function, inputs, outputs, entities, action, preconditions, postconditions, and side effects.' }] },
+  { id: 'set2-re-4', datasetId: 'set2', sha256: 'ef9f7775ed4448c32c9d8087fa5b178b4cf5733be6c902de62e227b61f4f23d5', filename: 'Requirements Engineering – Part 4.pptx', type: 'lecture_slides', slides: 19, title: 'Requirements Engineering - Part 4', docType: 'Lecture Slides', content: 'Requirements validation and change management.', structuredPages: [{ pageNumber: 3, heading: 'Requirements checking', text: 'Validity, consistency, completeness, realism, and verifiability.' }, { pageNumber: 14, heading: 'Change management process', text: 'Problem analysis, change analysis and costing, and change implementation.' }] },
+];
+
+const SET2_TOPICS: DemoTopicSpec[] = [
+  { id: 'set2-re-specification', name: 'Requirements Specification', priority: 8, weightage: 10, marks: 10, questionCount: 1, source: 'syllabus', priorityLevel: 'high', rankingBasis: '2023 repeat examination', syllabusPage: 1, syllabusAlignment: 'related', lectureSource: { documentTitle: 'Requirements Engineering – Part3.pptx', slideRange: 'Slide 15', sectionTitle: 'Requirements specification', slideSnippet: 'User requirements and system requirements form a requirements document.' } },
+  { id: 'set2-life-cycle', name: 'Software Life Cycle Models and Risk Management', priority: 7, weightage: 30, marks: 30, questionCount: 6, source: 'syllabus', priorityLevel: 'high', rankingBasis: '2023 repeat examination', syllabusPage: 1, syllabusAlignment: 'related' },
+  { id: 'set2-testing', name: 'Software Testing and Integration', priority: 5, weightage: 10, marks: 10, questionCount: 2, source: 'syllabus', priorityLevel: 'medium', rankingBasis: '2023 repeat examination', syllabusPage: 1, syllabusAlignment: 'related' },
+  { id: 'set2-metrics', name: 'Software Metrics and Estimation', priority: 5, weightage: 18, marks: 18, questionCount: 4, source: 'syllabus', priorityLevel: 'medium', rankingBasis: '2023 repeat examination', syllabusPage: 1, syllabusAlignment: 'related' },
+  { id: 'set2-project-management', name: 'Project Management and Configuration Management', priority: 5, weightage: 17, marks: 17, questionCount: 3, source: 'syllabus', priorityLevel: 'medium', rankingBasis: '2023 repeat examination', syllabusPage: 1, syllabusAlignment: 'related' },
+  { id: 'set2-design', name: 'Software Design and Test Design', priority: 4, weightage: 15, marks: 15, questionCount: 3, source: 'syllabus', priorityLevel: 'medium', rankingBasis: '2023 repeat examination', syllabusPage: 1, syllabusAlignment: 'related' },
+];
+
+const SET2_QUESTIONS: DemoQuestionSpec[] = [
+  ['1', 5, 'Why do characteristics of requirements play a significant role in selecting a life cycle model?', 'set2-life-cycle'], ['2', 5, 'What is software testing? Write any four fundamental testing principles.', 'set2-testing'], ['3', 5, 'Explain various integration and debugging activities.', 'set2-testing'], ['4', 5, 'List shortcomings of the classical waterfall model.', 'set2-life-cycle'], ['5', 5, 'For a product with large technical and customer-related risks, which life cycle model would you adopt? Justify.', 'set2-life-cycle'], ['6', 5, 'What are various risk management activities?', 'set2-life-cycle'], ['7', 5, 'What are the major phases in the waterfall model, and which consumes maximum effort?', 'set2-life-cycle'], ['8', 5, 'Describe Boehm’s spiral model for software development.', 'set2-life-cycle'], ['9', 5, 'What are signs that a software project is in jeopardy, and how should a project manager tackle it?', 'set2-project-management'], ['10', 5, 'How are various stakeholders organised to perform effective software engineering?', 'set2-project-management'], ['11', 5, 'Define cyclomatic complexity and explain its properties.', 'set2-metrics'], ['12', 5, 'List advantages and shortcomings of LOC as a software size metric for project estimation.', 'set2-metrics'], ['B1a', 3, 'Give a brief description of the Detailed COCOMO model.', 'set2-metrics'], ['B1b', 7, 'Calculate effort, time, and average staff for a 20,000 LOC utility using Organic and Semi-Detached COCOMO modes.', 'set2-metrics'], ['B2', 10, 'For an MTech student result management system, develop a problem statement, context diagram, and Level 1 DFD.', 'set2-re-specification'], ['B3a', 5, 'Construct a flow graph and calculate cyclomatic complexity for the given program.', 'set2-design'], ['B3b', 5, 'Explain the decision table and identify test cases for a triangle classification program.', 'set2-design'], ['B4a', 3, 'What is modularity? List important properties of a modular system.', 'set2-design'], ['B4b', 7, 'What is the significance of software configuration management and its activities?', 'set2-project-management'],
+].map(([questionNumber, marks, questionText, topicId]) => {
+  const topic = SET2_TOPICS.find((item) => item.id === topicId)!;
+  return { id: `set2-${questionNumber}`, questionNumber: String(questionNumber), marks: Number(marks), pageNumber: String(questionNumber).startsWith('B') ? 2 : 1, topicId: String(topicId), topicName: topic.name, questionText: String(questionText), summary: String(questionText) };
+});
+
+export interface DemoDataset {
+  id: string;
+  files: DemoFileSpec[];
+  topics: DemoTopicSpec[];
+  questions: DemoQuestionSpec[];
+}
+
+export const DEMO_DATASETS: DemoDataset[] = [
+  { id: 'set1', files: DEMO_FILES, topics: DEMO_TOPICS, questions: DEMO_QUESTIONS },
+  { id: 'set2', files: SET2_FILES, topics: SET2_TOPICS, questions: SET2_QUESTIONS },
+];
+
+export function findDemoFileBySha256(sha256: string): DemoFileSpec | null {
+  return SET2_FILES.find((file) => file.sha256 === sha256.toLowerCase()) || null;
+}
+
+export function demoDatasetForFile(file: DemoFileSpec): DemoDataset {
+  return DEMO_DATASETS.find((dataset) => dataset.id === (file.datasetId || 'set1'))!;
 }

@@ -7,6 +7,12 @@ interface UploadModalProps {
   onAcademicUpdated: () => Promise<void>;
 }
 
+type FileProcessingResult = {
+  name: string;
+  state: 'processing' | 'completed' | 'failed';
+  detail: string;
+};
+
 export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAcademicUpdated }) => {
   const [docName, setDocName] = useState('');
   const [docType, setDocType] = useState<'Past Paper' | 'Syllabus' | 'Lecture Slides'>('Past Paper');
@@ -15,12 +21,29 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingMsg, setProcessingMsg] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [fileProcessingResults, setFileProcessingResults] = useState<FileProcessingResult[]>([]);
 
   const fileAsBase64 = async (file: File) => {
     const bytes = new Uint8Array(await file.arrayBuffer());
     let binary = '';
     for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
     return btoa(binary);
+  };
+
+  const inferDocTypeFromFileName = (fileName: string, defaultType: 'Past Paper' | 'Syllabus' | 'Lecture Slides'): 'Past Paper' | 'Syllabus' | 'Lecture Slides' => {
+    const normalized = fileName.replace(/[_\.\-]+/g, ' ').toLowerCase();
+    const lower = fileName.toLowerCase();
+    if (/\.(pptx?|key|odp)$/i.test(lower) || /\b(?:ppt|pptx|slides?|lecture|deck|presentation|notes?)\b/i.test(normalized) || /^(?:trees?|unit\s*\d|chapter\s*\d|module\s*\d|lec(?:ture)?\s*\d)/i.test(normalized)) {
+      return 'Lecture Slides';
+    }
+    if (/\b(?:syllabus|curriculum|curricula|modality|modalities|course\s*(?:outline|structure|plan|scheme))\b/i.test(normalized)) {
+      return 'Syllabus';
+    }
+    const isSubjectTesting = /\bsoftware\s+testing\b/i.test(normalized);
+    if (!isSubjectTesting && /\b(?:exam|examination|end\s*sem|mid\s*sem|midterm|question\s*paper|pyq|quiz|test|makeup)\b/i.test(normalized)) {
+      return 'Past Paper';
+    }
+    return defaultType;
   };
 
   if (!isOpen) return null;
@@ -36,6 +59,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
       setContent('');
       if (files.length === 1 && !docName) {
         setDocName(files[0].name);
+        setDocType(inferDocTypeFromFileName(files[0].name, 'Past Paper'));
       }
     }
     e.target.value = '';
@@ -70,10 +94,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
         let totalQuestions = 0;
         const processed: { name: string; method: string }[] = [];
         const failed: { name: string; error: string }[] = [];
+        setFileProcessingResults(uploadedFiles.map((file) => ({ name: file.name, state: 'processing', detail: 'Waiting to process...' })));
 
-        for (let i = 0; i < uploadedFiles.length; i++) {
-          const file = uploadedFiles[i];
+        const uploadOne = async (file: File, i: number) => {
           setProcessingMsg(`Processing ${i + 1} of ${uploadedFiles.length}: ${file.name}...`);
+          setFileProcessingResults((previous) => previous.map((result) => result.name === file.name ? { ...result, state: 'processing', detail: 'Extracting and indexing...' } : result));
           try {
             const title = uploadedFiles.length === 1 && docName.trim() ? docName.trim() : file.name;
             const res = await fetch('/api/academic-documents/upload', {
@@ -81,21 +106,48 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 title,
-                docType,
+                fileName: file.name,
+                docType: inferDocTypeFromFileName(file.name, docType),
                 base64: await fileAsBase64(file),
                 mimeType: file.type || undefined,
               }),
             });
             const json = await res.json();
             if (!res.ok) {
-              failed.push({ name: file.name, error: json.error || 'Failed to process file' });
+              setFileProcessingResults((previous) => previous.map((result) => result.name === file.name ? { ...result, state: 'failed', detail: json.error || 'Processing failed' } : result));
+              return { name: file.name, error: json.error || 'Failed to process file' };
             } else {
-              totalQuestions += json.analysis?.createdQuestionCount || 0;
               const method = json.analysis?.document?.extractionMethod || json.analysis?.extractionMethod || 'embedded-pdf-text';
-              processed.push({ name: file.name, method });
+              const processing = json.analysis?.processing;
+              const detail = processing?.status === 'questions-indexed'
+                ? `${processing.indexedQuestionCount} indexed (${processing.duplicateQuestionCount || 0} duplicates)`
+                : processing?.status === 'duplicate-questions'
+                  ? `No new questions: ${processing.duplicateQuestionCount} duplicate record(s)`
+                  : processing?.status === 'no-questions-detected'
+                    ? 'No exam questions detected in this document'
+                    : 'Non-exam material saved; question extraction skipped';
+              setFileProcessingResults((previous) => previous.map((result) => result.name === file.name ? { ...result, state: 'completed', detail } : result));
+              return { name: file.name, method, questionCount: processing?.indexedQuestionCount || json.analysis?.createdQuestionCount || 0, detail };
             }
           } catch (err: any) {
-            failed.push({ name: file.name, error: err.message || 'Upload error' });
+            setFileProcessingResults((previous) => previous.map((result) => result.name === file.name ? { ...result, state: 'failed', detail: err.message || 'Upload error' } : result));
+            return { name: file.name, error: err.message || 'Upload error' };
+          }
+        };
+        const outcomes: Array<Awaited<ReturnType<typeof uploadOne>>> = [];
+        let nextFileIndex = 0;
+        const workers = Array.from({ length: Math.min(2, uploadedFiles.length) }, async () => {
+          while (nextFileIndex < uploadedFiles.length) {
+            const index = nextFileIndex++;
+            outcomes[index] = await uploadOne(uploadedFiles[index], index);
+          }
+        });
+        await Promise.all(workers);
+        for (const outcome of outcomes) {
+          if ('error' in outcome) failed.push({ name: outcome.name, error: outcome.error });
+          else {
+            processed.push({ name: outcome.name, method: outcome.method });
+            totalQuestions += outcome.questionCount;
           }
         }
 
@@ -108,8 +160,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
         const methodSummary = processed.map((p) => `${p.name} (${p.method})`).join(', ');
         alert(
           failed.length > 0
-            ? `Partially completed: ${processed.length} of ${uploadedFiles.length} files saved (${totalQuestions} questions; ${methodSummary}). Failed: ${failed.map((f) => f.name).join(', ')}`
-            : `Successfully uploaded ${processed.length} document${processed.length > 1 ? 's' : ''}. ${totalQuestions} questions indexed [Extraction: ${methodSummary}].`
+            ? `Partially completed: ${processed.length} of ${uploadedFiles.length} files processed (${totalQuestions} questions indexed; ${methodSummary}). Failed: ${failed.map((f) => f.name).join(', ')}`
+            : `Processed ${processed.length} document${processed.length > 1 ? 's' : ''}. ${totalQuestions} new questions indexed [Extraction: ${methodSummary}]. Review any zero-question result above for its reason.`
         );
       } else {
         const res = await fetch('/api/academic-documents/analyze', {
@@ -296,6 +348,17 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onAca
                 <div className="text-[10px] text-[#7B7484] dark:text-[#7A7480] text-right font-medium">
                   {uploadedFiles.length} file{uploadedFiles.length > 1 ? 's' : ''} ({(uploadedFiles.reduce((s, f) => s + f.size, 0) / (1024 * 1024)).toFixed(2)} MB total)
                 </div>
+              </div>
+            )}
+
+            {fileProcessingResults.length > 0 && (
+              <div className="space-y-1 max-h-28 overflow-y-auto text-[10px]">
+                {fileProcessingResults.map((result) => (
+                  <div key={result.name} className="flex justify-between gap-3 rounded-md bg-[#FAF8FC] dark:bg-[#1D1A21] px-2 py-1.5 text-[#55524E] dark:text-[#A9A3AE]">
+                    <span className="truncate">{result.name}</span>
+                    <span className={result.state === 'failed' ? 'text-red-500' : result.state === 'completed' ? 'text-emerald-600 dark:text-emerald-400' : 'text-[#6D28D9] dark:text-[#A78BFA]'}>{result.detail}</span>
+                  </div>
+                ))}
               </div>
             )}
 

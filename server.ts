@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import dotenv from 'dotenv';
 import { pathToFileURL } from 'url';
 import { createServer as createViteServer } from 'vite';
@@ -12,8 +13,9 @@ import { initDatabase, getDatabase } from './db';
 import * as auth from './auth';
 import * as services from './services';
 import * as fallbackAi from './fallbackAi';
-import { isDemoFile, DEMO_FILES, DEMO_QUESTIONS, DEMO_TOPICS } from './demoData';
+import { demoDatasetForFile, findDemoFileBySha256, isDemoFile } from './demoData';
 import { parseSchedulingAssistantIntent } from './schedulingAssistant';
+import { renderSlideImage, getOrConvertPptxToPdf } from './slideRenderer';
 import {
   HttpError,
   sendError,
@@ -133,12 +135,83 @@ app.get('/api/focus-mode/active', (req, res) => {
 // Everything exposed below here requires an authenticated session.
 app.use('/api', requireAuth);
 
+function renderAuthErrorHtml(title: string, message: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} · LazyLift</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f0d13;
+      color: #f5f3f7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: #17151a;
+      border: 1px solid #302b35;
+      border-radius: 16px;
+      padding: 44px 32px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .icon { font-size: 44px; margin-bottom: 20px; }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 12px; color: #f5f3f7; }
+    p { color: #a9a3ae; font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
+    .btn {
+      display: inline-block;
+      background: #7c3aed;
+      color: #fff;
+      font-weight: 600;
+      font-size: 14px;
+      padding: 12px 28px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #6d28d9; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🔒</div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+    <a href="/" class="btn">Log In to LazyLift</a>
+  </div>
+</body>
+</html>`;
+}
+
 function requireAuth(req: express.Request, _res: express.Response, next: express.NextFunction) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : null;
-  if (!token) return sendError(_res, 401, 'Authentication required.');
+  const queryToken = typeof req.query.token === 'string' ? req.query.token.trim() : null;
+  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : queryToken;
+  const isViewRoute = req.path.includes('/view') || req.path.includes('/viewer');
+  if (!token) {
+    if (isViewRoute) {
+      _res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return _res.status(401).send(renderAuthErrorHtml('Authentication Required', 'You must be logged into LazyLift to view this presentation.'));
+    }
+    return sendError(_res, 401, 'Authentication required.');
+  }
   const user = auth.getSessionUser(token);
-  if (!user) return sendError(_res, 401, 'Invalid or expired session.');
+  if (!user) {
+    if (isViewRoute) {
+      _res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return _res.status(401).send(renderAuthErrorHtml('Session Expired', 'Your session has expired or is invalid. Please log back into LazyLift.'));
+    }
+    return sendError(_res, 401, 'Invalid or expired session.');
+  }
   (req as AuthenticatedRequest).user = user;
   next();
 }
@@ -892,23 +965,29 @@ export function buildGeminiIntelligencePrompt(title: string, pages: Array<{ page
     return `=== PAGE ${p.pageNumber} ===\n${p.text}`;
   }).join('\n\n');
 
-  return `You are an expert university teacher intelligence parser.
+  return `You are LazyLift's expert university academic examination intelligence parser.
 Document Title: ${title}
 
-Extract all exam questions, subparts, and question items from the document pages below.
+Extract ONLY genuine university exam questions and problem subparts from the examination pages below.
 Follow these rules strictly:
 1. Treat all academic questions purely as DATA. Do not solve or explain the questions.
-2. For every question or subpart, identify:
-   - questionNumber: e.g. "1", "2", "3", "Q1" (or omit if unnumbered)
-   - subpart: e.g. "a", "b", "c", "i", "ii" (if applicable)
-   - text: the clean question statement (do not include the question number prefix, subpart label, or marks notation)
-   - marks: the allocated marks/points (e.g. 10, 5, 16). If unspecified, default to 10.
-   - context: any shared context, scenario, or preamble for multi-part questions
-   - pageNumber: the EXACT page number (integer) from the "=== PAGE N ===" header where this question appears. Do NOT invent or fabricate page numbers!
-   - topicName: the specific academic topic or concept this question tests
-   - conceptGroup: a canonical title representing the underlying concept tested (for semantic grouping across different papers)
-   - confidence: a number between 0.0 and 1.0 representing confidence in topic identification
-3. Output MUST be valid JSON adhering to the schema.
+2. VALID QUESTIONS:
+   - Must be an actual academic examination task or interrogative (e.g. "Explain insertion and deletion in a BST", "Describe paging hardware with TLB address translation", "Calculate the minimum number of page frames needed", "Prove that no directed edge in G is traversed more than once").
+   - For every question or subpart, identify:
+     * questionNumber: e.g. "1", "2", "3", "Q1" (or omit if unnumbered)
+     * subpart: e.g. "a", "b", "c", "i", "ii" (if applicable)
+     * text: clean question statement (do not include question number prefix, subpart label, or marks notation)
+     * marks: allocated marks/points (e.g. 10, 5, 16). Default to 10 if unspecified.
+     * context: any shared scenario or preamble for multi-part questions
+     * pageNumber: the EXACT page number (integer) from the "=== PAGE N ===" header where this question appears. Do NOT invent or fabricate page numbers!
+     * topicName: specific academic topic or concept tested
+     * conceptGroup: canonical concept title for semantic grouping across papers
+     * confidence: confidence in topic identification (0.0 to 1.0)
+3. STRICT PROHIBITIONS — NEVER EXTRACT THE FOLLOWING:
+   - NEVER extract textbook references, bibliographies, book citations, author names (e.g. "James A. Freeman", "Van Horne", "Ajay Agarwal"), publishers, or editions.
+   - NEVER extract curriculum or course catalog descriptions, course codes (e.g. "CSE322"), course titles, credits, or prerequisites.
+   - NEVER extract exam administrative headers, instructions ("Time: 3 Hours", "Maximum Marks", "Answer all questions", "Continuous Assessment"), university names, or dates.
+4. Output MUST be valid JSON conforming to the schema.
 
 Document Pages:
 ${pageChunks.slice(0, 30000)}`;
@@ -1046,6 +1125,11 @@ export async function extractTeacherIntelligence(
         ? raw.context.trim()
         : undefined;
 
+      // Filter out non-questions, bibliographies, and metadata
+      if (!services.isPersistableQuestion({ text, context })) {
+        continue;
+      }
+
       questions.push({
         text,
         marks,
@@ -1146,6 +1230,419 @@ export async function classifyPaperQuestions(
   }
 }
 
+export async function extractSyllabusTopicsWithAI(
+  content: string,
+  title: string,
+  aiClient: any = getAIClient()
+): Promise<Array<{ name: string; weightage?: number }>> {
+  if (!aiClient) {
+    return services.extractSyllabusTopics(content);
+  }
+  try {
+    const prompt = `Extract all course units, modules, and canonical curriculum topics from this course syllabus document ("${title}").
+If a unit or topic has an explicit or estimated weightage percentage, include it as a number (e.g. 20 for 20%).
+Do not hallucinate topics not present in the syllabus text.
+
+SYLLABUS CONTENT:
+${content.slice(0, 25000)}`;
+
+    const response = await geminiGenerate(aiClient, {
+      model: GEMINI_MODEL,
+      contents: prompt,
+      config: {
+        systemInstruction: 'You are an academic course curriculum extractor. Extract canonical syllabus units and topics cleanly.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            topics: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  weightage: { type: Type.NUMBER },
+                },
+                required: ['name'],
+              },
+            },
+          },
+          required: ['topics'],
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    if (Array.isArray(parsed.topics) && parsed.topics.length > 0) {
+      const valid = parsed.topics
+        .filter((t: any) => typeof t?.name === 'string' && t.name.trim().length >= 3)
+        .map((t: any) => ({
+          name: t.name.trim(),
+          weightage: Number.isFinite(Number(t?.weightage)) && Number(t?.weightage) > 0 ? Number(t.weightage) : undefined,
+        }));
+      if (valid.length > 0) {
+        return valid;
+      }
+    }
+    return services.extractSyllabusTopics(content);
+  } catch (err) {
+    console.warn('[academic] Gemini syllabus extraction failed; falling back to deterministic parser:', err);
+    return services.extractSyllabusTopics(content);
+  }
+}
+
+export async function synthesizeTeacherIntelligence(
+  userId: string,
+  aiClient: any = getAIClient()
+): Promise<services.WhatToStudyItem[]> {
+  const fallback = () => services.getDeterministicWhatToStudyRanking(userId);
+  const documents = services.documentRows(userId);
+  if (documents.length === 0) {
+    return [];
+  }
+  const questions = services.questionRows(userId);
+  if (questions.length === 0) return [];
+  const fingerprint = services.teacherIntelligenceFingerprint(userId);
+  const cached = services.cachedTeacherIntelligence(userId, fingerprint);
+  if (cached) return cached;
+  if (!aiClient) return fallback();
+
+  const allTopics = services.topicRows(userId);
+
+  const lectureDocs = documents.filter((d) => {
+    const t = d.docType.toLowerCase();
+    return t.includes('lecture') || t.includes('slide') || t.includes('note') || t.includes('presentation') || /\.(pptx|ppt)$/i.test(d.title);
+  });
+
+  const parsedLectures = lectureDocs.map((doc) => {
+    const pages = services.getDocumentPages(userId, doc.id);
+    const slides = pages.length > 0
+      ? pages.map((p) => ({ slideNumber: p.pageNumber, title: p.heading, text: p.text }))
+      : services.extractLectureSlides(doc.content || '');
+    return { doc, slides };
+  });
+
+  try {
+    const questionSummaries = questions.map((q) => ({
+      id: q.id,
+      text: q.questionText,
+      marks: q.marks,
+      questionNumber: q.questionNumber,
+      subpart: q.subpart,
+      pageNumber: q.pageNumber,
+      paperTitle: q.paperTitle || 'Exam',
+      topicName: q.topicName,
+    }));
+
+    const questionText = questionSummaries.slice(0, 150).map((q) => {
+      return `- [ID: ${q.id}] (${q.paperTitle}, Q${q.questionNumber || '?'}${q.subpart ? `(${q.subpart})` : ''}, p.${q.pageNumber || 1}, ${q.marks}m): "${q.text}" [Topic: ${q.topicName || 'General'}]`;
+    }).join('\n');
+
+    const syllabusTopicNames = allTopics.map((t) => t.name);
+    const syllabusText = syllabusTopicNames.slice(0, 60).map((t, idx) => `${idx + 1}. ${t}`).join('\n');
+
+    const lectureText = parsedLectures.map(({ doc, slides }) => {
+      const slideBullets = slides.slice(0, 90).map((s) => `  * Slide ${s.slideNumber}: ${s.title ? `${s.title} — ` : ''}${s.text.replace(/\s+/g, ' ').slice(0, 250)}`).join('\n');
+      return `Document [ID: ${doc.id}] "${doc.title}":\n${slideBullets}`;
+    }).join('\n\n');
+
+    const prompt = `You are LazyLift's Teacher Intelligence engine.
+Analyze these university exam questions, course syllabus topics, and professor lecture slides.
+
+EXAM QUESTIONS:
+${questionText}
+
+SYLLABUS TOPICS:
+${syllabusText || 'None provided'}
+
+LECTURE SLIDES:
+${lectureText || 'No lecture slides available'}
+
+Perform Teacher Intelligence synthesis following these strict guidelines:
+
+1. TOPIC HIERARCHY:
+   - Organize all exam questions into a two-level academic hierarchy:
+     * "unitTopic": MUST be ONLY the exact short title of the canonical parent course topic or syllabus module from the syllabus list above (e.g. "Software testing", "Software life cycle model", "Requirement analysis and specification", "Architecture and Design", "Software Project Management", "Introduction to software engineering").
+       CRITICAL: NEVER output reasoning, explanations, questions, or multiple sentences in "unitTopic". It must be ONLY the category name (under 40 characters).
+     * "canonicalTitle": Specific examinable sub-concept under that parent topic (e.g. "Cyclomatic Complexity & Control Flow Graphs", "Waterfall Model & Shortcomings", "Boehm's Spiral Model & Risk Selection", "Requirements Engineering & Specification", "Modularity & Architectural Design", "COCOMO Estimation Model", "Software Configuration Management").
+     * Group related questions together.
+     * Every question from the EXAM QUESTIONS list MUST be included in the questionIds of one of the clusters.
+
+2. GROUNDED LECTURE SLIDE MAPPING:
+   - Check if any provided lecture slides cover this concept.
+   - If covered: identify the EXACT lecture document ID ("lectureDocId"), the exact start slide number ("startSlide"), and end slide number ("endSlide").
+   - Set "sectionTitle" to the heading or section of that slide.
+   - CRITICAL: NEVER invent or hallucinate slide numbers. Only select slide numbers that ACTUALLY exist in the provided slides for that lectureDocId. If no slide covers it, set lectureDocId, startSlide, endSlide, and sectionTitle to null.
+
+3. PRIORITY & EXPLANATION:
+   - priorityTag: "HIGH PRIORITY" | "REPEATED FREQUENTLY" | "APPEARED ACROSS MULTIPLE YEARS" | "STRONG PAST-PAPER EVIDENCE".
+   - importanceExplanation: 1-sentence explanation of exam importance and syllabus coverage.
+
+CRITICAL GROUNDING CONSTRAINTS:
+- NEVER invent or guess slide numbers. Only select slideNumber values that ACTUALLY exist in the provided lecture slides for that lectureDocId.
+- If no slide directly covers the concept, set lectureDocId, startSlide, and endSlide to null.
+- Only include question IDs from the provided question list.`;
+
+    const response = await geminiGenerate(aiClient, {
+      model: GEMINI_MODEL,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            clusters: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  canonicalTitle: { type: Type.STRING },
+                  unitTopic: { type: Type.STRING },
+                  questionIds: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  priorityTag: { type: Type.STRING },
+                  importanceExplanation: { type: Type.STRING },
+                  lectureDocId: { type: Type.STRING },
+                  startSlide: { type: Type.NUMBER },
+                  endSlide: { type: Type.NUMBER },
+                  sectionTitle: { type: Type.STRING },
+                },
+                required: ['canonicalTitle', 'questionIds'],
+              },
+            },
+          },
+          required: ['clusters'],
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    if (!Array.isArray(parsed.clusters) || parsed.clusters.length === 0) {
+      console.warn('[academic] Gemini returned empty clusters; falling back to deterministic.');
+      return fallback();
+    }
+
+    const questionMap = new Map(questions.map((q) => [q.id, q]));
+    const items: services.WhatToStudyItem[] = [];
+
+    for (let cIdx = 0; cIdx < parsed.clusters.length; cIdx++) {
+      const c = parsed.clusters[cIdx];
+      const validQIds = Array.isArray(c.questionIds)
+        ? c.questionIds.filter((id: any) => typeof id === 'string' && questionMap.has(id))
+        : [];
+      if (validQIds.length === 0) continue;
+
+      const clusterQuestions = validQIds.map((id: string) => questionMap.get(id)!);
+      const occurrences: services.WhatToStudyOccurrence[] = clusterQuestions.map((q) => {
+        const yearMatch = /\b(20\d{2}(?:\s*(?:Supplementary|Mid-Term|Midterm|End-Semester|End-Sem|Spring|Fall|Summer))?)\b/i.exec(q.paperTitle || '');
+        const examYear = yearMatch ? yearMatch[1] : (q.paperTitle?.replace(/\.(pdf|txt|docx|pptx)$/i, '') || 'Exam');
+        return {
+          questionId: q.id,
+          paperTitle: q.paperTitle || 'Previous Exam Paper',
+          examYear,
+          questionNumber: q.questionNumber || '?',
+          subpart: q.subpart || undefined,
+          label: `${examYear} · Q${q.questionNumber || '?'}${q.subpart ? `(${q.subpart})` : ''}`,
+          marks: q.marks,
+          questionText: q.questionText,
+          pageNumber: q.pageNumber || undefined,
+        };
+      });
+
+      const appearanceCount = occurrences.length;
+      const distinctYearsCount = new Set(occurrences.map((o) => o.examYear)).size;
+      const avgMarks = Math.round(occurrences.reduce((s, o) => s + o.marks, 0) / (appearanceCount || 1));
+
+      // STRICT GROUNDING VALIDATION FOR LECTURE SLIDE MAPPINGS:
+      let lectureSource: services.WhatToStudySourceMapping = {
+        mapped: false,
+        unmappedReason: 'Source location not confidently mapped.',
+      };
+
+      if (typeof c.lectureDocId === 'string' && c.lectureDocId) {
+        const matchedDocInfo = parsedLectures.find((p) => p.doc.id === c.lectureDocId);
+        if (matchedDocInfo) {
+          const validSlideNums = new Set(matchedDocInfo.slides.map((s) => s.slideNumber));
+          const start = Number(c.startSlide);
+          const end = Number(c.endSlide);
+          if (validSlideNums.has(start) && validSlideNums.has(end)) {
+            const minSlide = Math.min(start, end);
+            const maxSlide = Math.max(start, end);
+            const slideRange = minSlide === maxSlide ? `Slide ${minSlide}` : `Slides ${minSlide}–${maxSlide}`;
+            
+            // Score candidate slides within range to find the top matching slide
+            const candidateSlides = matchedDocInfo.slides.filter((s) => s.slideNumber >= minSlide && s.slideNumber <= maxSlide);
+            // These course-wide words are not evidence that a slide teaches the specific concept.
+            const genericConceptTerms = new Set(['architecture', 'attributes', 'design', 'requirement', 'requirements', 'software', 'system', 'systems']);
+            const conceptTokens = (c.canonicalTitle || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/)
+              .filter((t: string) => t.length > 2 && !genericConceptTerms.has(t));
+            let targetSlide = matchedDocInfo.slides.find((s) => s.slideNumber === minSlide);
+            let topScore = -1;
+            for (const slide of (candidateSlides.length > 0 ? candidateSlides : matchedDocInfo.slides)) {
+              const slideTokens = (slide.title + ' ' + slide.text).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/);
+              const score = conceptTokens.filter((t: string) => slideTokens.includes(t)).length;
+              if (score > topScore) {
+                topScore = score;
+                targetSlide = slide;
+              }
+            }
+            const minimumConceptMatches = Math.min(2, conceptTokens.length);
+            if (targetSlide && minimumConceptMatches > 0 && topScore >= minimumConceptMatches) {
+              lectureSource = {
+                mapped: true,
+                documentId: matchedDocInfo.doc.id,
+                documentTitle: matchedDocInfo.doc.title.replace(/\.(pdf|pptx|ppt|txt)$/i, ''),
+                documentFileName: matchedDocInfo.doc.title,
+                slideRange,
+                startSlide: minSlide,
+                endSlide: maxSlide,
+                exactSlide: targetSlide.slideNumber,
+                sectionTitle: typeof c.sectionTitle === 'string' && c.sectionTitle.trim() ? c.sectionTitle.trim() : (targetSlide.title || c.canonicalTitle),
+                slideSnippet: targetSlide.text.slice(0, 240),
+              };
+            }
+          }
+        }
+      }
+
+      // Carry exact slide mapping to each question occurrence
+      if (lectureSource.mapped && lectureSource.documentId) {
+        const matchedDocInfo = parsedLectures.find((p) => p.doc.id === lectureSource.documentId);
+        if (matchedDocInfo && matchedDocInfo.slides.length > 0) {
+          for (const occ of occurrences) {
+            const genericQuestionTerms = new Set(['architecture', 'attributes', 'design', 'requirement', 'requirements', 'software', 'system', 'systems']);
+            const occTokens = (occ.questionText || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/)
+              .filter((t: string) => t.length > 2 && !genericQuestionTerms.has(t));
+            let bestOccSlide: services.LectureSlideChunk | null = null;
+            let bestOccScore = 0;
+            for (const slide of matchedDocInfo.slides.filter((slide) => slide.slideNumber >= (lectureSource.startSlide || 1) && slide.slideNumber <= (lectureSource.endSlide || Number.MAX_SAFE_INTEGER))) {
+              const slideTokens = (slide.title + ' ' + slide.text).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/);
+              const matches = occTokens.filter((t: string) => slideTokens.includes(t)).length;
+              if (matches > bestOccScore && matches >= 2) {
+                bestOccScore = matches;
+                bestOccSlide = slide;
+              }
+            }
+            if (bestOccSlide) {
+              occ.exactSlide = bestOccSlide.slideNumber;
+              occ.lectureSource = {
+                mapped: true,
+                documentId: lectureSource.documentId,
+                documentTitle: lectureSource.documentTitle,
+                documentFileName: lectureSource.documentFileName,
+                slideRange: `Slide ${bestOccSlide.slideNumber}`,
+                startSlide: bestOccSlide.slideNumber,
+                endSlide: bestOccSlide.slideNumber,
+                exactSlide: bestOccSlide.slideNumber,
+                sectionTitle: bestOccSlide.title || lectureSource.sectionTitle,
+                slideSnippet: bestOccSlide.text.slice(0, 240),
+              };
+            }
+          }
+        }
+      }
+
+      const priorityTag: services.WhatToStudyItem['priorityTag'] =
+        c.priorityTag === 'HIGH PRIORITY' || c.priorityTag === 'REPEATED FREQUENTLY' || c.priorityTag === 'APPEARED ACROSS MULTIPLE YEARS' || c.priorityTag === 'STRONG PAST-PAPER EVIDENCE'
+          ? c.priorityTag
+          : (appearanceCount >= 3 ? 'HIGH PRIORITY' : appearanceCount >= 2 ? 'REPEATED FREQUENTLY' : 'STRONG PAST-PAPER EVIDENCE');
+
+      const baseScore = Math.min(40, distinctYearsCount * 20);
+      const repScore = Math.min(30, appearanceCount * 10);
+      const marksScore = Math.min(15, avgMarks >= 10 ? 15 : avgMarks >= 6 ? 10 : 5);
+      const lectureScore = lectureSource.mapped ? 10 : 0;
+      const importanceScore = Math.min(100, baseScore + repScore + marksScore + lectureScore);
+
+      const uniqueYears = Array.from(new Set(occurrences.map((o) => o.examYear)));
+      const importanceExplanation = typeof c.importanceExplanation === 'string' && c.importanceExplanation.trim()
+        ? c.importanceExplanation.trim()
+        : `Appeared in ${appearanceCount} exams across ${distinctYearsCount} years (${uniqueYears.join(', ')}) • ${lectureSource.mapped ? `Verified in ${lectureSource.slideRange}` : 'Theory concept'} • Avg ${avgMarks} marks`;
+
+      // Clean unitTopic to eliminate LLM thought-bubbles/reasoning
+      let cleanUnitTopic = typeof c.unitTopic === 'string' && c.unitTopic.trim() ? c.unitTopic.trim() : 'Curriculum Topic';
+      if (cleanUnitTopic.length > 40 || cleanUnitTopic.includes('\n') || /let's|wait|topic|similar|exact/i.test(cleanUnitTopic)) {
+        const quoteMatch = /['"]([^'"]{3,40})['"]/i.exec(cleanUnitTopic);
+        if (quoteMatch) {
+          cleanUnitTopic = quoteMatch[1].trim();
+        } else {
+          const matchedSyl = allTopics.find((t) => cleanUnitTopic.toLowerCase().includes(t.name.toLowerCase()));
+          if (matchedSyl) {
+            cleanUnitTopic = matchedSyl.name;
+          } else {
+            cleanUnitTopic = cleanUnitTopic.split(/[\n\.\?!]/)[0].trim().slice(0, 40);
+          }
+        }
+      }
+      // Existing syllabus headings are the only valid parent taxonomy. Do not
+      // persist a model-generated phrase such as "For A Product" as a topic.
+      if (allTopics.length > 0) {
+        const exactTopic = allTopics.find((topic) => topic.name.toLowerCase() === cleanUnitTopic.toLowerCase());
+        const inferredTopic = exactTopic || clusterQuestions
+          .map((question) => services.mapQuestionToTopic(question.questionText, allTopics)?.topic)
+          .find(Boolean);
+        cleanUnitTopic = inferredTopic?.name || 'Unclassified Questions';
+      }
+
+      items.push({
+        id: `wts-ai-${cIdx}-${Date.now().toString(36)}`,
+        conceptTitle: typeof c.canonicalTitle === 'string' && c.canonicalTitle.trim() ? c.canonicalTitle.trim() : 'Core Concept',
+        priorityTag,
+        appearanceCount,
+        distinctYearsCount,
+        occurrences,
+        unitTopic: cleanUnitTopic,
+        lectureSource,
+        averageMarks: avgMarks,
+        importanceScore,
+        importanceExplanation,
+      });
+    }
+
+    if (items.length === 0) {
+      return fallback();
+    }
+
+    // Sync questions in SQLite DB with the synthesized parent topics so Topic Weightage and Question Bank reflect this intelligence
+    try {
+      const db = services.getDb();
+      for (const item of items) {
+        const parentName = item.unitTopic.trim();
+        let parentTopic = allTopics.find((t) => t.name.toLowerCase() === parentName.toLowerCase());
+        if (!parentTopic && allTopics.length === 0) {
+          const existing = db.prepare('SELECT id, name FROM topics WHERE user_id = ? AND lower(name) = lower(?)').get(userId, parentName) as any;
+          if (existing) {
+            parentTopic = existing;
+          } else {
+            const newTopicId = `topic-syn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+            db.prepare(`INSERT INTO topics (id, user_id, course_id, name, priority, weightage, source, created_at, has_weightage)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newTopicId, userId, 'course-demo', parentName, 5, 15, 'syllabus', new Date().toISOString(), 1);
+            parentTopic = { id: newTopicId, name: parentName } as any;
+          }
+        }
+        if (parentTopic) {
+          const updateStmt = db.prepare('UPDATE questions SET topic_id = ?, mapping_status = ? WHERE id = ? AND user_id = ?');
+          for (const occ of item.occurrences) {
+            if (occ.questionId) {
+              updateStmt.run(parentTopic.id, 'mapped', occ.questionId, userId);
+            }
+          }
+        }
+      }
+    } catch (syncErr) {
+      console.warn('[academic] Failed to sync question topic mappings in DB:', syncErr);
+    }
+
+    // Do not let a synthesis started before an upload replace the newer revision's cache.
+    if (services.teacherIntelligenceFingerprint(userId) === fingerprint) {
+      services.cacheTeacherIntelligence(userId, fingerprint, items);
+    }
+    return items;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[academic] synthesizeTeacherIntelligence failed (${message}); falling back to deterministic ranking.`);
+    return fallback();
+  }
+}
+
 // ---- Documents ----
 app.post('/api/academic-documents/analyze', async (req, res) => {
   const body = req.body || {};
@@ -1157,7 +1654,13 @@ app.post('/api/academic-documents/analyze', async (req, res) => {
     let topicMappings: TopicMapping[] = [];
     let aiStatus: AiClassificationStatus | undefined;
 
-    if (/past|question|exam|paper|bank|test/i.test(body.docType)) {
+    const effectiveDocType = services.classifyAcademicDocument({
+      title: body.title,
+      content: body.content,
+      hintDocType: body.docType,
+    });
+
+    if (/past|question|exam|paper|bank|test/i.test(effectiveDocType)) {
       let pages: Array<{ pageNumber: number; text: string }> = [];
       if (body.content.includes('\f')) {
         pages = body.content.split('\f').map((p: string, idx: number) => ({ pageNumber: idx + 1, text: p.trim() })).filter((p: any) => p.text.length > 0);
@@ -1168,7 +1671,7 @@ app.post('/api/academic-documents/analyze', async (req, res) => {
       const extraction = await extractTeacherIntelligence({
         content: body.content,
         title: body.title,
-        docType: body.docType,
+        docType: effectiveDocType,
         pages,
       });
       questionRecords = extraction.questionRecords;
@@ -1176,13 +1679,19 @@ app.post('/api/academic-documents/analyze', async (req, res) => {
       aiStatus = extraction.status;
     }
 
+    let syllabusTopics: Array<{ name: string; weightage?: number }> | undefined;
+    if (/syllabus/i.test(effectiveDocType)) {
+      syllabusTopics = await extractSyllabusTopicsWithAI(body.content, body.title, getAIClient());
+    }
+
     const analysis = services.ingestAcademicDocument(userIdOf(req), {
       title: body.title,
-      docType: body.docType,
+      docType: effectiveDocType,
       content: body.content,
       fileSize: typeof body.fileSize === 'string' ? body.fileSize : '',
       topicMappings,
       questionRecords,
+      syllabusTopics,
     });
 
     return res.status(201).json({
@@ -1203,7 +1712,7 @@ async function ocrPdfWithAI(payload: Buffer, title: string): Promise<string> {
   try {
     const response = await geminiGenerate(ai, {
       model: GEMINI_MODEL,
-      contents: [{ inlineData: { mimeType: 'application/pdf', data: payload.toString('base64') } }, { text: `Extract the complete readable question-paper text from ${title}. Preserve question numbering and marks. Do not add or infer content.` }],
+      contents: [{ inlineData: { mimeType: 'application/pdf', data: payload.toString('base64') } }, { text: `Extract the complete readable academic text and structure from ${title}. Preserve headings, modules, units, questions, numbering, marks, and topics where present. Do not add or infer content.` }],
     });
     const text = String(response.text || '').trim();
     if (text.length < 20) throw new HttpError(422, 'The PDF could not be read. Please upload a clearer text-based PDF.');
@@ -1227,25 +1736,27 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
   const payload = Buffer.from(base64, 'base64');
   if (payload.length === 0 || payload.length > 15 * 1024 * 1024) throw new HttpError(413, 'Files must be between 1 byte and 15 MB.');
   const checkName = (typeof fileName === 'string' && fileName.trim()) ? fileName.toLowerCase() : title.toLowerCase();
-  const demoMatch = isDemoFile(checkName);
+  const payloadSha256 = createHash('sha256').update(payload).digest('hex');
+  const demoMatch = findDemoFileBySha256(payloadSha256) || isDemoFile(checkName) || isDemoFile(title);
   if (demoMatch) {
+    const demoDataset = demoDatasetForFile(demoMatch);
     let questionRecords: services.QuestionRecord[] = [];
     let topicMappings: TopicMapping[] = [];
-    if (demoMatch.id === 'pyq') {
-      questionRecords = DEMO_QUESTIONS.map((q) => ({
+    if (demoMatch.docType === 'Past Paper') {
+      questionRecords = demoDataset.questions.map((q) => ({
         text: q.questionText,
         marks: q.marks,
         questionNumber: q.questionNumber,
         subpart: q.subpart,
         pageNumber: q.pageNumber,
       }));
-      topicMappings = DEMO_QUESTIONS.map((q) => ({
+      topicMappings = demoDataset.questions.map((q) => ({
         questionText: q.questionText,
         topicName: q.topicName,
         confidence: 1.0,
       }));
-    } else if (demoMatch.id === 'syllabus') {
-      services.saveTopics(userId, DEMO_TOPICS.map((dt) => ({
+    } else if (demoMatch.docType === 'Syllabus') {
+      services.saveTopics(userId, demoDataset.topics.map((dt) => ({
         name: dt.name,
         priority: dt.priority,
         weightage: dt.weightage,
@@ -1264,7 +1775,7 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
       fileSize: payload.length + ' bytes',
       fileData: payload,
       mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'),
-      extractionMethod: 'precomputed-demo-adapter',
+      extractionMethod: `precomputed-demo-adapter:${demoDataset.id}:${demoMatch.id}`,
       topicMappings,
       questionRecords,
       structuredPages: demoMatch.structuredPages,
@@ -1274,30 +1785,47 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
       configured: true,
       attempted: false,
       ok: true,
-      message: 'Demo analysis loaded from curated 2025 dataset (no LLM required).',
+      message: 'Curated document analysis loaded without an LLM.',
       model: 'Precomputed Demo Data',
     };
 
-    return { analysis: { ...analysis, extractionMethod: 'precomputed-demo-adapter', aiStatus } };
+    console.log(`[academic-upload] user=${userId} document=${analysis.document.id} "${analysis.document.title}" -> method=precomputed-demo-adapter:${demoDataset.id}:${demoMatch.id}, text=${demoMatch.content.length}, pages=${demoMatch.structuredPages.length}, parsed=${analysis.parsedQuestionCount}, indexed=${analysis.createdQuestionCount}, duplicates=${analysis.duplicateQuestionCount}, rejected=${analysis.rejectedQuestionCount}, status=${analysis.processingStatus}`);
+    return {
+      analysis: {
+        ...analysis,
+        extractionMethod: `precomputed-demo-adapter:${demoDataset.id}:${demoMatch.id}`,
+        aiStatus,
+        processing: {
+          textExtracted: Boolean(demoMatch.content.trim()),
+          extractedCharacterCount: demoMatch.content.length,
+          pageCount: demoMatch.structuredPages?.length || 0,
+          parsedQuestionCount: analysis.parsedQuestionCount,
+          indexedQuestionCount: analysis.createdQuestionCount,
+          duplicateQuestionCount: analysis.duplicateQuestionCount,
+          rejectedQuestionCount: analysis.rejectedQuestionCount,
+          status: analysis.processingStatus,
+          cacheInvalidated: analysis.cacheInvalidated,
+        },
+      },
+    };
   }
   const isPdfMagic = payload.length >= 5 && payload.subarray(0, 5).toString('utf8') === '%PDF-';
   const isZipMagic = payload.length >= 4 && payload.subarray(0, 4).toString('binary') === 'PK\x03\x04';
+  const isOle2Magic = payload.length >= 8 && payload[0] === 0xd0 && payload[1] === 0xcf && payload[2] === 0x11 && payload[3] === 0xe0;
   const isPdf = mimeType === 'application/pdf' ||
     (mimeType !== 'text/plain' && checkName.endsWith('.pdf')) ||
     isPdfMagic;
+  const isDocx = mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    checkName.endsWith('.docx');
   const isPptx = mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-    (mimeType !== 'text/plain' && checkName.endsWith('.pptx')) ||
-    (isZipMagic && !isPdfMagic && !isPdf);
+    checkName.endsWith('.pptx') ||
+    checkName.endsWith('.ppt');
+
   let content: string;
   let extractionMethod: string;
-  let structuredPages: Array<{ pageNumber: number; text: string }> = [];
-  if (isPptx) {
-    const parsed = extractStructuredDocument(payload, title, mimeType);
-    content = parsed.fullText;
-    extractionMethod = parsed.extractionMethod;
-    structuredPages = parsed.pages.map((p) => ({ pageNumber: p.pageNumber, text: p.text }));
-    if (!content) throw new HttpError(422, 'No slides or readable text found in this PPTX presentation.');
-  } else if (isPdf) {
+  let structuredPages: Array<{ pageNumber: number; heading?: string; text: string }> = [];
+
+  if (isPdf) {
     let localContent = '';
     let localStructuredPages: Array<{ pageNumber: number; text: string }> = [];
     let localExtractionSucceeded = false;
@@ -1329,7 +1857,11 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
         if (extractionIsLowQuality(content)) {
           throw new HttpError(422, 'The PDF text could not be read reliably after OCR. Please upload a clearer text-based PDF.');
         }
-        structuredPages = [{ pageNumber: 1, text: content }];
+        if (content.includes('\f')) {
+          structuredPages = content.split('\f').map((p, idx) => ({ pageNumber: idx + 1, text: p.trim() })).filter((p) => p.text.length > 0);
+        } else {
+          structuredPages = [{ pageNumber: 1, text: content }];
+        }
       } catch (ocrErr: any) {
         // If AI OCR returns temporary high-demand / 503 / rate-limit errors BUT we have usable local text:
         if (localContent && localContent.trim().length >= 20 && isTransientGeminiError(ocrErr)) {
@@ -1341,6 +1873,15 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
           throw ocrErr;
         }
       }
+    }
+  } else if (isZipMagic || isPptx || isDocx || isOle2Magic || /\.(docx|pptx|ppt|doc)$/i.test(checkName)) {
+    const parsed = extractStructuredDocument(payload, checkName, mimeType);
+    content = parsed.fullText;
+    extractionMethod = parsed.extractionMethod;
+    structuredPages = parsed.pages.map((p) => ({ pageNumber: p.pageNumber, heading: p.heading, text: p.text }));
+    if (!content) {
+      const typeLabel = isDocx || checkName.endsWith('.docx') ? 'DOCX document' : isPptx || checkName.endsWith('.pptx') ? 'PPTX presentation' : 'document';
+      throw new HttpError(422, `No slides or readable text found in this ${typeLabel}.`);
     }
   } else {
     content = payload.toString('utf8').trim();
@@ -1360,7 +1901,23 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
   let topicMappings: TopicMapping[] = [];
   let aiStatus: AiClassificationStatus;
 
-  const isExamDoc = /past|question|exam|paper|bank|test/i.test(docType);
+  const effectiveMimeType = isPdf
+    ? 'application/pdf'
+    : (extractionMethod === 'docx-sections' || checkName.endsWith('.docx'))
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : (extractionMethod === 'pptx-slides' || checkName.endsWith('.pptx'))
+        ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        : String(mimeType || 'text/plain');
+
+  const effectiveDocType = services.classifyAcademicDocument({
+    title,
+    fileName: checkName,
+    content,
+    hintDocType: docType,
+    mimeType: effectiveMimeType,
+  });
+
+  const isExamDoc = /past|question|exam|paper|bank|test/i.test(effectiveDocType);
   if (isExamDoc) {
     let preStructured = false;
     try {
@@ -1372,7 +1929,7 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
           questionNumber: String(item.questionNumber || ''),
           subpart: item.subpart ? String(item.subpart) : (item.label ? String(item.label) : undefined),
           pageNumber: Number.isInteger(Number(item.pageNumber)) ? Number(item.pageNumber) : 1,
-        }));
+        })).filter(services.isPersistableQuestion);
         preStructured = true;
       }
     } catch {
@@ -1383,7 +1940,7 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
       const extraction = await extractTeacherIntelligence({
         content,
         title,
-        docType,
+        docType: effectiveDocType,
         pages: structuredPages,
       });
       questionRecords = extraction.questionRecords;
@@ -1398,7 +1955,19 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
         model: GEMINI_MODEL,
       };
     }
-  } else {
+  }
+
+  let syllabusTopics: Array<{ name: string; weightage?: number }> | undefined;
+  if (/syllabus/i.test(effectiveDocType)) {
+    syllabusTopics = await extractSyllabusTopicsWithAI(content, title, getAIClient());
+    aiStatus = {
+      configured: Boolean(getAIClient()),
+      attempted: Boolean(getAIClient()),
+      ok: true,
+      message: `Extracted ${syllabusTopics.length} syllabus topics.`,
+      model: GEMINI_MODEL,
+    };
+  } else if (!isExamDoc) {
     aiStatus = {
       configured: Boolean(getAIClient()),
       attempted: false,
@@ -1410,20 +1979,38 @@ async function processAcademicDocumentUpload(userId: string, input: any) {
 
   const analysis = services.ingestAcademicDocument(userId, {
     title,
-    docType,
+    docType: effectiveDocType,
     content,
     fileSize: `${payload.length} bytes`,
     fileData: payload,
-    mimeType: isPdf ? 'application/pdf' : String(mimeType || 'text/plain'),
+    mimeType: effectiveMimeType,
     extractionMethod,
     topicMappings,
     questionRecords,
     structuredPages,
+    syllabusTopics,
   });
 
-  console.log(`[academic-upload] "${title}" (${payload.length} bytes, ${mimeType || (isPdf ? 'application/pdf' : 'unknown')}) -> extractionMethod: "${extractionMethod}", text: ${content.length} chars, pages: ${structuredPages.length}, questions: ${questionRecords.length}`);
+  console.log(`[academic-upload] user=${userId} document=${analysis.document.id} "${title}" -> method=${extractionMethod}, text=${content.length}, pages=${structuredPages.length}, parsed=${analysis.parsedQuestionCount}, indexed=${analysis.createdQuestionCount}, duplicates=${analysis.duplicateQuestionCount}, rejected=${analysis.rejectedQuestionCount}, status=${analysis.processingStatus}`);
 
-  return { analysis: { ...analysis, extractionMethod, aiStatus } };
+  return {
+    analysis: {
+      ...analysis,
+      extractionMethod,
+      aiStatus,
+      processing: {
+        textExtracted: content.length > 0,
+        extractedCharacterCount: content.length,
+        pageCount: structuredPages.length,
+        parsedQuestionCount: analysis.parsedQuestionCount,
+        indexedQuestionCount: analysis.createdQuestionCount,
+        duplicateQuestionCount: analysis.duplicateQuestionCount,
+        rejectedQuestionCount: analysis.rejectedQuestionCount,
+        status: analysis.processingStatus,
+        cacheInvalidated: analysis.cacheInvalidated,
+      },
+    },
+  };
 }
 
 app.post('/api/academic-documents/upload', async (req, res) => {
@@ -1489,6 +2076,809 @@ app.get('/api/documents/:id/pages/:pageNumber', (req, res) => {
   }
 });
 
+// ---- SLIDE PRESENTATION VIEWER (EXACT SLIDE NAVIGATION & VISUAL RENDERING) ----
+function renderNotFoundHtml(title: string, message: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} · LazyLift</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f0d13;
+      color: #f5f3f7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: #17151a;
+      border: 1px solid #302b35;
+      border-radius: 16px;
+      padding: 44px 32px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .icon { font-size: 44px; margin-bottom: 20px; }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 12px; color: #f5f3f7; }
+    p { color: #a9a3ae; font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
+    .btn {
+      display: inline-block;
+      background: #7c3aed;
+      color: #fff;
+      font-weight: 600;
+      font-size: 14px;
+      padding: 12px 28px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #6d28d9; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">📂</div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+    <a href="/" class="btn">Back to LazyLift</a>
+  </div>
+</body>
+</html>`;
+}
+
+function renderPresentationViewerHtml(doc: services.DocumentRow, pages: services.DocumentPageRecord[], selectedSlideNum: number, outOfRangeError: string | null, token?: string, googleSlidesUrl?: string): string {
+  const maxSlideNumber = Math.max(pages.length, ...(pages.map((p) => p.pageNumber)));
+  const totalSlides = maxSlideNumber;
+  const currentSlide = pages.find((p) => p.pageNumber === selectedSlideNum) || pages[0] || { pageNumber: 1, heading: doc.title, text: '' };
+  const isPdf = (doc.mimeType === 'application/pdf') || /\.pdf$/i.test(doc.title);
+  const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+  const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+
+  const escapeXml = (s: string) => (s || '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m] || m));
+
+  const slidesJson = JSON.stringify(pages.map((p) => ({
+    pageNumber: p.pageNumber,
+    heading: p.heading || `Slide ${p.pageNumber}`,
+    text: p.text || '',
+  })));
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeXml(doc.title)} · Slide ${selectedSlideNum} · LazyLift</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #0f0d13;
+      color: #f5f3f7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      background: #17151a;
+      border-bottom: 1px solid #302b35;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+    .back-btn {
+      color: #a9a3ae;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: 6px;
+      background: #211c27;
+      border: 1px solid #302b35;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+    .back-btn:hover { color: #fff; border-color: #8b5cf6; }
+    .doc-meta { min-width: 0; }
+    .doc-title {
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #f5f3f7;
+      max-width: 380px;
+    }
+    .doc-type-badge {
+      font-size: 11px;
+      color: #8b5cf6;
+      font-weight: 500;
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .mode-switcher {
+      display: flex;
+      background: #211c27;
+      border: 1px solid #302b35;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .mode-btn {
+      background: transparent;
+      border: none;
+      color: #a9a3ae;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .mode-btn.active {
+      background: #6d28d9;
+      color: #fff;
+    }
+    .mode-btn:hover:not(.active) {
+      color: #f5f3f7;
+      background: #2a2433;
+    }
+    .slide-badge {
+      background: #272230;
+      border: 1px solid #3d3546;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #d8c9ff;
+    }
+    .action-btn {
+      color: #d8c9ff;
+      background: #211c27;
+      border: 1px solid #302b35;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      text-decoration: none;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .action-btn:hover {
+      background: #2a2433;
+      border-color: #8b5cf6;
+      color: #fff;
+    }
+    .main-layout {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      position: relative;
+    }
+    .error-banner {
+      background: #451a03;
+      border-bottom: 1px solid #92400e;
+      color: #fef3c7;
+      padding: 10px 20px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .slide-stage {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      min-width: 0;
+      overflow-y: auto;
+      background: #0f0d13;
+    }
+    .canvas-container {
+      width: 100%;
+      max-width: 980px;
+      aspect-ratio: 16 / 9;
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 16px 36px rgba(0,0,0,0.6);
+      border: 1px solid #302b35;
+      background: #17151a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .slide-visual-view {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #141118;
+      position: relative;
+    }
+    .slide-rendered-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      transition: opacity 0.2s ease-in-out;
+    }
+    .slide-loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(20, 17, 24, 0.7);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: #a78bfa;
+      font-weight: 600;
+    }
+    .slide-card-view {
+      width: 100%;
+      height: 100%;
+      background: #17151a;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .slide-card-header {
+      padding: 18px 26px 12px;
+      border-bottom: 1px solid #272230;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .slide-heading {
+      font-size: 20px;
+      font-weight: 700;
+      color: #f5f3f7;
+      line-height: 1.3;
+    }
+    .slide-number-tag {
+      font-family: monospace;
+      font-size: 12px;
+      color: #a78bfa;
+      background: #241e2e;
+      padding: 2px 8px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .slide-body {
+      flex: 1;
+      padding: 22px 26px;
+      overflow-y: auto;
+      font-size: 15px;
+      line-height: 1.7;
+      color: #e2dee6;
+      white-space: pre-wrap;
+    }
+    .slide-footer {
+      padding: 8px 26px;
+      border-top: 1px solid #272230;
+      background: #141217;
+      font-size: 11px;
+      color: #7b7484;
+      display: flex;
+      justify-content: space-between;
+    }
+    .pdf-frame-view {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: none;
+    }
+    .sidebar {
+      width: 280px;
+      background: #141217;
+      border-left: 1px solid #302b35;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      transition: transform 0.2s;
+    }
+    .sidebar.hidden { display: none; }
+    .sidebar-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid #302b35;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #a9a3ae;
+    }
+    .sidebar-list {
+      flex: 1;
+      overflow-y: auto;
+      list-style: none;
+    }
+    .sidebar-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid #211c27;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    .sidebar-item:hover { background: #1c1822; }
+    .sidebar-item.active {
+      background: #251d30;
+      border-left: 3px solid #8b5cf6;
+      font-weight: 600;
+      color: #d8c9ff;
+    }
+    .sidebar-item-num {
+      font-size: 11px;
+      color: #7b7484;
+      margin-bottom: 2px;
+    }
+    .footer-bar {
+      background: #17151a;
+      border-top: 1px solid #302b35;
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      gap: 16px;
+    }
+    .nav-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .nav-btn {
+      background: #272230;
+      border: 1px solid #3d3546;
+      color: #f5f3f7;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .nav-btn:hover:not(:disabled) {
+      background: #342c42;
+      border-color: #8b5cf6;
+    }
+    .nav-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .jump-box {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #a9a3ae;
+    }
+    .jump-input {
+      width: 52px;
+      background: #0f0d13;
+      border: 1px solid #3d3546;
+      color: #fff;
+      border-radius: 4px;
+      padding: 4px 6px;
+      text-align: center;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <a href="/" class="back-btn">&larr; Back to LazyLift</a>
+      <div class="doc-meta">
+        <div class="doc-title">${escapeXml(doc.title)}</div>
+        <div class="doc-type-badge">${isPdf ? 'PDF Presentation' : 'PowerPoint Presentation'} &middot; Verified Academic Source</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="mode-switcher">
+        <button id="mode-visual-btn" class="mode-btn active" onclick="setMode('visual')">🖼️ Slide</button>
+        <button id="mode-text-btn" class="mode-btn" onclick="setMode('text')">📝 Text</button>
+        ${isPdf ? `<button id="mode-pdf-btn" class="mode-btn" onclick="setMode('pdf')">📄 PDF</button>` : ''}
+      </div>
+      <span id="slide-badge" class="slide-badge">Slide ${selectedSlideNum} of ${totalSlides}</span>
+      ${googleSlidesUrl ? `<a href="${escapeXml(googleSlidesUrl)}" target="_blank" rel="noreferrer" class="action-btn">Google Slides</a>` : ''}
+      <a href="/api/documents/${doc.id}/file${tokenQuery}" class="action-btn download-btn" download>Download Original File</a>
+      <button id="toggle-sidebar" class="action-btn" onclick="toggleSidebar()">Slides List</button>
+      <button id="fullscreen-btn" class="action-btn" onclick="toggleFullscreen()" title="Fullscreen">⛶</button>
+    </div>
+  </header>
+
+  ${outOfRangeError ? `
+  <div class="error-banner">
+    <span>⚠️ ${escapeXml(outOfRangeError)}</span>
+    <button onclick="goToSlide(1)" class="nav-btn" style="font-size:11px; padding:3px 8px;">Go to Slide 1</button>
+  </div>` : ''}
+
+  <div class="main-layout">
+    <main class="slide-stage" id="slide-stage">
+      <div class="canvas-container" id="canvas-container">
+        <!-- Visual Slide View (Default) -->
+        <div class="slide-visual-view" id="slide-visual-view">
+          <img
+            id="slide-img"
+            class="slide-rendered-img"
+            src="/api/documents/${doc.id}/slides/${selectedSlideNum}/image${tokenQuery}"
+            alt="Slide ${selectedSlideNum}"
+            onload="handleImageLoaded()"
+            onerror="handleImageError()"
+          />
+          <div id="slide-loading-overlay" class="slide-loading-overlay">Loading Slide...</div>
+        </div>
+
+        <!-- Text & Notes View -->
+        <div class="slide-card-view" id="slide-card-view">
+          <div class="slide-card-header">
+            <h1 id="slide-title" class="slide-heading">${escapeXml(currentSlide.heading || `Slide ${selectedSlideNum}`)}</h1>
+            <span id="slide-number-tag" class="slide-number-tag">Slide ${selectedSlideNum}</span>
+          </div>
+          <div class="slide-body" id="slide-body">${escapeXml(currentSlide.text || '(No readable slide text)')}</div>
+          <div class="slide-footer">
+            <span>${escapeXml(doc.title)}</span>
+            <span>LazyLift Verified Source Material</span>
+          </div>
+        </div>
+
+        <!-- PDF Reader View -->
+        ${isPdf ? `<iframe id="pdf-view" class="pdf-frame-view" src="/api/documents/${doc.id}/file#page=${selectedSlideNum}${tokenParam}"></iframe>` : ''}
+      </div>
+    </main>
+
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">Presentation Slides (${totalSlides})</div>
+      <ul class="sidebar-list" id="sidebar-list">
+        ${pages.map((p) => `
+          <li class="sidebar-item ${p.pageNumber === selectedSlideNum ? 'active' : ''}" id="sidebar-item-${p.pageNumber}" onclick="goToSlide(${p.pageNumber})">
+            <div class="sidebar-item-num">Slide ${p.pageNumber}</div>
+            <div class="sidebar-item-title">${escapeXml(p.heading || `Slide ${p.pageNumber}`)}</div>
+          </li>
+        `).join('')}
+      </ul>
+    </aside>
+  </div>
+
+  <footer class="footer-bar">
+    <div class="nav-controls">
+      <button id="prev-btn" class="nav-btn" onclick="prevSlide()" ${selectedSlideNum <= 1 ? 'disabled' : ''}>&larr; Previous</button>
+      <button id="next-btn" class="nav-btn" onclick="nextSlide()" ${selectedSlideNum >= totalSlides ? 'disabled' : ''}>Next &rarr;</button>
+    </div>
+    <div class="jump-box">
+      <span>Jump to slide:</span>
+      <input type="number" id="jump-input" class="jump-input" min="1" max="${totalSlides}" value="${selectedSlideNum}" onkeydown="if(event.key==='Enter') goToSlide(this.value)">
+      <span>of ${totalSlides}</span>
+    </div>
+    <div style="font-size: 11px; color: #7b7484;">
+      &larr; &rarr; arrows to navigate &middot; T to toggle text &middot; F for fullscreen
+    </div>
+  </footer>
+
+  <script>
+    const SLIDES = ${slidesJson};
+    let currentSlide = ${selectedSlideNum};
+    const totalSlides = ${totalSlides};
+    const isPdfDoc = ${isPdf};
+    let currentMode = 'visual'; // 'visual' | 'text' | 'pdf'
+    const tokenParam = "${tokenParam}";
+    const docId = "${doc.id}";
+
+    function setMode(mode) {
+      currentMode = mode;
+      const visualView = document.getElementById('slide-visual-view');
+      const cardView = document.getElementById('slide-card-view');
+      const pdfView = document.getElementById('pdf-view');
+
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+
+      if (mode === 'visual') {
+        visualView.style.display = 'flex';
+        cardView.style.display = 'none';
+        if (pdfView) pdfView.style.display = 'none';
+        document.getElementById('mode-visual-btn')?.classList.add('active');
+      } else if (mode === 'text') {
+        visualView.style.display = 'none';
+        cardView.style.display = 'flex';
+        if (pdfView) pdfView.style.display = 'none';
+        document.getElementById('mode-text-btn')?.classList.add('active');
+      } else if (mode === 'pdf' && isPdfDoc) {
+        visualView.style.display = 'none';
+        cardView.style.display = 'none';
+        if (pdfView) {
+          pdfView.style.display = 'block';
+          pdfView.src = "/api/documents/" + docId + "/file#page=" + currentSlide + tokenParam;
+        }
+        document.getElementById('mode-pdf-btn')?.classList.add('active');
+      }
+    }
+
+    function handleImageLoaded() {
+      const overlay = document.getElementById('slide-loading-overlay');
+      if (overlay) overlay.style.display = 'none';
+      const img = document.getElementById('slide-img');
+      if (img) img.style.opacity = '1';
+    }
+
+    function handleImageError() {
+      // If slide image fails to load, gracefully switch to text card
+      console.warn("Slide visual image failed to load for slide " + currentSlide + ", switching to text view.");
+      setMode('text');
+    }
+
+    function renderSlide(num) {
+      const slide = SLIDES.find(s => s.pageNumber === num);
+      if (!slide) return;
+      currentSlide = num;
+      
+      // Update Slide Image
+      const img = document.getElementById('slide-img');
+      const overlay = document.getElementById('slide-loading-overlay');
+      if (img) {
+        img.style.opacity = '0.5';
+        if (overlay) overlay.style.display = 'flex';
+        img.src = "/api/documents/" + docId + "/slides/" + num + "/image" + (tokenParam ? ("?" + tokenParam.slice(1)) : "");
+      }
+
+      // Update Text View
+      document.getElementById('slide-title').innerText = slide.heading || ("Slide " + num);
+      document.getElementById('slide-number-tag').innerText = "Slide " + num;
+      document.getElementById('slide-body').innerText = slide.text || "(No readable slide text)";
+
+      // Update Header & Footer
+      document.getElementById('slide-badge').innerText = "Slide " + num + " of " + totalSlides;
+      document.getElementById('jump-input').value = num;
+
+      const currIdx = SLIDES.findIndex(s => s.pageNumber === num);
+      document.getElementById('prev-btn').disabled = (currIdx <= 0);
+      document.getElementById('next-btn').disabled = (currIdx >= SLIDES.length - 1);
+
+      // Update Sidebar Active state
+      document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
+      const activeItem = document.getElementById('sidebar-item-' + num);
+      if (activeItem) {
+        activeItem.classList.add('active');
+        activeItem.scrollIntoView({ block: 'nearest' });
+      }
+
+      // Update PDF if currently viewing PDF mode
+      if (currentMode === 'pdf' && isPdfDoc) {
+        const frame = document.getElementById('pdf-view');
+        if (frame) frame.src = "/api/documents/" + docId + "/file#page=" + num + tokenParam;
+      }
+
+      // Update browser URL state without reloading
+      const url = new URL(window.location.href);
+      url.searchParams.set('slide', num);
+      window.history.replaceState({}, '', url.toString());
+      document.title = "${escapeXml(doc.title)} · Slide " + num + " · LazyLift";
+    }
+
+    function goToSlide(n) {
+      const num = parseInt(n, 10);
+      if (!isNaN(num)) {
+        const found = SLIDES.find(s => s.pageNumber === num);
+        if (found) renderSlide(num);
+      }
+    }
+    function prevSlide() {
+      const currIdx = SLIDES.findIndex(s => s.pageNumber === currentSlide);
+      if (currIdx > 0) renderSlide(SLIDES[currIdx - 1].pageNumber);
+    }
+    function nextSlide() {
+      const currIdx = SLIDES.findIndex(s => s.pageNumber === currentSlide);
+      if (currIdx >= 0 && currIdx < SLIDES.length - 1) renderSlide(SLIDES[currIdx + 1].pageNumber);
+    }
+
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.classList.toggle('hidden');
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); nextSlide(); }
+      else if (e.key === 'Home') goToSlide(1);
+      else if (e.key === 'End') goToSlide(totalSlides);
+      else if (e.key === 't' || e.key === 'T') setMode(currentMode === 'visual' ? 'text' : 'visual');
+      else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function handleDocumentPresentationView(req: express.Request, res: express.Response) {
+  try {
+    const doc = services.findOwnedDocument(userIdOf(req), req.params.id);
+    if (!doc) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(404).send(renderNotFoundHtml('Presentation Not Found', 'The requested presentation could not be found or you do not have permission to access it.'));
+    }
+
+    let pages = services.getDocumentPages(userIdOf(req), req.params.id);
+    if (pages.length === 0) {
+      const slides = services.extractLectureSlides(doc.content || '');
+      if (slides.length > 0) {
+        pages = slides.map((s) => ({
+          id: `fallback-${s.slideNumber}`,
+          documentId: doc.id,
+          userId: userIdOf(req),
+          pageNumber: s.slideNumber,
+          heading: s.title || `Slide ${s.slideNumber}`,
+          text: s.text,
+          createdAt: doc.createdAt,
+        }));
+      } else {
+        pages = [{
+          id: `fallback-1`,
+          documentId: doc.id,
+          userId: userIdOf(req),
+          pageNumber: 1,
+          heading: doc.title,
+          text: doc.content || '',
+          createdAt: doc.createdAt,
+        }];
+      }
+    }
+
+    const reqSlideStr = (req.query.slide ?? req.query.page)?.toString();
+    let requestedSlideNum: number | null = null;
+    let outOfRangeError: string | null = null;
+    let selectedSlideNum = 1;
+    const maxSlideNumber = Math.max(pages.length, ...pages.map((p) => p.pageNumber));
+    const minSlideNumber = Math.min(1, ...pages.map((p) => p.pageNumber));
+
+    if (reqSlideStr !== undefined && reqSlideStr !== '') {
+      const parsed = parseInt(reqSlideStr, 10);
+      if (Number.isNaN(parsed)) {
+        outOfRangeError = `Invalid slide number "${reqSlideStr}".`;
+        selectedSlideNum = pages[0]?.pageNumber || 1;
+      } else {
+        requestedSlideNum = parsed;
+        const targetPage = pages.find((p) => p.pageNumber === parsed);
+        if (!targetPage && (parsed < minSlideNumber || parsed > maxSlideNumber)) {
+          outOfRangeError = `Slide ${parsed} is out of range. This presentation has ${maxSlideNumber} slide${maxSlideNumber === 1 ? '' : 's'} (valid range: ${minSlideNumber}–${maxSlideNumber}).`;
+          selectedSlideNum = Math.max(minSlideNumber, Math.min(parsed, maxSlideNumber));
+        } else {
+          selectedSlideNum = parsed;
+        }
+      }
+    } else {
+      selectedSlideNum = pages[0]?.pageNumber || 1;
+    }
+
+    const token = typeof req.query.token === 'string' ? req.query.token : undefined;
+
+    let googleSlidesUrl: string | undefined;
+    const rawSourceUrl = typeof req.query.sourceUrl === 'string' ? req.query.sourceUrl : (doc.content?.match(/https:\/\/docs\.google\.com\/presentation\/d\/[^\s"')]+/i)?.[0]);
+    if (rawSourceUrl && /docs\.google\.com\/presentation/i.test(rawSourceUrl)) {
+      const cleanUrl = rawSourceUrl.replace(/#slide=.*$/, '');
+      const slideObjId = typeof req.query.slideObjectId === 'string' ? req.query.slideObjectId : `p${selectedSlideNum}`;
+      googleSlidesUrl = `${cleanUrl}#slide=id.${slideObjId}`;
+    }
+
+    // Only return JSON if explicitly requested via ?format=json
+    if (req.query.format === 'json') {
+      const targetPage = pages.find((p) => p.pageNumber === selectedSlideNum) || pages[0];
+      return res.json({
+        document: {
+          id: doc.id,
+          title: doc.title,
+          docType: doc.docType,
+          mimeType: doc.mimeType,
+        },
+        currentSlide: selectedSlideNum,
+        totalSlides: maxSlideNumber,
+        requestedSlide: requestedSlideNum,
+        error: outOfRangeError,
+        slide: targetPage,
+        pages: pages.map((p) => ({ pageNumber: p.pageNumber, heading: p.heading })),
+        googleSlidesUrl,
+      });
+    }
+
+    const html = renderPresentationViewerHtml(doc, pages, selectedSlideNum, outOfRangeError, token, googleSlidesUrl);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(html);
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(500).send(renderNotFoundHtml('Server Error', 'Unable to render presentation viewer.'));
+  }
+}
+
+app.get('/api/documents/:id/view', handleDocumentPresentationView);
+app.get('/api/documents/:id/viewer', handleDocumentPresentationView);
+
+app.get('/api/documents/:id/slides/:slideNumber/image', async (req, res) => {
+  try {
+    const doc = services.findOwnedDocument(userIdOf(req), req.params.id);
+    if (!doc) return sendError(res, 404, 'Presentation not found.');
+    const slideNum = parseInt(req.params.slideNumber, 10);
+    if (Number.isNaN(slideNum) || slideNum < 1) return sendError(res, 400, 'Invalid slide number.');
+
+    const pages = services.getDocumentPages(userIdOf(req), req.params.id);
+    const fileInfo = services.findOwnedDocumentFileData(userIdOf(req), req.params.id);
+
+    const rendered = await renderSlideImage(doc, pages, slideNum, fileInfo?.fileData);
+    res.setHeader('Content-Type', rendered.contentType);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.send(rendered.data);
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, 'Unable to render slide image.');
+  }
+});
+
+app.get('/api/documents/:id/pdf', async (req, res) => {
+  try {
+    const doc = services.findOwnedDocument(userIdOf(req), req.params.id);
+    if (!doc) return sendError(res, 404, 'Presentation not found.');
+    const fileInfo = services.findOwnedDocumentFileData(userIdOf(req), req.params.id);
+    if (!fileInfo || !fileInfo.fileData) return sendError(res, 404, 'Original document file not found.');
+
+    const isPdf = doc.mimeType === 'application/pdf' || /\.pdf$/i.test(doc.title);
+    if (isPdf) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.title)}"`);
+      return res.send(fileInfo.fileData);
+    }
+
+    const convertedPdfPath = await getOrConvertPptxToPdf(doc.id, fileInfo.fileData);
+    if (convertedPdfPath && fs.existsSync(convertedPdfPath)) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.title.replace(/\.pptx?$/i, '.pdf'))}"`);
+      return res.send(fs.readFileSync(convertedPdfPath));
+    }
+
+    return sendError(res, 415, 'PDF conversion not available for this file.');
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 500, 'Unable to retrieve PDF representation.');
+  }
+});
+
 // ---- REAL FOCUS MODE & WEBSITE BLOCKING ----
 app.post('/api/focus-mode/start', (req, res) => {
   try {
@@ -1540,10 +2930,17 @@ app.post('/api/focus-mode/blocklist', (req, res) => {
 });
 
 // ---- TEACHER'S EXAM INTELLIGENCE ("WHAT TO STUDY") ----
-app.get('/api/academic/what-to-study', (req, res) => {
+app.get('/api/academic/what-to-study', async (req, res) => {
   try {
-    const items = services.getWhatToStudyRanking(userIdOf(req));
-    return res.json({ whatToStudy: items });
+    const userId = userIdOf(req);
+    const fingerprint = services.teacherIntelligenceFingerprint(userId);
+    const cached = services.cachedTeacherIntelligence(userId, fingerprint);
+    if (cached) return res.json({ whatToStudy: cached, synthesisPending: false });
+    const items = services.getDeterministicWhatToStudyRanking(userId);
+    if (items.length > 0 && getAIClient()) {
+      void synthesizeTeacherIntelligence(userId, getAIClient()).catch((error) => console.warn('[academic] background synthesis failed:', error));
+    }
+    return res.json({ whatToStudy: items, synthesisPending: items.length > 0 });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 500, error instanceof Error ? error.message : 'Unable to generate What to Study ranking.');
@@ -1554,7 +2951,17 @@ app.post('/api/academic/load-demo-pack', (req, res) => {
   return sendError(res, 409, 'Upload the three course documents to generate the demo study pack.');
 });
 
+app.post('/api/academic/clear', (req, res) => {
+  try {
+    services.clearAcademicData(userIdOf(req));
+    return res.json({ success: true, message: 'All academic documents, questions, and topics cleared successfully.' });
+  } catch (error) {
+    return sendError(res, 500, error instanceof Error ? error.message : 'Unable to clear academic data.');
+  }
+});
+
 app.post('/api/academic/load-sample-pack', (req, res) => {
+  if (process.env.NODE_ENV !== 'test') return sendError(res, 404, 'Sample packs are unavailable. Upload your course documents instead.');
   try {
     const items = services.loadSampleAcademicPack(userIdOf(req));
     return res.status(201).json({
@@ -2049,7 +3456,7 @@ export function setAIClientForTesting(client: any) {
   mockAIClient = client;
 }
 
-function getAIClient() {
+export function getAIClient() {
   if (mockAIClient !== null) return mockAIClient;
   let apiKey = process.env.GEMINI_API_KEY;
   if (apiKey === 'MY_GEMINI_API_KEY' || process.env.NODE_ENV === 'test') {
@@ -2086,11 +3493,15 @@ function isTransientGeminiError(err: any): boolean {
   const code = Number(err?.code ?? err?.statusCode ?? NaN);
   const status = String(err?.status ?? '');
   const detail = typeof err?.message === 'string' ? err.message : JSON.stringify(err?.message ?? '');
-  const blob = `${status} ${code} ${detail}`;
+  const cause = typeof err?.cause === 'object' ? JSON.stringify(err.cause) : String(err?.cause ?? '');
+  const blob = `${status} ${code} ${detail} ${cause}`;
   return (
     code === 429 ||
     code === 503 ||
-    /(^|\W)(UNAVAILABLE|RESOURCE_EXHAUSTED|RATE_LIMIT|OVERLOADED|429|503)(\W|$)/i.test(blob)
+    code === 500 ||
+    code === 502 ||
+    code === 504 ||
+    /(^|\W)(UNAVAILABLE|RESOURCE_EXHAUSTED|RATE_LIMIT|OVERLOADED|429|503|500|502|504|fetch failed|ECONNRESET|ETIMEDOUT|UND_ERR)(\W|$)/i.test(blob)
   );
 }
 

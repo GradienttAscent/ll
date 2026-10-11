@@ -633,6 +633,12 @@ function repairSchema(db: SqlJsDatabase) {
     domains TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL
   );`);
+  db.run(`CREATE TABLE IF NOT EXISTS teacher_intelligence_cache (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    fingerprint TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );`);
   replaceLegacyMockExamTables(db);
   createMockExamTables(db);
 }
