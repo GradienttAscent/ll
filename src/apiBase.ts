@@ -28,11 +28,15 @@ const ABSOLUTE_URL = /^[a-z][a-z0-9+.-]*:/i;
  * Absolute URLs and non-root-relative values are passed through untouched, so an explicit
  * URL in a call site still wins.
  */
-export function apiUrl(path: string): string {
-  if (!API_BASE_URL) return path;
+export function resolveApiUrl(path: string, apiBase = API_BASE_URL): string {
+  if (!apiBase) return path;
   if (ABSOLUTE_URL.test(path)) return path;
   if (!path.startsWith('/')) return path;
-  return `${API_BASE_URL}${path}`;
+  return `${apiBase}${path}`;
+}
+
+export function apiUrl(path: string): string {
+  return resolveApiUrl(path);
 }
 
 /** Non-secret deployment details for correlating browser requests with API logs. */

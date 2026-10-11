@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { ActiveTab, PastPaper, ExtractedTopic, QuestionItem, WhatToStudyItem, WhatToStudySourceMapping } from '../types';
 import { FileUp, ArrowRight, Loader2, BookOpen, Calendar, ExternalLink, X } from 'lucide-react';
 import { getSessionToken } from '../api';
+import { apiUrl } from '../apiBase';
 
 export function getPresentationViewerUrl(source?: WhatToStudySourceMapping): string {
   if (!source || !source.mapped) return '#';
@@ -14,14 +15,21 @@ export function getPresentationViewerUrl(source?: WhatToStudySourceMapping): str
       const cleanUrl = source.sourceUrl.replace(/#slide=.*$/, '');
       return `${cleanUrl}#slide=id.p${targetSlide}`;
     }
-    return source.sourceUrl;
+    return apiUrl(source.sourceUrl);
   }
 
   if (!source.documentId) return '#';
   
   const token = getSessionToken();
   const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : '';
-  return `/api/documents/${source.documentId}/view?slide=${targetSlide}${tokenQuery}`;
+  return apiUrl(`/api/documents/${source.documentId}/view?slide=${targetSlide}${tokenQuery}`);
+}
+
+export function getSlidePreviewUrl(source: WhatToStudySourceMapping): string {
+  const slide = source.exactSlide || source.startSlide || 1;
+  const token = getSessionToken();
+  const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+  return apiUrl(`/api/documents/${source.documentId}/slides/${slide}/image${tokenQuery}`);
 }
 
 interface UploadExtractViewProps {
@@ -655,7 +663,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
                           {isQuestionPreviewLoading && <div className="absolute inset-0 z-10 flex items-center justify-center text-xs text-white/70">Rendering slide preview...</div>}
                           {!isQuestionPreviewLoading && questionPreviewFailed && <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-xs text-white/70">Slide preview could not be rendered. Open the presentation to view the verified source.</div>}
                           <img
-                            src={`/api/documents/${activeQuestionViewer.lectureSource.documentId}/slides/${activeQuestionViewer.lectureSource.exactSlide || activeQuestionViewer.lectureSource.startSlide || 1}/image${getSessionToken() ? `?token=${encodeURIComponent(getSessionToken()!)}` : ''}`}
+                            src={getSlidePreviewUrl(activeQuestionViewer.lectureSource)}
                             alt={`Slide ${activeQuestionViewer.lectureSource.exactSlide || activeQuestionViewer.lectureSource.startSlide || 1}`}
                             className={`absolute inset-0 h-full w-full object-contain transition-opacity ${isQuestionPreviewLoading ? 'opacity-0' : 'opacity-100'}`}
                             onLoad={() => setIsQuestionPreviewLoading(false)}
@@ -780,7 +788,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
                 <div className="space-y-2 pt-1">
                   <div className="rounded-xl overflow-hidden border border-[#EDE7F3] dark:border-[#302B35] bg-[#141118] flex items-center justify-center p-1.5 shadow-2xs group relative">
                     <img
-                      src={`/api/documents/${activeSourceItem.lectureSource.documentId}/slides/${activeSourceItem.lectureSource.exactSlide || activeSourceItem.lectureSource.startSlide || 1}/image${getSessionToken() ? `?token=${encodeURIComponent(getSessionToken()!)}` : ''}`}
+                      src={getSlidePreviewUrl(activeSourceItem.lectureSource)}
                       alt={`Slide ${activeSourceItem.lectureSource.exactSlide || activeSourceItem.lectureSource.startSlide || 1}`}
                       className="max-h-52 w-auto object-contain rounded-lg transition-transform group-hover:scale-[1.01]"
                       onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}

@@ -2,7 +2,8 @@ import { it, describe, before, after } from 'node:test';
 import assert from 'node:assert';
 import { deflateRawSync } from 'zlib';
 import { createTestServer, Api, TestServer, removeTempDir } from './helpers';
-import { getPresentationViewerUrl } from '../src/components/UploadExtractView';
+import { resolveApiUrl } from '../src/apiBase';
+import { getPresentationViewerUrl, getSlidePreviewUrl } from '../src/components/UploadExtractView';
 
 function createMinimalZip(files: Array<{ name: string; content: string }>): Buffer {
   const fileBuffers: Array<{
@@ -361,6 +362,29 @@ describe('PPT Exact Slide Navigation & Traceability', () => {
       googleUrl,
       'https://docs.google.com/presentation/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit#slide=id.p15'
     );
+  });
+
+  it('6a. resolves document source URLs against the API origin without changing query parameters', () => {
+    const relativeView = '/api/documents/doc-xyz-123/view?slide=25&page=25&token=token%2Bvalue';
+    assert.strictEqual(
+      resolveApiUrl(relativeView, 'http://localhost:3000'),
+      `http://localhost:3000${relativeView}`,
+      'localhost source navigation must use the local API'
+    );
+    assert.strictEqual(
+      resolveApiUrl(relativeView, 'https://lazylift-backend.onrender.com'),
+      `https://lazylift-backend.onrender.com${relativeView}`,
+      'Vercel source navigation must use the configured Render API'
+    );
+    assert.strictEqual(
+      resolveApiUrl('https://lazylift-backend.onrender.com/api/documents/doc-xyz-123/view?slide=25&page=25&token=token%2Bvalue', 'https://lazylift-backend.onrender.com'),
+      'https://lazylift-backend.onrender.com/api/documents/doc-xyz-123/view?slide=25&page=25&token=token%2Bvalue',
+      'absolute backend URLs must not be prefixed twice'
+    );
+
+    const source: any = { mapped: true, documentId: 'doc-xyz-123', exactSlide: 25 };
+    assert.ok(getPresentationViewerUrl(source).endsWith('/api/documents/doc-xyz-123/view?slide=25'));
+    assert.ok(getSlidePreviewUrl(source).endsWith('/api/documents/doc-xyz-123/slides/25/image'));
   });
 
   it('7. Slide image endpoint /api/documents/:id/slides/:slide/image delivers rendered slide image with valid auth', async () => {
