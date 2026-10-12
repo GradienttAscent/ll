@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { CalendarCheck, CheckCircle2, Circle, Loader2, Play, Send } from 'lucide-react';
+import { CalendarCheck, CheckCircle2, Circle, Loader2, Play, Send, ExternalLink } from 'lucide-react';
 import { AdaptiveProposal, PersistedTopic, ScheduleBlock, SchedulingAssistantPreview } from '../types';
+import { getPresentationViewerUrl } from './UploadExtractView';
 
 interface PlannerViewProps {
   onStartStudy: (block: ScheduleBlock) => Promise<void>;
   refreshKey: number;
+  academicRevision: number;
   adaptiveProposal: AdaptiveProposal | null;
   dismissedAdaptiveSessionId: string | null;
   adaptiveMessage: string;
@@ -105,7 +107,7 @@ export function generateBlocks(
   return blocks;
 }
 
-export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshKey, adaptiveProposal, dismissedAdaptiveSessionId, adaptiveMessage, onAcceptAdaptiveProposal, onRejectAdaptiveProposal, onReconsiderAdaptiveProposal, onCalendarChanged }) => {
+export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshKey, academicRevision, adaptiveProposal, dismissedAdaptiveSessionId, adaptiveMessage, onAcceptAdaptiveProposal, onRejectAdaptiveProposal, onReconsiderAdaptiveProposal, onCalendarChanged }) => {
   const [examName, setExamName] = useState('Algorithms Final Examination');
   const [examDate, setExamDate] = useState(() => {
     const date = new Date();
@@ -125,22 +127,20 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
   const [isChatLoading, setIsChatLoading] = useState(false);
 
   const loadData = async () => {
-    const [topicsResponse, blocksResponse, evidenceResponse] = await Promise.all([fetch('/api/topics'), fetch('/api/schedule-blocks'), fetch('/api/academic-evidence')]);
+    const [topicsResponse, blocksResponse] = await Promise.all([fetch('/api/topics/visible'), fetch('/api/schedule-blocks')]);
     const topicsJson = await topicsResponse.json();
     const blocksJson = await blocksResponse.json();
-    const evidenceJson = await evidenceResponse.json();
     if (topicsResponse.ok) {
-      const activeIds = new Set((evidenceJson.academic?.ranking || []).map((topic: any) => topic.id));
-      setTopics(topicsJson.topics.filter((topic: PersistedTopic) => activeIds.has(topic.id)));
+      setTopics(topicsJson.topics as PersistedTopic[]);
     }
     if (blocksResponse.ok) setScheduleBlocks(blocksJson.scheduleBlocks);
   };
 
-  useEffect(() => { void loadData(); }, [refreshKey]);
+  useEffect(() => { void loadData(); }, [refreshKey, academicRevision]);
 
   const handleGenerateSchedule = async () => {
     if (topics.length === 0) {
-      setStatusMessage('Add and analyze academic text first. No stored topics are available yet.');
+      setStatusMessage('Upload academic material to generate a study plan.');
       return;
     }
     setIsGenerating(true);
@@ -165,6 +165,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
         if (!response.ok) throw new Error(data.error || 'Unable to confirm schedule.');
         setScheduleBlocks(data.scheduleBlocks);
         setSchedulePreview(null);
+        onCalendarChanged();
         setStatusMessage(`Schedule confirmed: ${data.scheduleBlocks.length} study blocks for ${examName}.`);
       }
     } catch (error: any) {
@@ -238,7 +239,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
       setScheduleBlocks(data.scheduleBlocks);
       onCalendarChanged();
       setActiveChatPreview(null);
-      setChatMessages((messages) => [...messages, { id: Date.now(), role: 'assistant', text: 'Your calendar has been updated safely.' }]);
+      if (data.nextSession) {
+        const next = data.nextSession;
+        setChatMessages((messages) => [...messages, { id: Date.now(), role: 'assistant', text: `Marked complete. Your next session is ${next.topicName} on ${next.date} at ${next.startTime} for ${next.durationMinutes} minutes.` }]);
+      } else if (preview.scheduleProposal) {
+        setChatMessages((messages) => [...messages, { id: Date.now(), role: 'assistant', text: `Schedule saved: ${data.scheduleBlocks.length} study blocks are now on your calendar.` }]);
+      } else {
+        setChatMessages((messages) => [...messages, { id: Date.now(), role: 'assistant', text: 'Your calendar has been updated safely.' }]);
+      }
     } catch (error: any) {
       setChatMessages((messages) => [...messages, { id: Date.now(), role: 'assistant', text: error.message || 'Unable to confirm these changes.' }]);
     } finally {
@@ -288,7 +296,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
             Study Planner
           </h1>
           <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-1.5 max-w-xl font-sans">
-            Schedules are dynamically calculated from your stored topics, priority scores, and declared weightage.
+            Schedules are dynamically calculated from topics extracted from your academic material.
           </p>
         </div>
         <button
@@ -321,6 +329,18 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
       {statusMessage && (
         <div className="rounded-xl border border-[#D8CCE8] dark:border-[#3E344A] bg-[#EDE7F6] dark:bg-[#251E30] px-5 py-4 text-xs font-medium text-[#6D28D9] dark:text-[#A78BFA]">
           {statusMessage}
+        </div>
+      )}
+      {schedulePreview?.proposal?.blocks?.length > 0 && (
+        <div className="rounded-xl border border-[#D8CCE8] dark:border-[#3E344A] bg-white dark:bg-[#17151A] px-5 py-4 text-xs text-[#55524E] dark:text-[#A9A3AE]">
+          <div className="font-semibold text-[#17151A] dark:text-[#F5F3F7]">Previewed study blocks</div>
+          <div className="mt-2 grid gap-1 sm:grid-cols-2">
+            {schedulePreview.proposal.blocks.map((block: any) => (
+              <div key={`${block.date}-${block.startTime}-${block.topicId}`}>
+                {block.date} · {block.startTime} · {block.durationMinutes} minutes · {block.title}
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {adaptiveMessage && !adaptiveProposal && (
@@ -402,21 +422,6 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
             </label>
           </div>
 
-          <div className="bg-white dark:bg-[#17151A] rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-6 space-y-3 shadow-2xs">
-            <h3 className="font-sans text-sm font-semibold text-[#17151A] dark:text-[#F5F3F7]">Stored Topics ({topics.length})</h3>
-            {topics.length === 0 ? (
-              <p className="text-xs text-[#7B7484] dark:text-[#7A7480] font-sans">Analyze text on the Past Papers page to populate planning topics.</p>
-            ) : (
-              topics.map((topic) => (
-                <div key={topic.id} className="bg-[#FAF8FC] dark:bg-[#1D1A21] rounded-xl border border-[#EDE7F3] dark:border-[#302B35] p-3 text-xs">
-                  <strong className="text-[#17151A] dark:text-[#F5F3F7]">{topic.name}</strong>
-                  <div className="mt-1 text-[#7B7484] dark:text-[#7A7480]">
-                    Priority {topic.priority}/10{topic.hasWeightage ? ` · Declared weightage ${topic.weightage}%` : ''}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
         </div>
 
         {/* Center Column: Saved Calendar Blocks */}
@@ -430,7 +435,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
             </div>
 
             {calendarDates.length === 0 ? (
-              <p className="text-xs text-[#7B7484] dark:text-[#7A7480] py-4 font-sans">No saved study blocks yet. Generate a schedule after storing topics.</p>
+              <p className="text-xs text-[#7B7484] dark:text-[#7A7480] py-4 font-sans">No saved study blocks yet. Upload academic material to generate a schedule.</p>
             ) : (
               calendarDates.map((date) => (
                 <section key={date} className="space-y-3">
@@ -515,6 +520,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
                   {chat.role === 'user' ? 'You' : 'Assistant'}
                 </div>
                 <p className="font-sans leading-relaxed">{chat.text}</p>
+                {chat.preview?.sourceAction && (
+                  <a
+                    href={getPresentationViewerUrl({ mapped: true, documentId: chat.preview.sourceAction.documentId, exactSlide: chat.preview.sourceAction.exactSlide })}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[#D8CCE8] dark:border-[#3E344A] bg-white dark:bg-[#17151A] px-3 py-2 text-[10px] font-medium text-[#6D28D9] dark:text-[#A78BFA] hover:bg-[#EDE7F6] dark:hover:bg-[#251E30] transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Open slide {chat.preview.sourceAction.exactSlide} — {chat.preview.sourceAction.topicName}</span>
+                  </a>
+                )}
                 {chat.preview?.matches && (
                   <div className="mt-3 space-y-2">
                     {chat.preview.matches.map((match) => (
@@ -531,8 +547,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
                     ))}
                   </div>
                 )}
-                {chat.preview && chat.preview.changes.length > 0 && activeChatPreview?.message === chat.sourceMessage && activeChatPreview.selectedBlockId === chat.selectedBlockId && (
+                {chat.preview && (chat.preview.changes.length > 0 || chat.preview.scheduleProposal) && activeChatPreview?.message === chat.sourceMessage && activeChatPreview.selectedBlockId === chat.selectedBlockId && (
                   <div className="mt-3 border-t border-[#EDE7F3] dark:border-[#302B35] pt-3 space-y-2">
+                    {chat.preview.scheduleProposal && (
+                      <div className="text-[10px] text-[#55524E] dark:text-[#A9A3AE]">
+                        <strong className="text-[#17151A] dark:text-[#F5F3F7]">
+                          {chat.preview.scheduleProposal.blocks?.length ?? 0} study blocks
+                        </strong>
+                        <br />
+                        {chat.preview.scheduleProposal.blocks?.reduce((sum: number, block: any) => sum + (block.durationMinutes || 0), 0) ?? 0} minutes across your availability
+                      </div>
+                    )}
                     {chat.preview.changes.map((change) => (
                       <div key={change.blockId} className="text-[10px] text-[#55524E] dark:text-[#A9A3AE]">
                         <strong className="text-[#17151A] dark:text-[#F5F3F7]">{change.topicName}</strong>
