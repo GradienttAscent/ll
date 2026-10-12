@@ -1,18 +1,18 @@
 services:
   - type: web
     name: lazylift-backend
-    runtime: node
+    runtime: docker
     repo: https://github.com/GradienttAscent/ll
     branch: main
     autoDeploy: true
-    plan: starter
+    # LibreOffice conversion needs more headroom than the 512 MB starter tier.
+    plan: 1c-2g
     disk:
       name: lazylift-data
       mountPath: /var/data
       sizeGB: 1
-    # LibreOffice produces faithful PPTX-to-PDF output; Poppler renders PDF pages to PNG.
-    buildCommand: apt-get update && apt-get install -y --no-install-recommends libreoffice-impress poppler-utils && rm -rf /var/lib/apt/lists/* && npm install && npm run build
-    startCommand: npm start
+    # Dockerfile installs LibreOffice Impress and Poppler in the runtime image.
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV

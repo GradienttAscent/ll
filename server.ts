@@ -15,7 +15,7 @@ import * as services from './services';
 import * as fallbackAi from './fallbackAi';
 import { demoDatasetForFile, findDemoFileBySha256, isDemoFile } from './demoData';
 import { parseSchedulingAssistantIntent } from './schedulingAssistant';
-import { renderSlideImage, getOrConvertPptxToPdf, SlideRenderError } from './slideRenderer';
+import { renderSlideImage, getOrConvertPptxToPdf, SlideRenderError, verifySlideRendererRuntime } from './slideRenderer';
 import {
   HttpError,
   sendError,
@@ -2994,7 +2994,10 @@ app.get('/api/documents/:id/slides/:slideNumber/image', async (req, res) => {
     res.setHeader('Cache-Control', 'private, max-age=3600');
     return res.send(rendered.data);
   } catch (error) {
-    if (error instanceof SlideRenderError) return sendError(res, 422, error.message);
+    if (error instanceof SlideRenderError) {
+      console.error(JSON.stringify({ event: 'slide-render-request', code: error.code, thumbnail: req.query.size === 'thumbnail' }));
+      return sendError(res, 422, error.message);
+    }
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
     return sendError(res, 500, 'Unable to render slide image.');
   }
@@ -3725,6 +3728,7 @@ async function startServer() {
     geminiConfigured: Boolean(getAIClient()),
     geminiModel: GEMINI_MODEL,
   });
+  await verifySlideRendererRuntime();
 
   app.use('/api', (_req, res) => sendError(res, 404, 'API route not found.'));
 
