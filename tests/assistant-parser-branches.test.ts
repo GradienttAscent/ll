@@ -59,9 +59,9 @@ describe('ASST assistant parser branches (schedulingAssistant.ts)', () => {
         message,
       );
     }
-    // A bare "half past 3 pm" is captured by the 12-hour branch first, so the :30 is lost and
-    // only 15:00 survives. Recorded as DEFECT-ASST-02; the assertion pins the current behaviour.
-    assert.deepStrictEqual(parse('Move OS to half past 3 pm'), { type: 'move_topic', topicQuery: 'os', targetTime: '15:00', targetTimeMode: 'exact' });
+    // "half past 3 pm" keeps the :30 because the half-past branch now wins over the plain
+    // 12-hour match. Previously recorded as DEFECT-ASST-02.
+    assert.deepStrictEqual(parse('Move OS to half past 3 pm'), { type: 'move_topic', topicQuery: 'os', targetTime: '15:30', targetTimeMode: 'exact' });
   });
 
   // ASST-03 - `parseTime` yields no value for a target with no clock word at all. The intent is
@@ -96,61 +96,56 @@ describe('ASST assistant parser branches (schedulingAssistant.ts)', () => {
     }
   });
 
-  // ASST-05 - DEFECT-ASST-01. `normalize` replaces '.' with a space before the cap is read, so a
-  // fractional-hour cap has its decimal point removed and the integer remainder is re-matched as
-  // a whole number of hours: "1.5 hours" becomes "1 5 hours" and is read as 5 hours = 300 minutes.
-  // This is the opposite of the user's request and inflates the cap by more than 3x.
-  it('ASST-05 documents the fractional-hour cap defect in the current parser', () => {
-    const cases: Array<[string, number, number]> = [
-      // message, minutes the user asked for, minutes the parser currently returns
-      ['Move all my DBMS sessions keeping 1.5 hours per day', 90, 300],
-      ['Move all my DBMS sessions keeping 0.5 hours per day', 30, 300],
-      ['Move all my DBMS sessions keeping 1.25 hours per day', 75, 1500],
+  // ASST-05 - FIXED. `normalize` now preserves a decimal point between two digits, so a
+  // fractional-hour cap is read correctly instead of being re-matched as a whole number.
+  it('ASST-05 reads the fractional-hour cap correctly', () => {
+    const cases: Array<[string, number]> = [
+      ['Move all my DBMS sessions keeping 1.5 hours per day', 90],
+      ['Move all my DBMS sessions keeping 0.5 hours per day', 30],
+      ['Move all my DBMS sessions keeping 1.25 hours per day', 75],
     ];
-    for (const [message, requested, actual] of cases) {
+    for (const [message, expected] of cases) {
       const intent = parse(message);
       assert.strictEqual(intent.type, 'move_topic', message);
-      assert.strictEqual(intent.maxDailyMinutes, actual, `${message} currently yields ${actual} minutes`);
-      assert.notStrictEqual(actual, requested, `${message} should ideally yield ${requested} minutes`);
+      assert.strictEqual(intent.maxDailyMinutes, expected, message);
     }
   });
 
-  // ASST-06 - the clear-schedule shortcut is the only cancel path that sets `allMatches`, and it
-  // is matched before the topic is extracted.
-  it('ASST-06 sets allMatches only for the clear-schedule shortcut', () => {
+  // ASST-06 - the clear-schedule shortcut and the "all/every" phrasings are the cancel paths that
+  // set `allMatches`, and they are matched before the topic is extracted.
+  it('ASST-06 sets allMatches for clear-schedule and remove-all phrasings', () => {
     assert.deepStrictEqual(parse('clear my entire schedule'), { type: 'cancel_topic', allMatches: true, sourceDate: '2026-09-14' });
     assert.deepStrictEqual(parse('clear my schedule'), { type: 'cancel_topic', allMatches: true, sourceDate: '2026-09-14' });
+    // FIXED (DEFECT-ASST-03): "remove all my sessions" is a clear-all, not a topic literally named "all".
+    assert.deepStrictEqual(parse('remove all my sessions'), { type: 'cancel_topic', allMatches: true, sourceDate: '2026-09-14' });
+    assert.deepStrictEqual(parse('cancel every session'), { type: 'cancel_topic', allMatches: true, sourceDate: '2026-09-14' });
     // A targeted cancel keeps a topic query and no allMatches flag.
     assert.deepStrictEqual(parse('cancel my os'), { type: 'cancel_topic', topicQuery: 'os', sourceDate: undefined });
-    // DEFECT-ASST-03: "remove all my sessions" never reaches the allMatches branch, so "all"
-    // is treated as a literal topic name and the cancel will not match the user's sessions.
-    assert.deepStrictEqual(parse('remove all my sessions'), { type: 'cancel_topic', topicQuery: 'all', sourceDate: undefined });
   });
 
-  // ASST-07 - an unavailable-period request with no named period falls back to 'evening', and
-  // `excludedWeekdays` is only ever emitted when the message names two or more weekdays.
-  it('ASST-07 defaults the unavailable period and gates excluded weekdays on a weekday count', () => {
+  // ASST-07 - an unavailable-period request with no named period falls back to 'evening'. A named
+  // weekday (singular or plural) is now always emitted as `excludedWeekdays`; the recurring
+  // exclusion starts from today regardless of which weekday was named.
+  it('ASST-07 defaults the unavailable period and excludes any named weekday', () => {
     // No period word -> the 'evening' default.
     assert.deepStrictEqual(parse('I cannot study'), { type: 'unavailable_period', sourceDate: '2026-09-14', period: 'evening' });
-    // "on fridays" is not a negation, so nothing is excluded.
-    assert.deepStrictEqual(parse('I cannot study on fridays'), { type: 'unavailable_period', sourceDate: '2026-09-14', period: 'evening' });
-    // Two named weekdays satisfy the `weekdayCount > 1` guard, so the excluded set survives.
+    // "on fridays" (plural) is a recurring exclusion.
+    assert.deepStrictEqual(parse('I cannot study on fridays'), { type: 'unavailable_period', sourceDate: '2026-09-14', period: 'evening', excludedWeekdays: [5] });
     assert.deepStrictEqual(
       parse('I cannot study monday and wednesday afternoons'),
       { type: 'unavailable_period', sourceDate: '2026-09-14', period: 'afternoon', excludedWeekdays: [1, 3] },
     );
-    // A bare "weekdays" also satisfies the guard through the `/\bweekdays?\b/` alternative.
     assert.deepStrictEqual(
       parse('I cannot study on weekdays only'),
       { type: 'unavailable_period', sourceDate: '2026-09-14', period: 'evening', excludedWeekdays: [0, 6] },
     );
-    // DEFECT-ASST-04: a SINGLE named weekday is negated or declared off correctly by
-    // excludedWeekdaysFrom, but the `weekdayCount > 1` guard then routes the request to the
-    // return that omits the field, so the weekday is silently not excluded. These assertions
-    // pin the current behaviour so a future fix is detectable.
-    assert.deepStrictEqual(parse('I cannot study monday mornings'), { type: 'unavailable_period', sourceDate: '2026-09-21', period: 'morning' });
-    assert.deepStrictEqual(parse('I am busy because friday is off'), { type: 'unavailable_period', sourceDate: '2026-09-18', period: 'evening' });
-    assert.deepStrictEqual(parse('I cannot study on monday'), { type: 'unavailable_period', sourceDate: '2026-09-21', period: 'evening' });
+    // FIXED (DEFECT-ASST-04): a SINGLE named weekday is now excluded too, instead of silently
+    // being routed to the date-based branch that omits the field.
+    assert.deepStrictEqual(parse('I cannot study monday mornings'), { type: 'unavailable_period', sourceDate: '2026-09-14', period: 'morning', excludedWeekdays: [1] });
+    assert.deepStrictEqual(parse('I am busy because friday is off'), { type: 'unavailable_period', sourceDate: '2026-09-14', period: 'evening', excludedWeekdays: [5] });
+    assert.deepStrictEqual(parse('I cannot study on monday'), { type: 'unavailable_period', sourceDate: '2026-09-14', period: 'evening', excludedWeekdays: [1] });
+    // A non-weekday unavailability stays a one-off date.
+    assert.deepStrictEqual(parse('I cannot study tomorrow evening'), { type: 'unavailable_period', sourceDate: '2026-09-15', period: 'evening' });
   });
 
   // ASST-08 - a swap of a topic with itself is rejected by the `topicA !== topicB` guard, which
@@ -229,8 +224,8 @@ describe('ASST assistant parser branches (schedulingAssistant.ts)', () => {
     assert.strictEqual(parse('Move all my DBMS sessions keeping 2 hours/day').maxDailyMinutes, 120);
     assert.strictEqual(parse('Move all my DBMS sessions keeping 45 minutes/day').maxDailyMinutes, 45);
     assert.strictEqual(parse('Move all my DBMS sessions keeping 10 minutes/day').maxDailyMinutes, 30);
-    // DEFECT-ASST-01 again: the decimal point is stripped before the cap is read.
-    assert.strictEqual(parse('Move all my DBMS sessions keeping 1.5 hours/day').maxDailyMinutes, 300);
+    // FIXED (DEFECT-ASST-01): the decimal point now survives normalisation.
+    assert.strictEqual(parse('Move all my DBMS sessions keeping 1.5 hours/day').maxDailyMinutes, 90);
   });
 
   // ASST-15 - the weekly and weekend range windows.

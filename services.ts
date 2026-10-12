@@ -1439,22 +1439,45 @@ export type RankedTopicRow = TopicRow & {
   reason: string;
 };
 
-export function rankedTopicRows(userId: string, documentId?: string): RankedTopicRow[] {
-  const questionsForEvidence = questionRows(userId, documentId);
+function topicEvidence(userId: string, questionsForEvidence: QuestionRow[], documentId?: string): { topics: TopicRow[]; sourceDocumentIds: Map<string, string[]> } {
   const mappedTopicIds = new Set(questionsForEvidence.flatMap((question) => question.topicId ? [question.topicId] : []));
   const allTopics = topicRows(userId);
+  const sourceDocumentIds = new Map<string, string[]>();
+  // Only count links to documents the user can actually see. Legacy/hidden sample documents are
+  // filtered out of `documentRows`, so a topic linked solely to one is not treated as evidence-backed.
+  const visibleDocumentIds = new Set(documentRows(userId).map((document) => document.id));
+  for (const row of getDb().prepare(`SELECT topic_id AS topicId, document_id AS documentId
+    FROM topic_document_sources WHERE user_id = ?`).all(userId) as any[]) {
+    if (!visibleDocumentIds.has(row.documentId)) continue;
+    sourceDocumentIds.set(row.topicId, [...(sourceDocumentIds.get(row.topicId) || []), row.documentId]);
+  }
   const hasSyllabusTopics = allTopics.some((topic) => topic.source === 'syllabus');
   const topics = allTopics.filter((topic) =>
+    // Scope the study plan to the user's uploaded academic evidence. A topic stays relevant only
+    // while it is associated with an uploaded document or mapped by at least one previous question;
+    // orphaned, historical and other-course rows are never mixed into the plan.
+    ((sourceDocumentIds.get(topic.id)?.length || 0) > 0 || mappedTopicIds.has(topic.id)) &&
     (!documentId || topic.source === 'syllabus' || mappedTopicIds.has(topic.id)) &&
     // Once a syllabus is present, a provisional topic remains visible only while it has PYQ
     // evidence that could not yet be aligned to any authoritative syllabus topic.
     (!hasSyllabusTopics || topic.source !== 'paper-derived/provisional' || mappedTopicIds.has(topic.id)),
   );
-  const sourceDocumentIds = new Map<string, string[]>();
-  for (const row of getDb().prepare(`SELECT topic_id AS topicId, document_id AS documentId
-    FROM topic_document_sources WHERE user_id = ?`).all(userId) as any[]) {
-    sourceDocumentIds.set(row.topicId, [...(sourceDocumentIds.get(row.topicId) || []), row.documentId]);
-  }
+  return { topics, sourceDocumentIds };
+}
+
+/** Topic rows that are backed by the user's uploaded evidence, shared by ranking and generation. */
+export function relevantTopicRows(userId: string, documentId?: string): TopicRow[] {
+  return topicEvidence(userId, questionRows(userId, documentId), documentId).topics;
+}
+
+/** Topics safe to expose as the user's current study-plan choices. */
+export function visibleTopicRows(userId: string): TopicRow[] {
+  return relevantTopicRows(userId);
+}
+
+export function rankedTopicRows(userId: string, documentId?: string): RankedTopicRow[] {
+  const questionsForEvidence = questionRows(userId, documentId);
+  const { topics, sourceDocumentIds } = topicEvidence(userId, questionsForEvidence, documentId);
   const mappedCounts = new Map<string, number>();
   const mappedMarks = new Map<string, number>();
   let totalMappedMarks = 0;
@@ -1867,7 +1890,8 @@ function jsonArray<T>(value: unknown, fallback: T[] = []): T[] {
 
 export function deriveScheduleDataset(userId: string): DerivedScheduleDataset {
   const documents = documentRows(userId);
-  const topics = topicRows(userId);
+  // Only plan around topics that are backed by the user's uploaded evidence, matching ranking.
+  const topics = relevantTopicRows(userId);
   const questions = questionRows(userId).filter((question) => question.topicId);
   const sourceItems = getWhatToStudyRanking(userId);
   const sourceByTopic = new Map(sourceItems.map((item) => [item.topicId, item.lectureSource]));
@@ -2002,14 +2026,19 @@ export function createScheduleProposal(input: ScheduleGenerationInput): Schedule
     const date = scheduleDateKey(cursor); const weekday = cursor.getUTCDay();
     if (excludedDates.has(date) || excludedWeekdays.has(weekday)) continue;
     const dayWindows = windows.filter((window) => window.weekday === weekday && scheduleWindowPreferred(window, settings.preferredPeriods));
-    let dayCapacity = 0;
+    const availableStarts = new Set<number>();
     for (const window of dayWindows) {
       const start = scheduleTimeMinutes(window.startTime); const end = scheduleTimeMinutes(window.endTime);
       for (let minute = start; minute + 30 <= end; minute += 30) {
-        if (!occupied.some((block) => scheduleOverlap(block, { date, startTime: scheduleTimeText(minute), durationMinutes: 30 })) && !blocks.some((block) => scheduleOverlap(block, { date, startTime: scheduleTimeText(minute), durationMinutes: 30 }))) dayCapacity += 30;
+        if (!occupied.some((block) => scheduleOverlap(block, { date, startTime: scheduleTimeText(minute), durationMinutes: 30 }))) availableStarts.add(minute);
       }
     }
-    totalAvailableCapacity += Math.min(dayCapacity, settings.dailyMaxMinutes || dayCapacity);
+    const existingMinutes = occupied.filter((block) => block.date === date).reduce((sum, block) => sum + block.durationMinutes, 0);
+    const dayCapacity = availableStarts.size * 30;
+    const dailyRemaining = settings.dailyMaxMinutes === null || settings.dailyMaxMinutes === undefined
+      ? dayCapacity
+      : Math.max(0, settings.dailyMaxMinutes - existingMinutes);
+    totalAvailableCapacity += Math.min(dayCapacity, dailyRemaining);
   }
   for (const { topic, score } of scored) {
     const required = topic.estimatedDurationMinutes;
@@ -2019,12 +2048,12 @@ export function createScheduleProposal(input: ScheduleGenerationInput): Schedule
       const date = scheduleDateKey(cursor); const weekday = cursor.getUTCDay();
       if (excludedDates.has(date) || excludedWeekdays.has(weekday)) continue;
       const dayWindows = windows.filter((window) => window.weekday === weekday && scheduleWindowPreferred(window, settings.preferredPeriods));
-      let dayUsed = 0;
+      let dayUsed = occupied.filter((block) => block.date === date).reduce((sum, block) => sum + block.durationMinutes, 0);
       for (const window of dayWindows) {
         const start = scheduleTimeMinutes(window.startTime); const end = scheduleTimeMinutes(window.endTime);
         for (let minute = start; minute + 30 <= end && remaining > 0; minute += 30) {
           const duration = Math.min(remaining, 120, end - minute);
-          if (duration < 30 || settings.dailyMaxMinutes !== null && settings.dailyMaxMinutes !== undefined && dayUsed + duration > settings.dailyMaxMinutes) continue;
+          if (duration < 1 || settings.dailyMaxMinutes !== null && settings.dailyMaxMinutes !== undefined && dayUsed + duration > settings.dailyMaxMinutes) continue;
           const candidate = { topicId: topic.topicId, title: `Study: ${topic.topicName}`, date, startTime: scheduleTimeText(minute), durationMinutes: duration, completed: false };
           if (occupied.some((block) => scheduleOverlap(block, candidate)) || blocks.some((block) => scheduleOverlap(block, candidate))) continue;
           blocks.push(candidate); occupied.push(candidate); dayUsed += duration; allocated += duration; remaining -= duration;
@@ -3323,29 +3352,41 @@ function previewCancelAssistant(userId: string, intent: SchedulingAssistantInten
 function previewSwapAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date, selectedBlockId?: string): SchedulingAssistantPreview {
   const futureBlocks = futureUncompletedBlocks(userId, currentTime)
     .sort((left, right) => dateTimeValue(left.date, left.startTime) - dateTimeValue(right.date, right.startTime));
-  const aBlock = intent.swapFirstTwo ? futureBlocks[0] : futureBlocks.find((block) => topicMatches(block, intent.topicQuery));
-  const bBlocks = intent.swapFirstTwo ? futureBlocks.slice(1, 2) : intent.otherTopicQuery ? futureBlocks.filter((block) => topicMatches(block, intent.otherTopicQuery)) : [];
-  if (!aBlock || bBlocks.length === 0) return { intent, changes: [], assistantMessage: 'I could not find both topics in your upcoming schedule.' };
-  const allMatches = [...(bBlocks.some((b) => b.id === aBlock.id) ? [] : [aBlock]), ...bBlocks];
-  let blockA = aBlock;
-  let blockB = bBlocks[0];
-  if (selectedBlockId) {
-    const selected = allMatches.find((block) => block.id === selectedBlockId);
-    if (!selected) return { intent, changes: [], assistantMessage: 'I could not find a matching session for that selection.' };
-    if (topicMatches(selected, intent.topicQuery)) {
-      blockA = selected;
-      blockB = bBlocks.find((b) => b.id !== selected.id) || bBlocks[0];
-    } else {
-      blockA = aBlock;
-      blockB = selected;
+  let blockA: ScheduleBlockRow;
+  let blockB: ScheduleBlockRow;
+  if (intent.sourceTime && intent.otherTime) {
+    // Clock-anchored swap ("swap the 8:30 and 10:00 sessions") selects the two sessions by start time.
+    const matchesFor = (time: string) => futureBlocks.filter((block) => block.startTime === time && (!intent.sourceDate || block.date === intent.sourceDate));
+    const aCandidates = matchesFor(intent.sourceTime);
+    const bCandidates = matchesFor(intent.otherTime);
+    if (aCandidates.length === 0 || bCandidates.length === 0) return { intent, changes: [], assistantMessage: 'I could not find both sessions in your upcoming schedule.' };
+    blockA = aCandidates[0];
+    blockB = bCandidates.find((block) => block.id !== blockA.id) || bCandidates[0];
+  } else {
+    const aBlock = intent.swapFirstTwo ? futureBlocks[0] : futureBlocks.find((block) => topicMatches(block, intent.topicQuery));
+    const bBlocks = intent.swapFirstTwo ? futureBlocks.slice(1, 2) : intent.otherTopicQuery ? futureBlocks.filter((block) => topicMatches(block, intent.otherTopicQuery)) : [];
+    if (!aBlock || bBlocks.length === 0) return { intent, changes: [], assistantMessage: 'I could not find both topics in your upcoming schedule.' };
+    const allMatches = [...(bBlocks.some((b) => b.id === aBlock.id) ? [] : [aBlock]), ...bBlocks];
+    blockA = aBlock;
+    blockB = bBlocks[0];
+    if (selectedBlockId) {
+      const selected = allMatches.find((block) => block.id === selectedBlockId);
+      if (!selected) return { intent, changes: [], assistantMessage: 'I could not find a matching session for that selection.' };
+      if (topicMatches(selected, intent.topicQuery)) {
+        blockA = selected;
+        blockB = bBlocks.find((b) => b.id !== selected.id) || bBlocks[0];
+      } else {
+        blockA = aBlock;
+        blockB = selected;
+      }
+    } else if (bBlocks.length > 1) {
+      return {
+        intent,
+        changes: [],
+        assistantMessage: `I found ${bBlocks.length} sessions for the second topic. Please pick which one to swap.`,
+        matches: allMatches.map(({ id, topicName, title, date, startTime, durationMinutes }) => ({ blockId: id, topicName, title, date, startTime, durationMinutes })),
+      };
     }
-  } else if (bBlocks.length > 1) {
-    return {
-      intent,
-      changes: [],
-      assistantMessage: `I found ${bBlocks.length} sessions for the second topic. Please pick which one to swap.`,
-      matches: allMatches.map(({ id, topicName, title, date, startTime, durationMinutes }) => ({ blockId: id, topicName, title, date, startTime, durationMinutes })),
-    };
   }
   const candidates = [
     { topicId: blockB.topicId, title: blockB.title, date: blockB.date, startTime: blockB.startTime, durationMinutes: blockA.durationMinutes, completed: false },
@@ -3376,6 +3417,106 @@ function previewSwapAssistant(userId: string, intent: SchedulingAssistantIntent,
     },
   ];
   return { intent, changes, assistantMessage: `I can swap ${blockA.topicName} (${blockA.date} at ${blockA.startTime}) with ${blockB.topicName} (${blockB.date} at ${blockB.startTime}). Confirm to update your calendar.` };
+}
+
+// A single session moved to a new start time with a request to "reorder every following block":
+// every same-day session from the moved block onward shifts by the same delta so the day's sequence
+// is preserved and nothing overlaps.
+function previewReorderAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
+  const anchored = futureUncompletedBlocks(userId, currentTime).filter((block) => block.date === intent.sourceDate
+    && (!intent.sourceTime || block.startTime === intent.sourceTime)
+    && (!intent.topicQuery || topicMatches(block, intent.topicQuery)));
+  if (anchored.length === 0) return { intent, changes: [], assistantMessage: 'I could not find an unfinished session at that time.' };
+  if (anchored.length > 1) {
+    return {
+      intent,
+      changes: [],
+      assistantMessage: `I found ${anchored.length} sessions at that time. Please be more specific about the topic.`,
+      matches: anchored.map(({ id, topicName, title, date, startTime, durationMinutes }) => ({ blockId: id, topicName, title, date, startTime, durationMinutes })),
+    };
+  }
+  const moved = anchored[0];
+  const sourceStart = scheduleStartMinutes(moved.startTime)!;
+  const targetStart = intent.targetTime ? scheduleStartMinutes(intent.targetTime)! : sourceStart;
+  const delta = targetStart - sourceStart;
+  if (delta === 0) return { intent, changes: [], assistantMessage: 'That would not change your schedule.' };
+  const dayBlocks = futureUncompletedBlocks(userId, currentTime)
+    .filter((block) => block.date === moved.date && scheduleStartMinutes(block.startTime)! >= sourceStart)
+    .sort((left, right) => scheduleStartMinutes(left.startTime)! - scheduleStartMinutes(right.startTime)!);
+  if (dayBlocks.some((block) => scheduleStartMinutes(block.startTime)! + delta < 0)) {
+    return { intent, changes: [], assistantMessage: 'Those sessions would start before the beginning of the day, so I cannot shift them that far.' };
+  }
+  const candidates = dayBlocks.map((block) => ({
+    topicId: block.topicId,
+    title: block.title,
+    date: block.date,
+    startTime: timeFromMinutes(scheduleStartMinutes(block.startTime)! + delta),
+    durationMinutes: block.durationMinutes,
+    completed: false,
+  }));
+  try {
+    assertScheduleBlocksAreValid(userId, candidates, dayBlocks.map((block) => block.id));
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 409) return { intent, changes: [], assistantMessage: 'Moving that session and reordering the following blocks would overlap another session, so I cannot suggest it safely.' };
+    throw error;
+  }
+  const changes: SchedulingAssistantChange[] = dayBlocks.map((block, index) => ({
+    blockId: block.id,
+    topicId: block.topicId,
+    topicName: block.topicName,
+    original: { title: block.title, date: block.date, startTime: block.startTime, durationMinutes: block.durationMinutes },
+    proposed: { date: candidates[index].date, startTime: candidates[index].startTime, durationMinutes: candidates[index].durationMinutes },
+    operation: 'move',
+  }));
+  const following = changes.length - 1;
+  return {
+    intent,
+    changes,
+    assistantMessage: `I can move ${moved.topicName} to ${timeFromMinutes(targetStart)} and shift ${following} following session${following === 1 ? '' : 's'} by ${delta} minutes. Confirm to update your calendar.`,
+  };
+}
+
+// Shifts every upcoming session at or after an anchor time forward/back by a fixed number of minutes.
+function previewTimeShiftAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
+  const anchor = intent.afterTime ? scheduleStartMinutes(intent.afterTime)! : null;
+  const blocks = futureUncompletedBlocks(userId, currentTime)
+    .filter((block) => !intent.sourceDate || block.date === intent.sourceDate)
+    .filter((block) => anchor === null || scheduleStartMinutes(block.startTime)! > anchor)
+    .sort((left, right) => dateTimeValue(left.date, left.startTime) - dateTimeValue(right.date, right.startTime));
+  if (blocks.length === 0) return { intent, changes: [], assistantMessage: 'I could not find any unfinished future sessions to shift.' };
+  const shift = intent.shiftMinutes || 0;
+  if (shift === 0) return { intent, changes: [], assistantMessage: 'That would not change your schedule.' };
+  if (blocks.some((block) => scheduleStartMinutes(block.startTime)! + shift < 0)) {
+    return { intent, changes: [], assistantMessage: 'Those sessions would start before the beginning of the day, so I cannot shift them that far.' };
+  }
+  const candidates = blocks.map((block) => ({
+    topicId: block.topicId,
+    title: block.title,
+    date: block.date,
+    startTime: timeFromMinutes(scheduleStartMinutes(block.startTime)! + shift),
+    durationMinutes: block.durationMinutes,
+    completed: false,
+  }));
+  try {
+    assertScheduleBlocksAreValid(userId, candidates, blocks.map((block) => block.id));
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 409) return { intent, changes: [], assistantMessage: 'Shifting those sessions would overlap another session, so I cannot suggest it safely.' };
+    throw error;
+  }
+  const changes: SchedulingAssistantChange[] = blocks.map((block, index) => ({
+    blockId: block.id,
+    topicId: block.topicId,
+    topicName: block.topicName,
+    original: { title: block.title, date: block.date, startTime: block.startTime, durationMinutes: block.durationMinutes },
+    proposed: { date: candidates[index].date, startTime: candidates[index].startTime, durationMinutes: candidates[index].durationMinutes },
+    operation: 'shift',
+  }));
+  const direction = shift > 0 ? 'forward' : 'back';
+  return {
+    intent,
+    changes,
+    assistantMessage: `I can move ${changes.length} session${changes.length === 1 ? '' : 's'}${anchor !== null ? ` after ${intent.afterTime}` : ''} ${direction} by ${Math.abs(shift)} minutes. Confirm to update your calendar.`,
+  };
 }
 
 function previewDayShiftAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
@@ -3437,17 +3578,27 @@ function previewGenerateScheduleAssistant(userId: string, intent: SchedulingAssi
 }
 
 function previewCompleteTopicAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
-  const matches = futureUncompletedBlocks(userId, currentTime).filter((block) => topicMatches(block, intent.topicQuery));
-  if (matches.length === 0) return { intent, changes: [], assistantMessage: 'I could not find an unfinished future session for that topic.' };
+  const unfinished = scheduleBlockRows(userId).filter((block) => !block.completed && !block.missed);
+  const upcoming = unfinished.filter((block) => dateTimeValue(block.date, block.startTime) > currentTime.getTime());
+  // "I finished this topic; what's next?" names no topic, so complete the next unfinished session.
+  const matches = intent.topicQuery
+    ? unfinished.filter((block) => topicMatches(block, intent.topicQuery))
+    : upcoming.slice(0, 1);
+  if (matches.length === 0) return { intent, changes: [], assistantMessage: intent.topicQuery ? 'I could not find an unfinished future session for that topic.' : 'You do not have any unfinished upcoming sessions to complete.' };
   if (matches.length > 1) return { intent, changes: [], assistantMessage: 'I found multiple unfinished sessions for that topic. Please specify the date or time.', matches: matches.map(({ id, topicName, title, date, startTime, durationMinutes }) => ({ blockId: id, topicName, title, date, startTime, durationMinutes })) };
   const block = matches[0];
   return { intent, changes: [{ blockId: block.id, topicId: block.topicId, topicName: block.topicName, original: { title: block.title, date: block.date, startTime: block.startTime, durationMinutes: block.durationMinutes }, proposed: { date: block.date, startTime: block.startTime, durationMinutes: block.durationMinutes }, operation: 'complete' }], assistantMessage: `I can mark ${block.topicName} at ${block.date} ${block.startTime} complete, then find your next unfinished session. Confirm to continue.` };
 }
 
 function previewSourceAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
-  const next = querySchedulingAssistant(userId, { type: 'query_schedule' }, currentTime);
-  const nextBlock = futureUncompletedBlocks(userId, currentTime)[0];
-  if (!nextBlock) return { intent, changes: [], sourceAction: null, assistantMessage: 'You do not have an upcoming topic with source material.' };
+  const upcoming = futureUncompletedBlocks(userId, currentTime);
+  // Respect an explicitly requested date; otherwise fall back to the next session's topic.
+  const nextBlock = intent.sourceDate
+    ? upcoming.find((block) => block.date === intent.sourceDate)
+    : upcoming[0];
+  if (!nextBlock) {
+    return { intent, changes: [], sourceAction: null, assistantMessage: intent.sourceDate ? `You do not have an upcoming topic with source material on ${intent.sourceDate}.` : 'You do not have an upcoming topic with source material.' };
+  }
   const item = getWhatToStudyRanking(userId).find((candidate) => candidate.topicId === nextBlock.topicId);
   const source = item?.lectureSource;
   if (!source?.mapped || !source.documentId || !Number.isInteger(source.exactSlide)) return { intent, changes: [], sourceAction: null, assistantMessage: `No exact lecture slide is mapped for ${nextBlock.topicName}.` };
@@ -3468,6 +3619,8 @@ export function previewSchedulingAssistant(
   if (intent.type === 'query_range') return queryRangeAssistant(userId, intent, currentTime);
   if (intent.type === 'cancel_topic') return previewCancelAssistant(userId, intent, currentTime, selectedBlockId);
   if (intent.type === 'swap_sessions') return previewSwapAssistant(userId, intent, currentTime, selectedBlockId);
+  if (intent.type === 'shift_time') return previewTimeShiftAssistant(userId, intent, currentTime);
+  if (intent.type === 'move_time' && intent.reorderFollowing) return previewReorderAssistant(userId, intent, currentTime);
   if (intent.type === 'reschedule_day') return previewDayShiftAssistant(userId, intent, currentTime);
   if (intent.type === 'unsupported') {
     return { intent, changes: [], assistantMessage: 'I can answer schedule questions, move a topic, shorten a session, swap or cancel sessions, shift a whole day, or help when you are unavailable.' };
@@ -3477,7 +3630,7 @@ export function previewSchedulingAssistant(
   let matches = matchingBlocks(futureBlocks, intent);
   if (selectedBlockId) matches = matches.filter((block) => block.id === selectedBlockId);
   if (matches.length === 0) return { intent, changes: [], assistantMessage: 'I could not find an unfinished future session matching that request.' };
-  if ((intent.type === 'move_topic' || intent.type === 'shorten_topic' || intent.type === 'move_time') && matches.length > 1 && !intent.allMatches) {
+  if ((intent.type === 'move_topic' || intent.type === 'shorten_topic' || intent.type === 'extend_topic' || intent.type === 'move_time') && matches.length > 1 && !intent.allMatches) {
     return {
       intent,
       changes: [],
@@ -3496,20 +3649,40 @@ export function previewSchedulingAssistant(
   const proposed: ScheduleBlockInput[] = [];
   const changes: SchedulingAssistantChange[] = [];
   for (const block of moving) {
-    const shortened = intent.type === 'shorten_topic' ? intent.durationMinutes ?? Math.floor(block.durationMinutes / 2) : block.durationMinutes;
-    if (shortened < 1 || shortened >= block.durationMinutes && intent.type === 'shorten_topic') {
+    const adjustedDuration = intent.type === 'shorten_topic'
+      ? intent.durationMinutes ?? Math.floor(block.durationMinutes / 2)
+      : intent.type === 'extend_topic'
+        ? intent.durationMinutes ?? block.durationMinutes + 30
+        : block.durationMinutes;
+    if (adjustedDuration < 1 || adjustedDuration >= block.durationMinutes && intent.type === 'shorten_topic') {
       return { intent, changes: [], assistantMessage: `${block.title} is already too short to shorten further.` };
+    }
+    if (adjustedDuration <= block.durationMinutes && intent.type === 'extend_topic') {
+      return { intent, changes: [], assistantMessage: `${block.title} is already at least that long.` };
     }
     const startDate = intent.type === 'unavailable_period'
       ? dateAfter(block.date, 1)
       : intent.targetDate || block.date;
     const slot = intent.type === 'shorten_topic'
-      ? { topicId: block.topicId, title: block.title, date: block.date, startTime: block.startTime, durationMinutes: shortened, completed: false }
+      ? { topicId: block.topicId, title: block.title, date: block.date, startTime: block.startTime, durationMinutes: adjustedDuration, completed: false }
+      : intent.type === 'extend_topic'
+        ? scoredAssistantSlot(
+          userId,
+          block.topicId,
+          block.title,
+          adjustedDuration,
+          block.date,
+          { targetTime: block.startTime, targetTimeMode: 'exact', searchDays: 1 },
+          excludedIds,
+          proposed,
+          currentTime,
+          block,
+        )
       : scoredAssistantSlot(
         userId,
         block.topicId,
         block.title,
-        shortened,
+        adjustedDuration,
         startDate,
         {
           period: intent.type === 'unavailable_period' ? 'morning' : intent.period,
@@ -3549,6 +3722,8 @@ export function previewSchedulingAssistant(
     ? `You have ${changes.length} unfinished session${changes.length === 1 ? '' : 's'} in that period: ${sessions}. I found free replacement slot${changes.length === 1 ? '' : 's'} on ${replacements}. Confirm to update your calendar.`
     : intent.type === 'shorten_topic'
       ? `I can shorten ${names} to ${changes.map((change) => `${change.proposed.durationMinutes} minutes`).join(', ')}. Confirm to update your calendar.`
+      : intent.type === 'extend_topic'
+        ? `I can extend ${names} to ${changes.map((change) => `${change.proposed.durationMinutes} minutes`).join(', ')}. Confirm to update your calendar.`
       : `I found ${changes.length} safe change${changes.length === 1 ? '' : 's'} for ${names}: ${replacements}. Confirm to update your calendar.`;
   return {
     intent,

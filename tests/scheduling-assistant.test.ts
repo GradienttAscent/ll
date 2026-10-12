@@ -14,7 +14,7 @@ describe('scheduling assistant parser', () => {
 
   it('recognizes scheduling actions and queries deterministically', () => {
     assert.deepStrictEqual(parseSchedulingAssistantIntent('I cannot study Friday evening', currentTime), {
-      type: 'unavailable_period', sourceDate: '2026-09-18', period: 'evening',
+      type: 'unavailable_period', sourceDate: '2026-09-14', period: 'evening', excludedWeekdays: [5],
     });
     assert.deepStrictEqual(parseSchedulingAssistantIntent('Move all my DSA study sessions to before 9 AM on weekdays only', currentTime), {
       type: 'move_topic', topicQuery: 'all dsa study sessions', beforeTime: '09:00', excludedWeekdays: [0, 6], allMatches: true,
@@ -406,6 +406,14 @@ describe('scheduling assistant API', () => {
     })).status, 200);
     const saved = (await positional.request('/api/schedule-blocks')).json.scheduleBlocks;
     assert.strictEqual(saved.find((block: any) => block.id === shorten.json.preview.changes[0].blockId).durationMinutes, 30);
+
+    const extend = await positional.request('/api/scheduling-assistant/preview', { method: 'POST', body: { message: 'Extend my next session to 45 minutes' } });
+    assert.strictEqual(extend.json.preview.changes[0].proposed.durationMinutes, 45);
+    assert.strictEqual((await positional.request('/api/scheduling-assistant/confirm', {
+      method: 'POST', body: { message: 'Extend my next session to 45 minutes', changes: extend.json.preview.changes },
+    })).status, 200);
+    const extended = (await positional.request('/api/schedule-blocks')).json.scheduleBlocks;
+    assert.strictEqual(extended.find((block: any) => block.id === extend.json.preview.changes[0].blockId).durationMinutes, 45);
   });
 
   it('reports no upcoming sessions for an empty schedule', async () => {

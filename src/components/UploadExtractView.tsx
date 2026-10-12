@@ -211,13 +211,7 @@ export const UploadExtractView: React.FC<UploadExtractViewProps> = ({
         topicId = firstTopic?.id;
       }
       if (!topicId) {
-        const createTopicRes = await fetch('/api/topics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: schedulingItem.unitTopic || 'General Study', priority: 5, weightage: 10 }),
-        });
-        const createdTopicData = await createTopicRes.json();
-        topicId = createdTopicData.topics[0].id;
+        throw new Error('Upload academic material to generate a study plan.');
       }
 
       const slideSuffix = schedulingItem.lectureSource.mapped && schedulingItem.lectureSource.slideRange

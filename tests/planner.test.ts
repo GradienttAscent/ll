@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { generateBlocks } from '../src/components/PlannerView';
 
 const today = new Date(2026, 0, 1);
@@ -17,6 +18,14 @@ function overlaps(a: { date: string; startTime: string; durationMinutes: number 
 }
 
 describe('planner slot selection', () => {
+  it('does not render the extracted-topics panel while retaining topic-driven generation', () => {
+    const source = readFileSync(new URL('../src/components/PlannerView.tsx', import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /Extracted Topics/);
+    const generated = generateBlocks([topics[0]], '2026-01-03', 4, [], today);
+    assert.ok(generated.length > 0);
+    assert.strictEqual(generated[0].topicId, topics[0].id);
+  });
+
   it('skips persisted occupied intervals and permits adjacency', () => {
     const existing = [{ date: '2026-01-01', startTime: '08:00', durationMinutes: 60 }];
     const generated = generateBlocks([topics[0]], '2026-01-02', 4, existing, today);

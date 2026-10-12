@@ -235,6 +235,10 @@ app.get('/api/topics', (req, res) => {
   res.json({ topics: services.topicRows(userIdOf(req)) });
 });
 
+app.get('/api/topics/visible', (req, res) => {
+  res.json({ topics: services.visibleTopicRows(userIdOf(req)) });
+});
+
 app.post('/api/topics', (req, res) => {
   const topic = req.body as TopicInput;
   if (!topic.name?.trim()) return sendError(res, 400, 'Topic name is required.');

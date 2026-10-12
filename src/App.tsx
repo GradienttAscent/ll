@@ -506,6 +506,7 @@ export default function App() {
             <PlannerView
               onStartStudy={startStudy}
               refreshKey={scheduleRefreshKey}
+              academicRevision={academicRevision}
               adaptiveProposal={adaptiveProposal}
               dismissedAdaptiveSessionId={dismissedAdaptiveSessionId}
               adaptiveMessage={adaptiveMessage}

@@ -2,8 +2,8 @@ export type AssistantPeriod = 'morning' | 'afternoon' | 'evening';
 
 export type SchedulingAssistantIntent = {
   type: 'query_schedule' | 'unavailable_period' | 'move_topic' | 'move_time' | 'shorten_topic'
-    | 'swap_sessions' | 'cancel_topic' | 'reschedule_day' | 'query_range' | 'generate_schedule'
-    | 'reschedule_remaining' | 'complete_topic' | 'show_source' | 'unsupported';
+    | 'extend_topic' | 'swap_sessions' | 'cancel_topic' | 'reschedule_day' | 'query_range' | 'generate_schedule'
+    | 'reschedule_remaining' | 'complete_topic' | 'show_source' | 'shift_time' | 'unsupported';
   topicQuery?: string;
   otherTopicQuery?: string;
   sourceDate?: string;
@@ -11,6 +11,7 @@ export type SchedulingAssistantIntent = {
   period?: AssistantPeriod;
   sourceTime?: string;
   targetTime?: string;
+  otherTime?: string;
   targetTimeMode?: 'exact' | 'after';
   beforeTime?: string;
   afterTime?: string;
@@ -19,8 +20,10 @@ export type SchedulingAssistantIntent = {
   allMatches?: boolean;
   rangeEndDate?: string;
   shiftDays?: number;
+  shiftMinutes?: number;
   blockPosition?: 'first' | 'next';
   swapFirstTwo?: boolean;
+  reorderFollowing?: boolean;
   durationMinutes?: number;
 };
 
@@ -44,10 +47,26 @@ function weekdayDate(now: Date, weekday: number): string {
 }
 
 function normalize(message: string): string {
-  return message.toLowerCase().replace(/[.,!?]/g, ' ').replace(/can't/g, 'cannot').replace(/i'm/g, 'i am').replace(/\s+/g, ' ').trim();
+  return message
+    .toLowerCase()
+    // A decimal point sits between two digits ("1.5 hours") and must survive tokenisation;
+    // stash it, drop the remaining sentence punctuation, then restore it.
+    .replace(/(\d)\.(\d)/g, '$1\u0000$2')
+    .replace(/[.,!?;]/g, ' ')
+    .replace(/\u0000/g, '.')
+    .replace(/can't/g, 'cannot').replace(/i'm/g, 'i am').replace(/\s+/g, ' ').trim();
 }
 
 function parseTime(text: string): string | undefined {
+  // "half past N" must win over the plain 12-hour match, otherwise "half past 3 pm" is read as
+  // 3 pm and the :30 is lost.
+  const halfPastClock = /\bhalf past\s+(\d{1,2})\b/.exec(text);
+  if (halfPastClock) {
+    let hours = Number(halfPastClock[1]);
+    if (/\bpm\b/.test(text) && hours !== 12) hours += 12;
+    if (/\bam\b/.test(text) && hours === 12) hours = 0;
+    return `${String(hours).padStart(2, '0')}:30`;
+  }
   const twelveHour = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/.exec(text);
   if (twelveHour) {
     let hours = Number(twelveHour[1]);
@@ -182,6 +201,38 @@ function targetClauseInfo(clause: string, now: Date): {
   return { date: datePeriod.date, period: datePeriod.period, time, beforeTime, afterMode, excludedWeekdays, maxDailyMinutes };
 }
 
+// Removes every clock/bare-time token plus generic block words so a clause such as
+// "today's 8:30 session" leaves no topic behind. Topic-bearing clauses keep their words.
+function stripClock(value: string): string {
+  return value
+    .replace(/\b(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s*(?:am|pm|o'clock)\b/g, ' ')
+    .replace(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/g, ' ')
+    .replace(/\b(?:half past|quarter past|quarter to)\s+\d{1,2}\b/g, ' ')
+    .replace(/\b(?:noon|midnight)\b/g, ' ')
+    .replace(/\b(?:session|sessions|block|blocks|class|classes|slot|slots)\b/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+// Splits a "move X to Y" clause so the source and target carry independent date/period/time
+// information. `topic` is undefined when the source clause is purely temporal (e.g. "8:30 block").
+function sourceClauseInfo(clause: string, now: Date): {
+  date?: string;
+  period?: AssistantPeriod;
+  time?: string;
+  topic?: string;
+} {
+  const datePeriod = parseDatePeriod(clause, now);
+  const time = parseTime(clause) || parseVerboseTime(clause);
+  // Drop possessive clitics ("today's") so a purely temporal clause leaves no topic residue.
+  const topic = topicText(stripClock(clause).replace(/'s\b/g, ' '));
+  return {
+    date: datePeriod.date,
+    period: datePeriod.period,
+    time,
+    topic: /[a-z0-9]/i.test(topic || '') ? topic : undefined,
+  };
+}
+
 function parseRange(text: string, now: Date): { sourceDate: string; rangeEndDate: string } | null {
   if (/\b(?:this|the) week\b/.test(text)) {
     const mondayOffset = (now.getUTCDay() + 6) % 7;
@@ -210,15 +261,23 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
   const text = normalize(message);
   const datePeriod = parseDatePeriod(text, now);
 
-  if (/\b(generate|create|make|build) (?:my )?(?:study )?schedule\b/.test(text)) return { type: 'generate_schedule' };
+  if (/\b(?:generate|create|make|build) (?:me )?(?:my |a |an )?(?:study |revised |new )?schedule\b/.test(text)) return { type: 'generate_schedule' };
   if (/\b(?:could not|couldn't|cannot|can't|was unable to) study today\b/.test(text) && /\b(reschedule|schedule|remaining|unfinished)\b/.test(text)) {
     return { type: 'reschedule_remaining' };
   }
-  if (/\b(?:finished|completed|done with) (?:this |the )?topic\b/.test(text) && /\bwhat(?:'s| is) next\b|\bnext\b/.test(text)) {
-    const topic = topicText(text.replace(/\b(?:i|am|finished|completed|done with|this|the|topic|what(?:'s| is)|next)\b/g, ' '));
-    return { type: 'complete_topic', topicQuery: topic };
+  if (/\breschedule\b/.test(text) && /\b(?:remaining|unfinished|left\s*over|leftover|outstanding|rest)\b/.test(text)) {
+    return { type: 'reschedule_remaining' };
   }
-  if (/\bshow (?:me )?(?:the )?slides?\b/.test(text)) return { type: 'show_source', sourceDate: datePeriod.date || dateKey(now) };
+  const completeMatch = /\b(?:finished|completed|done with|wrapped up|through with)\s+(?:this |the |that |a |an )?(?:(.+?)\s+)?(?:topic|subject|chapter|unit|section)\b/.exec(text);
+  if (completeMatch && /\bwhat(?:'s| is) next\b|\bnext\b/.test(text)) {
+    return { type: 'complete_topic', topicQuery: topicText(completeMatch[1] || '') };
+  }
+  if (/\bshow (?:me )?(?:the )?slides?\b/.test(text)) {
+    const showIntent: SchedulingAssistantIntent = { type: 'show_source' };
+    // Only pin a date when the request names one; otherwise the handler uses the next session.
+    if (datePeriod.date) showIntent.sourceDate = datePeriod.date;
+    return showIntent;
+  }
 
   const range = parseRange(text, now);
   if (range && /\b(what|how much|how many|my|plan|scheduled|busy|free)\b/.test(text)) {
@@ -228,7 +287,7 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
   if (/\bwhat do i have\b|\bhow busy\b/.test(text)) {
     return { type: 'query_schedule', sourceDate: datePeriod.date || dateKey(now), period: datePeriod.period };
   }
-  if (/\bwhat(?:'s| is) my next session\b|\bnext session\b/.test(text) && !/\b(?:move|shift|reschedule|shorten|cancel|remove|delete)\b/.test(text)) {
+  if (/\bwhat(?:'s| is) my next session\b|\bnext session\b/.test(text) && !/\b(?:move|shift|reschedule|shorten|extend|cancel|remove|delete)\b/.test(text)) {
     return { type: 'query_schedule' };
   }
   const whenTopic = /\bwhen (?:(?:do|am) i )?(?:study(?:ing)? )?(.+)$/.exec(text);
@@ -236,9 +295,7 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
 
   if (/\b(i cannot study|i am busy|unavailable)\b/.test(text)) {
     const excludedWeekdays = excludedWeekdaysFrom(text);
-    const weekdayNames = /\b(?:sunday|sundays|monday|mondays|tuesday|tuesdays|wednesday|wednesdays|thursday|thursdays|friday|fridays|saturday|saturdays)\b/g;
-    const weekdayCount = (text.match(weekdayNames) || []).length;
-    if (excludedWeekdays.length > 0 && (weekdayCount > 1 || /\bweekdays?\b/.test(text))) {
+    if (excludedWeekdays.length > 0) {
       return { type: 'unavailable_period', sourceDate: dateKey(now), period: datePeriod.period || 'evening', excludedWeekdays };
     }
     return { type: 'unavailable_period', sourceDate: datePeriod.date || dateKey(now), period: datePeriod.period || 'evening' };
@@ -263,13 +320,19 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
     return { type: 'shorten_topic', blockPosition: positionalShorten[1] as 'first' | 'next', durationMinutes: Number(positionalShorten[2]) };
   }
 
+  const positionalExtend = /\bextend my (first|next) session to (\d+)\s*minutes?\b/.exec(text);
+  if (positionalExtend) {
+    return { type: 'extend_topic', blockPosition: positionalExtend[1] as 'first' | 'next', durationMinutes: Number(positionalExtend[2]) };
+  }
+
   const positionalCancel = /\b(?:cancel|remove|delete) my (first|next) session\b/.exec(text);
   if (positionalCancel) {
     return { type: 'cancel_topic', blockPosition: positionalCancel[1] as 'first' | 'next' };
   }
 
   if (/\b(cancel|remove|delete|drop|clear)\b/.test(text)) {
-    if (/clear my (?:entire )?schedule/.test(text)) {
+    if (/clear my (?:entire )?schedule/.test(text)
+      || /\b(?:cancel|remove|delete|drop|clear)\s+(?:all|every|any)(?:\s+of)?\s+(?:my |the )?(?:sessions?|classes?|study blocks?|schedule|appointments?|blocks?)\b/.test(text)) {
       return { type: 'cancel_topic', allMatches: true, sourceDate: dateKey(now) };
     }
     const remainder = text.replace(/\b(?:cancel|remove|delete|drop|clear)\b/g, ' ').trim();
@@ -283,6 +346,17 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
     const afterVerb = text.replace(/^.*?\bswap\b/, '').trim();
     const parties = afterVerb.split(/\b(?:with|and|vs\.?|&|for)\b/) as string[];
     if (parties.length >= 2) {
+      // A swap anchored on clock times ("swap the 8:30 and 10:00 sessions") carries no topic;
+      // both sides reduce to pure clock tokens once dates and generic block words are stripped.
+      const timeA = parseTime(parties[0]);
+      const timeB = parseTime(parties[1]);
+      const residualA = topicText(stripClock(parties[0]));
+      const residualB = topicText(stripClock(parties.slice(1).join(' ')));
+      if (timeA && timeB && !/[a-z]/i.test(residualA || '') && !/[a-z]/i.test(residualB || '')) {
+        const timeSwap: SchedulingAssistantIntent = { type: 'swap_sessions', sourceTime: timeA, otherTime: timeB };
+        if (datePeriod.date) timeSwap.sourceDate = datePeriod.date;
+        return timeSwap;
+      }
       const topicA = topicText(parties[0]);
       const topicB = topicText(parties.slice(1).join(' '));
       if (topicA && topicB && topicA !== topicB) {
@@ -291,6 +365,20 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
         return swapIntent;
       }
     }
+  }
+
+  const bulkTimeShift = /\b(?:move|shift|push|bring|reschedule)\b[\s\S]*?\b(forward|later|ahead|back|earlier|up)\b\s*by\s*(\d+(?:\.\d+)?)\s*(minutes?|mins?|hours?|hrs?)\b/.exec(text);
+  if (bulkTimeShift && !/\b to \b/.test(text)) {
+    const direction = /forward|later|ahead|up/.test(bulkTimeShift[1]) ? 1 : -1;
+    const unitMinutes = /hour|hr/.test(bulkTimeShift[3]) ? 60 : 1;
+    const shiftIntent: SchedulingAssistantIntent = { type: 'shift_time', shiftMinutes: direction * Math.round(Number(bulkTimeShift[2]) * unitMinutes), allMatches: true };
+    const anchor = /\bafter\s+((?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s*(?:am|pm)?|\d{1,2}:\d{2})\b/.exec(text);
+    if (anchor) {
+      const anchorTime = parseTime(anchor[1]);
+      if (anchorTime) shiftIntent.afterTime = anchorTime;
+    }
+    if (datePeriod.date) shiftIntent.sourceDate = datePeriod.date;
+    return shiftIntent;
   }
 
   const dayShift = /\b(?:push|move|shift|bring|reschedule)\b.*?\b(back|forward|earlier|later)\b(?:\s+by)?\s*(?:(\d+)|one|a)\s*days?\b/.exec(text);
@@ -309,6 +397,31 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
       const diff = Math.round((Date.UTC(Number(targetDate.slice(0, 4)), Number(targetDate.slice(5, 7)) - 1, Number(targetDate.slice(8, 10)))
         - Date.UTC(Number(fromDate.slice(0, 4)), Number(fromDate.slice(5, 7)) - 1, Number(fromDate.slice(8, 10)))) / 86400000);
       return { type: 'reschedule_day', sourceDate: fromDate, shiftDays: diff };
+    }
+  }
+
+  const moveClauses = /\b(?:move|shift|reschedule|bring|push)\s+(?:my |the )?(.+?)\s+to\s+(.+)$/.exec(text);
+  if (moveClauses) {
+    const source = sourceClauseInfo(moveClauses[1], now);
+    const target = targetClauseInfo(moveClauses[2], now);
+    const reorderFollowing = /\breorder\b|\bfollowing\b|\bsubsequent\b|\brest of\b/.test(moveClauses[2]);
+    if (source.time && !source.topic) {
+      // A clock-anchored source ("the 8:30 block") names a specific session by start time.
+      const intent: SchedulingAssistantIntent = { type: 'move_time', sourceTime: source.time };
+      intent.sourceDate = source.date || datePeriod.date || dateKey(now);
+      intent.targetDate = target.date || intent.sourceDate;
+      if (target.time) intent.targetTime = target.time;
+      if (target.period) intent.period = target.period;
+      if (target.beforeTime) intent.beforeTime = target.beforeTime;
+      if (target.excludedWeekdays && target.excludedWeekdays.length > 0) intent.excludedWeekdays = target.excludedWeekdays;
+      if (reorderFollowing) intent.reorderFollowing = true;
+      return intent;
+    }
+    if (!source.topic && source.date && target.date) {
+      // A bare date source ("today's session") moves the whole day's sessions to the target date.
+      const diff = Math.round((Date.UTC(Number(target.date.slice(0, 4)), Number(target.date.slice(5, 7)) - 1, Number(target.date.slice(8, 10)))
+        - Date.UTC(Number(source.date.slice(0, 4)), Number(source.date.slice(5, 7)) - 1, Number(source.date.slice(8, 10)))) / 86400000);
+      return { type: 'reschedule_day', sourceDate: source.date, shiftDays: diff };
     }
   }
 
@@ -368,6 +481,19 @@ export function parseSchedulingAssistantIntent(message: string, now = new Date()
     const match = shortenAfter || shortenBefore!;
     const source = parseDatePeriod(match[2] || '', now);
     return { type: 'shorten_topic', topicQuery: topicText(match[1]), sourceDate: source.date || datePeriod.date };
+  }
+
+  const extendAfter = /\b(?:make|extend) (.+?) longer(?:\s+(.*))?$/.exec(text);
+  const extendTo = /\bextend (.+?) to (\d+)\s*minutes?\b/.exec(text);
+  if (extendTo || extendAfter) {
+    const match = extendTo || extendAfter!;
+    const source = parseDatePeriod(extendAfter ? match[2] || '' : '', now);
+    return {
+      type: 'extend_topic',
+      topicQuery: topicText(match[1]),
+      durationMinutes: extendTo ? Number(match[2]) : undefined,
+      sourceDate: source.date || datePeriod.date,
+    };
   }
 
   return { type: 'unsupported' };

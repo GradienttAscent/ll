@@ -167,17 +167,11 @@ export const AscentView: React.FC<AscentViewProps> = ({
       const todayKey = new Date(today.getTime() - offset).toISOString().slice(0, 10);
 
       // Find or create topic
-      const topicsRes = await fetch('/api/topics');
+      const topicsRes = await fetch('/api/topics/visible');
       const topicsData = await topicsRes.json();
       let topicId = topicsData.topics?.[0]?.id;
       if (!topicId) {
-        const createTopicRes = await fetch('/api/topics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'Daily Focus', priority: 5, weightage: 10 }),
-        });
-        const createdTopicData = await createTopicRes.json();
-        topicId = createdTopicData.topics[0].id;
+        throw new Error('Upload academic material to generate a study plan.');
       }
 
       const saveRes = await fetch('/api/schedule-blocks', {
