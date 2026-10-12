@@ -1,7 +1,7 @@
 // LazyLift Focus Shield Companion - Background Service Worker
 // Uses Chrome Manifest V3 declarativeNetRequest API to block real network navigations.
 
-const API_BASE = 'http://localhost:3000';
+const API_BASE = 'https://lazylift-backend.onrender.com';
 let activeSessionCache = null;
 
 function escapeRegex(str) {
