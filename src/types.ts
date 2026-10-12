@@ -391,13 +391,16 @@ export interface SchedulingAssistantChange {
   topicName: string;
   original: Pick<ScheduleBlock, 'title' | 'date' | 'startTime' | 'durationMinutes'>;
   proposed: Pick<ScheduleBlock, 'date' | 'startTime' | 'durationMinutes'>;
-  operation?: 'move' | 'shorten' | 'cancel' | 'swap' | 'shift';
+  operation?: 'move' | 'shorten' | 'cancel' | 'swap' | 'shift' | 'complete';
 }
 
 export interface SchedulingAssistantPreview {
   assistantMessage: string;
   changes: SchedulingAssistantChange[];
   matches?: Array<Pick<ScheduleBlock, 'topicName' | 'title' | 'date' | 'startTime' | 'durationMinutes'> & { blockId: string }>;
+  scheduleProposal?: any;
+  scheduleProposalToken?: string;
+  sourceAction?: { documentId: string; exactSlide: number; url: string; topicName: string } | null;
 }
 
 // --- Analytics (matches GET /api/analytics response) ---

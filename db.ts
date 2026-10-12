@@ -488,6 +488,25 @@ const MIGRATIONS: Migration[] = [
     name: 'starter-workspace-aged-memory-topics',
     up: () => {},
   },
+  {
+    version: 25,
+    name: 'persisted-schedule-generation-settings',
+    up: (db) => {
+      db.run(`CREATE TABLE IF NOT EXISTS schedule_generation_settings (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        exam_date TEXT,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        availability_json TEXT NOT NULL DEFAULT '[]',
+        excluded_dates_json TEXT NOT NULL DEFAULT '[]',
+        excluded_weekdays_json TEXT NOT NULL DEFAULT '[]',
+        preferred_periods_json TEXT NOT NULL DEFAULT '[]',
+        daily_max_minutes INTEGER,
+        dataset_version TEXT NOT NULL DEFAULT 'academic-evidence-v1',
+        duration_algorithm TEXT NOT NULL DEFAULT 'pyq-marks-v1',
+        updated_at TEXT NOT NULL
+      );`);
+    },
+  },
 ];
 
 function repairStudyRoomCollaborationSchema(db: SqlJsDatabase) {

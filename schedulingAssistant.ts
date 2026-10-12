@@ -2,7 +2,8 @@ export type AssistantPeriod = 'morning' | 'afternoon' | 'evening';
 
 export type SchedulingAssistantIntent = {
   type: 'query_schedule' | 'unavailable_period' | 'move_topic' | 'move_time' | 'shorten_topic'
-    | 'swap_sessions' | 'cancel_topic' | 'reschedule_day' | 'query_range' | 'unsupported';
+    | 'swap_sessions' | 'cancel_topic' | 'reschedule_day' | 'query_range' | 'generate_schedule'
+    | 'reschedule_remaining' | 'complete_topic' | 'show_source' | 'unsupported';
   topicQuery?: string;
   otherTopicQuery?: string;
   sourceDate?: string;
@@ -208,6 +209,16 @@ function parseRange(text: string, now: Date): { sourceDate: string; rangeEndDate
 export function parseSchedulingAssistantIntent(message: string, now = new Date()): SchedulingAssistantIntent {
   const text = normalize(message);
   const datePeriod = parseDatePeriod(text, now);
+
+  if (/\b(generate|create|make|build) (?:my )?(?:study )?schedule\b/.test(text)) return { type: 'generate_schedule' };
+  if (/\b(?:could not|couldn't|cannot|can't|was unable to) study today\b/.test(text) && /\b(reschedule|schedule|remaining|unfinished)\b/.test(text)) {
+    return { type: 'reschedule_remaining' };
+  }
+  if (/\b(?:finished|completed|done with) (?:this |the )?topic\b/.test(text) && /\bwhat(?:'s| is) next\b|\bnext\b/.test(text)) {
+    const topic = topicText(text.replace(/\b(?:i|am|finished|completed|done with|this|the|topic|what(?:'s| is)|next)\b/g, ' '));
+    return { type: 'complete_topic', topicQuery: topic };
+  }
+  if (/\bshow (?:me )?(?:the )?slides?\b/.test(text)) return { type: 'show_source', sourceDate: datePeriod.date || dateKey(now) };
 
   const range = parseRange(text, now);
   if (range && /\b(what|how much|how many|my|plan|scheduled|busy|free)\b/.test(text)) {
