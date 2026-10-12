@@ -127,12 +127,14 @@ describe('RET retention model (services.ts memoryAtlas)', () => {
   const atlasFor = (userId: string, evaluatedAt: number) => memoryAtlas(userId, 0, new Date(evaluatedAt));
 
   // UT-RET-01 - the qualifying-session filter is `actual_duration_seconds >= 60`. A session one
-  // second short is not memory evidence, so the topic stays unexplored.
-  it('UT-RET-01 excludes a topic whose only session is 59 seconds', async () => {
+  // second short is not retention evidence, so the topic remains visible as not studied.
+  it('UT-RET-01 marks a topic whose only session is 59 seconds as not studied', async () => {
     const seed = await newTopic('Below Threshold');
     await completeSessions(seed, [MIN_MEANINGFUL_STUDY_SECONDS - 1], BASE);
     const atlas = atlasFor(seed.userId, BASE);
-    assert.strictEqual(atlas.topics.length, 0);
+    assert.strictEqual(atlas.topics.length, 1);
+    assert.strictEqual(atlas.topics[0].status, 'not-studied');
+    assert.strictEqual(atlas.topics[0].predictedRetention, null);
     assert.strictEqual(atlas.summary.studiedTopicCount, 0);
     assert.strictEqual(atlas.summary.unexploredCount, 1);
   });
@@ -383,8 +385,7 @@ describe('RET retention model (services.ts memoryAtlas)', () => {
     assert.strictEqual(skipped.message, 'This topic does not currently need a refresh, or already has one scheduled.');
   });
 
-  // WB-RET-07 - a topic with no qualifying evidence is not in the atlas at all, which is a
-  // different outcome from "in the atlas but not due yet".
+  // WB-RET-07 - a topic with no qualifying evidence stays visible but cannot be refreshed.
   it('WB-RET-07 rejects a refresh request for a topic with no qualifying evidence', async () => {
     const seed = await newTopic('Never Studied');
     assert.throws(

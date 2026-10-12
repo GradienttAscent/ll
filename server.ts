@@ -1027,6 +1027,29 @@ app.post('/api/memory/refresh-plan/accept', (req, res) => {
   }
 });
 
+app.post('/api/memory/demo-refresh-plan', (req, res) => {
+  const demoTopicId = req.body?.demoTopicId;
+  if (demoTopicId !== undefined && (typeof demoTopicId !== 'string' || !demoTopicId)) return sendError(res, 400, 'demoTopicId must be a non-empty string.');
+  try {
+    return res.json({ refreshPlan: services.buildMemoryDemoRefreshPlan(userIdOf(req), demoTopicId) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to build the demo refresh plan.');
+  }
+});
+
+app.post('/api/memory/demo-refresh-plan/accept', (req, res) => {
+  const demoTopicId = req.body?.demoTopicId;
+  if (demoTopicId !== undefined && (typeof demoTopicId !== 'string' || !demoTopicId)) return sendError(res, 400, 'demoTopicId must be a non-empty string.');
+  try {
+    const scheduleBlocks = services.acceptMemoryDemoRefreshPlan(userIdOf(req), req.body?.items, demoTopicId);
+    return res.status(201).json({ scheduleBlocks });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to add the demo refresh plan to your calendar.');
+  }
+});
+
 // ---- Documents ----
 export type TopicMapping = { questionText: string; topicName: string; confidence: number };
 

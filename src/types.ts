@@ -457,22 +457,24 @@ export interface SessionFeedbackPayload {
   notes?: string;
 }
 
-export type MemoryStatus = 'stable' | 'fading' | 'due';
+export type MemoryStatus = 'not-studied' | 'stable' | 'fading' | 'due';
 
 export interface MemoryTopicState {
   topicId: string;
   topicName: string;
+  topicSource: string;
   courseId: string;
   courseName: string;
-  lastStudiedAt: string;
+  lastStudiedAt: string | null;
   qualifyingSessionCount: number;
+  syntheticSessionCount: number;
   totalActualStudySeconds: number;
-  memoryStrengthDays: number;
-  predictedRetention: number;
+  memoryStrengthDays: number | null;
+  predictedRetention: number | null;
   status: MemoryStatus;
-  dueAt: string;
-  nextRevisionAt: string;
-  daysUntilDue: number;
+  dueAt: string | null;
+  nextRevisionAt: string | null;
+  daysUntilDue: number | null;
   priority: number;
   weightage: number;
   hasWeightage: boolean;
@@ -489,8 +491,9 @@ export interface MemorySummary {
 export interface CourseMemorySummary {
   courseId: string;
   courseName: string;
+  topicCount: number;
   studiedTopicCount: number;
-  predictedRetention: number;
+  predictedRetention: number | null;
   stableCount: number;
   fadingCount: number;
   dueCount: number;

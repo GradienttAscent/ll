@@ -3,6 +3,7 @@ import { createId, now } from './utils';
 import { DEFAULT_ROOM_MAX_PARTICIPANTS, HttpError, scheduleStartMinutes, validateBlockInput } from './validation';
 import type { AssistantPeriod, SchedulingAssistantIntent } from './schedulingAssistant';
 import { DEMO_DATASETS, DEMO_FILES, DEMO_TOPICS, DEMO_QUESTIONS, isDemoFile } from './demoData';
+import { createMemoryAtlasDemo, MEMORY_ATLAS_DEMO_TOPICS } from './src/data/memoryAtlasDemo';
 
 let dbInstance: DatabaseWrapper | null = null;
 
@@ -417,13 +418,14 @@ export type StudySessionRow = {
   status: string;
   endedAt: string | null;
   activeSince: string | null;
+  evidenceSource: 'user' | 'starter' | 'demo';
 };
 
 export function studySessionRows(userId: string): StudySessionRow[] {
   return getDb().prepare(`
     SELECT id, schedule_block_id AS scheduleBlockId, started_at AS startedAt, created_at AS createdAt,
       duration_minutes AS durationMinutes, actual_duration_seconds AS actualDurationSeconds,
-      status, ended_at AS endedAt, active_since AS activeSince
+      status, ended_at AS endedAt, active_since AS activeSince, evidence_source AS evidenceSource
     FROM study_sessions
     WHERE user_id = ?
     ORDER BY started_at DESC
@@ -440,13 +442,13 @@ export function findOwnedStudySession(userId: string, sessionId: string) {
   `).get(sessionId, userId) as any | undefined;
 }
 
-export function createStudySession(userId: string, input: { scheduleBlockId: string; durationMinutes: number }) {
+export function createStudySession(userId: string, input: { scheduleBlockId: string; durationMinutes: number; evidenceSource?: 'starter' | 'demo' }) {
   const id = createId('study-session');
   const startedAt = now();
   getDb().prepare(`INSERT INTO study_sessions
-    (id, user_id, schedule_block_id, started_at, duration_minutes, actual_duration_seconds, status, active_since, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, userId, input.scheduleBlockId, startedAt, input.durationMinutes, 0, 'active', startedAt, startedAt);
+    (id, user_id, schedule_block_id, started_at, duration_minutes, actual_duration_seconds, status, active_since, created_at, evidence_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, userId, input.scheduleBlockId, startedAt, input.durationMinutes, 0, 'active', startedAt, startedAt, input.evidenceSource || 'user');
   return {
     id,
     scheduleBlockId: input.scheduleBlockId,
@@ -457,6 +459,7 @@ export function createStudySession(userId: string, input: { scheduleBlockId: str
     status: 'active',
     endedAt: null,
     activeSince: startedAt,
+    evidenceSource: input.evidenceSource || 'user',
   };
 }
 
@@ -2750,22 +2753,24 @@ export function getDashboardAnalytics(userId: string, currentTime = new Date()):
   };
 }
 
-export type MemoryStatus = 'stable' | 'fading' | 'due';
+export type MemoryStatus = 'not-studied' | 'stable' | 'fading' | 'due';
 
 export type MemoryTopicState = {
   topicId: string;
   topicName: string;
   courseId: string;
   courseName: string;
-  lastStudiedAt: string;
+  topicSource: string;
+  lastStudiedAt: string | null;
   qualifyingSessionCount: number;
+  syntheticSessionCount: number;
   totalActualStudySeconds: number;
-  memoryStrengthDays: number;
-  predictedRetention: number;
+  memoryStrengthDays: number | null;
+  predictedRetention: number | null;
   status: MemoryStatus;
-  dueAt: string;
-  nextRevisionAt: string;
-  daysUntilDue: number;
+  dueAt: string | null;
+  nextRevisionAt: string | null;
+  daysUntilDue: number | null;
   priority: number;
   weightage: number;
   hasWeightage: boolean;
@@ -2774,8 +2779,9 @@ export type MemoryTopicState = {
 export type CourseMemorySummary = {
   courseId: string;
   courseName: string;
+  topicCount: number;
   studiedTopicCount: number;
-  predictedRetention: number;
+  predictedRetention: number | null;
   stableCount: number;
   fadingCount: number;
   dueCount: number;
@@ -2836,49 +2842,64 @@ export function memoryAtlas(userId: string, forecastDays = 0, currentTime = new 
   const safeForecastDays = Math.max(0, Math.min(14, Math.floor(Number(forecastDays) || 0)));
   const evaluatedAt = new Date(currentTime.getTime() + safeForecastDays * 86_400_000);
   const rows = getDb().prepare(`
-    SELECT t.id AS topicId, t.name AS topicName, t.course_id AS courseId, c.name AS courseName,
+    SELECT t.id AS topicId, t.name AS topicName, t.source AS topicSource, t.course_id AS courseId, c.name AS courseName,
       t.priority, t.weightage, CAST(t.has_weightage AS INTEGER) AS hasWeightage,
-      COUNT(s.id) AS qualifyingSessionCount,
-      SUM(s.actual_duration_seconds) AS totalActualStudySeconds,
-      MAX(COALESCE(s.ended_at, s.started_at)) AS lastStudiedAt
+      SUM(CASE WHEN s.status = 'completed' AND s.actual_duration_seconds >= ? AND COALESCE(s.evidence_source, 'user') = 'user' THEN 1 ELSE 0 END) AS qualifyingSessionCount,
+      SUM(CASE WHEN s.status = 'completed' AND s.actual_duration_seconds >= ? AND COALESCE(s.evidence_source, 'user') <> 'user' THEN 1 ELSE 0 END) AS syntheticSessionCount,
+      SUM(CASE WHEN s.status = 'completed' AND s.actual_duration_seconds >= ? AND COALESCE(s.evidence_source, 'user') = 'user' THEN s.actual_duration_seconds ELSE 0 END) AS totalActualStudySeconds,
+      MAX(CASE WHEN s.status = 'completed' AND s.actual_duration_seconds >= ? AND COALESCE(s.evidence_source, 'user') = 'user' THEN COALESCE(s.ended_at, s.started_at) END) AS lastStudiedAt
     FROM topics t
     JOIN courses c ON c.id = t.course_id
-    JOIN schedule_blocks b ON b.topic_id = t.id AND b.user_id = t.user_id
-    JOIN study_sessions s ON s.schedule_block_id = b.id AND s.user_id = b.user_id
-    WHERE t.user_id = ? AND s.status = 'completed' AND s.actual_duration_seconds >= ?
-    GROUP BY t.id, t.name, t.course_id, c.name, t.priority, t.weightage, t.has_weightage
-  `).all(userId, MIN_MEANINGFUL_STUDY_SECONDS) as any[];
+    LEFT JOIN schedule_blocks b ON b.topic_id = t.id AND b.user_id = t.user_id
+    LEFT JOIN study_sessions s ON s.schedule_block_id = b.id AND s.user_id = b.user_id
+    WHERE t.user_id = ?
+    GROUP BY t.id, t.name, t.source, t.course_id, c.name, t.priority, t.weightage, t.has_weightage
+  `).all(MIN_MEANINGFUL_STUDY_SECONDS, MIN_MEANINGFUL_STUDY_SECONDS, MIN_MEANINGFUL_STUDY_SECONDS, MIN_MEANINGFUL_STUDY_SECONDS, userId) as any[];
 
   const topics = rows.map((row) => {
     const qualifyingSessionCount = Number(row.qualifyingSessionCount);
+    const syntheticSessionCount = Number(row.syntheticSessionCount);
+    if (qualifyingSessionCount === 0) {
+      return {
+        topicId: String(row.topicId), topicName: String(row.topicName), topicSource: String(row.topicSource), courseId: String(row.courseId), courseName: String(row.courseName),
+        lastStudiedAt: null, qualifyingSessionCount: 0, syntheticSessionCount, totalActualStudySeconds: 0,
+        memoryStrengthDays: null, predictedRetention: null, status: 'not-studied' as const,
+        dueAt: null, nextRevisionAt: null, daysUntilDue: null,
+        priority: Number(row.priority), weightage: Number(row.weightage), hasWeightage: Boolean(row.hasWeightage),
+      } satisfies MemoryTopicState;
+    }
     const strengthDays = memoryStrengthDays(qualifyingSessionCount);
     const lastStudiedAt = String(row.lastStudiedAt);
     const predictedRetention = predictedRetentionAt(lastStudiedAt, strengthDays, evaluatedAt);
     const dueAt = new Date(Date.parse(lastStudiedAt) + strengthDays * Math.log(1 / MEMORY_DUE_THRESHOLD) * 86_400_000);
     return {
-      topicId: String(row.topicId), topicName: String(row.topicName), courseId: String(row.courseId), courseName: String(row.courseName),
-      lastStudiedAt, qualifyingSessionCount, totalActualStudySeconds: Number(row.totalActualStudySeconds || 0),
+      topicId: String(row.topicId), topicName: String(row.topicName), topicSource: String(row.topicSource), courseId: String(row.courseId), courseName: String(row.courseName),
+      lastStudiedAt, qualifyingSessionCount, syntheticSessionCount, totalActualStudySeconds: Number(row.totalActualStudySeconds || 0),
       memoryStrengthDays: Number(strengthDays.toFixed(2)), predictedRetention, status: retentionStatus(predictedRetention),
       dueAt: dueAt.toISOString(), nextRevisionAt: dueAt.toISOString(),
       daysUntilDue: Number(((dueAt.getTime() - evaluatedAt.getTime()) / 86_400_000).toFixed(2)),
       priority: Number(row.priority), weightage: Number(row.weightage), hasWeightage: Boolean(row.hasWeightage),
     } satisfies MemoryTopicState;
-  }).sort((left, right) => left.daysUntilDue - right.daysUntilDue || right.priority - left.priority || left.topicName.localeCompare(right.topicName));
+  }).sort((left, right) => (left.daysUntilDue ?? Number.POSITIVE_INFINITY) - (right.daysUntilDue ?? Number.POSITIVE_INFINITY) || right.priority - left.priority || left.topicName.localeCompare(right.topicName));
 
-  const allTopics = Number((getDb().prepare('SELECT COUNT(*) AS count FROM topics WHERE user_id = ?').get(userId) as any)?.count || 0);
   const summary = {
-    studiedTopicCount: topics.length,
+    studiedTopicCount: topics.filter((topic) => topic.predictedRetention !== null).length,
     stableCount: topics.filter((topic) => topic.status === 'stable').length,
     fadingCount: topics.filter((topic) => topic.status === 'fading').length,
     dueCount: topics.filter((topic) => topic.status === 'due').length,
-    unexploredCount: Math.max(0, allTopics - topics.length),
+    unexploredCount: topics.filter((topic) => topic.status === 'not-studied').length,
   };
   const byCourse = new Map<string, CourseMemorySummary>();
   for (const topic of topics) {
     const course = byCourse.get(topic.courseId) || {
-      courseId: topic.courseId, courseName: topic.courseName, studiedTopicCount: 0, predictedRetention: 0,
+      courseId: topic.courseId, courseName: topic.courseName, topicCount: 0, studiedTopicCount: 0, predictedRetention: 0,
       stableCount: 0, fadingCount: 0, dueCount: 0,
     };
+    course.topicCount += 1;
+    if (topic.predictedRetention === null) {
+      byCourse.set(topic.courseId, course);
+      continue;
+    }
     course.studiedTopicCount += 1;
     course.predictedRetention += topic.predictedRetention;
     if (topic.status === 'stable') course.stableCount += 1;
@@ -2888,7 +2909,7 @@ export function memoryAtlas(userId: string, forecastDays = 0, currentTime = new 
   }
   const courses = [...byCourse.values()].map((course) => ({
     ...course,
-    predictedRetention: course.studiedTopicCount ? course.predictedRetention / course.studiedTopicCount : 0,
+    predictedRetention: course.studiedTopicCount ? course.predictedRetention / course.studiedTopicCount : null,
   })).sort((left, right) => left.courseName.localeCompare(right.courseName));
   return { forecastDays: safeForecastDays, evaluatedAt: evaluatedAt.toISOString(), topics, summary, courses };
 }
@@ -2933,7 +2954,7 @@ export function buildMemoryRefreshPlan(userId: string, topicId?: string, current
   const atlas = memoryAtlas(userId, 0, currentTime);
   const candidates = atlas.topics
     .filter((topic) => !topicId || topic.topicId === topicId)
-    .filter((topic) => topic.status === 'due' || topic.daysUntilDue <= 7)
+    .filter((topic) => topic.daysUntilDue !== null && (topic.status === 'due' || topic.daysUntilDue <= 7))
     .filter((topic) => !hasPendingRevision(userId, topic.topicId, currentTime))
     .sort((left, right) => {
       const statusRank = (status: MemoryStatus) => status === 'due' ? 0 : status === 'fading' ? 1 : 2;
@@ -2941,9 +2962,10 @@ export function buildMemoryRefreshPlan(userId: string, topicId?: string, current
         || left.daysUntilDue - right.daysUntilDue
         || right.priority - left.priority
         || right.weightage - left.weightage;
-    }).slice(0, topicId ? 1 : 6);
+  }).slice(0, topicId ? 1 : 6);
   if (topicId && candidates.length === 0) {
-    if (!atlas.topics.some((topic) => topic.topicId === topicId)) throw new HttpError(404, 'No qualifying completed study evidence exists for this topic.');
+    const requestedTopic = atlas.topics.find((topic) => topic.topicId === topicId);
+    if (!requestedTopic || requestedTopic.predictedRetention === null) throw new HttpError(404, 'No qualifying completed study evidence exists for this topic.');
     return { items: [], totalMinutes: 0, message: 'This topic does not currently need a refresh, or already has one scheduled.' };
   }
   const proposed: ScheduleBlockInput[] = [];
@@ -2979,6 +3001,82 @@ export function acceptMemoryRefreshPlan(userId: string, submittedItems: RefreshP
   return saveScheduleBlocks(userId, blocks, {
     field: 'memory_refresh_plan', oldValue: null,
     newValue: JSON.stringify({ source: 'memory-atlas', topicIds: expected.items.map((item) => item.topicId) }),
+  });
+}
+
+function resolveMemoryDemoTopic(userId: string, demoTopicId: string): TopicRow {
+  const demoTopic = MEMORY_ATLAS_DEMO_TOPICS.find((topic) => topic.topicId === demoTopicId);
+  if (!demoTopic) throw new HttpError(404, 'Memory Atlas demo topic not found.');
+  const existing = findOwnedTopicByName(userId, demoTopic.topicName);
+  if (existing) return existing;
+  saveTopics(userId, [{
+    name: demoTopic.topicName,
+    priority: demoTopic.priority,
+    weightage: demoTopic.weightage,
+    hasWeightage: true,
+    source: 'memory-atlas-demo',
+  }]);
+  const created = findOwnedTopicByName(userId, demoTopic.topicName);
+  if (!created) throw new HttpError(500, 'Unable to resolve the Memory Atlas demo topic.');
+  return created;
+}
+
+export function buildMemoryDemoRefreshPlan(userId: string, demoTopicId?: string, currentTime = new Date()): RefreshPlan {
+  const demoAtlas = createMemoryAtlasDemo(0);
+  const displayedTopics = demoTopicId
+    ? demoAtlas.topics.filter((topic) => topic.topicId === demoTopicId)
+    : demoAtlas.topics;
+  if (demoTopicId && displayedTopics.length === 0) throw new HttpError(404, 'Memory Atlas demo topic not found.');
+
+  const proposed: ScheduleBlockInput[] = [];
+  const items: RefreshPlanItem[] = [];
+  for (const displayedTopic of displayedTopics) {
+    const topic = resolveMemoryDemoTopic(userId, displayedTopic.topicId);
+    if (hasPendingRevision(userId, topic.id, currentTime)) continue;
+    const durationMinutes = refreshDuration({ ...displayedTopic, topicId: topic.id, topicName: topic.name });
+    const slot = findRefreshSlot(userId, topic.id, durationMinutes, proposed, currentTime);
+    if (!slot) continue;
+    proposed.push(slot);
+    items.push({
+      topicId: topic.id,
+      topicName: topic.name,
+      courseName: displayedTopic.courseName,
+      predictedRetention: displayedTopic.predictedRetention!,
+      dueAt: displayedTopic.dueAt!,
+      date: slot.date,
+      startTime: slot.startTime,
+      durationMinutes,
+      reason: `${refreshReason(displayedTopic)} Presentation demo estimate.`,
+    });
+  }
+  return {
+    items,
+    totalMinutes: items.reduce((total, item) => total + item.durationMinutes, 0),
+    message: items.length ? undefined : 'These demo topics already have a pending revision or no conflict-free slot is available in the next 14 days.',
+  };
+}
+
+export function acceptMemoryDemoRefreshPlan(userId: string, submittedItems: RefreshPlanItem[], demoTopicId?: string, currentTime = new Date()) {
+  if (!Array.isArray(submittedItems) || submittedItems.length === 0) throw new HttpError(400, 'A non-empty refresh plan is required.');
+  const expected = buildMemoryDemoRefreshPlan(userId, demoTopicId, currentTime);
+  const matches = expected.items.length === submittedItems.length && expected.items.every((item, index) => {
+    const submitted = submittedItems[index];
+    return item.topicId === submitted?.topicId && item.date === submitted?.date && item.startTime === submitted?.startTime
+      && item.durationMinutes === Number(submitted?.durationMinutes);
+  });
+  if (!matches) throw new HttpError(409, 'This refresh plan is no longer current. Build a new plan before adding it to your calendar.');
+  return saveScheduleBlocks(userId, expected.items.map((item) => ({
+    topicId: item.topicId,
+    title: `Memory refresh: ${item.topicName}`,
+    date: item.date,
+    startTime: item.startTime,
+    durationMinutes: item.durationMinutes,
+    completed: false,
+    blockType: 'revision' as const,
+  })), {
+    field: 'memory_atlas_demo_refresh',
+    oldValue: null,
+    newValue: JSON.stringify({ source: 'memory-atlas-demo', topicIds: expected.items.map((item) => item.topicId) }),
   });
 }
 
@@ -5558,7 +5656,7 @@ export function ensureStarterWorkspace(userId: string) {
   ];
   const [firstRevision] = saveScheduleBlocks(userId, schedule);
 
-  const session = createStudySession(userId, { scheduleBlockId: firstRevision.id, durationMinutes: 50 });
+  const session = createStudySession(userId, { scheduleBlockId: firstRevision.id, durationMinutes: 50, evidenceSource: 'starter' });
   completeStudySession(userId, session.id, 2_700);
   upsertSessionFeedback(userId, session.id, {
     focusRating: 4,
@@ -5575,7 +5673,7 @@ export function ensureStarterWorkspace(userId: string) {
     const historyBlock = createScheduleBlock(userId, {
       topicId, title, date, startTime: '16:00', durationMinutes: 40, completed: true, blockType: 'study',
     })!;
-    const historySession = createStudySession(userId, { scheduleBlockId: historyBlock.id, durationMinutes: 40 });
+    const historySession = createStudySession(userId, { scheduleBlockId: historyBlock.id, durationMinutes: 40, evidenceSource: 'starter' });
     completeStudySession(userId, historySession.id, 2_160);
     // The memory model uses completed-session timestamps, not the calendar block date.
     getDb().prepare('UPDATE study_sessions SET started_at = ?, ended_at = ?, created_at = ? WHERE id = ?')

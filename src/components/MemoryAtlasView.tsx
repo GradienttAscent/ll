@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, CalendarPlus, Clock3, Loader2 } from 'lucide-react';
 import { CourseMemorySummary, MemoryAtlasData, MemoryTopicState, RefreshPlan } from '../types';
+import { createMemoryAtlasDemo, isMemoryAtlasDemo } from '../data/memoryAtlasDemo';
 
 interface MemoryAtlasViewProps {
   onCalendarChanged: () => void;
@@ -22,8 +23,9 @@ const xOf = (day: number) => chartLeft + (day / 14) * plotWidth;
 const yOfRetention = (retention: number) => chartTop + (1 - retention) * plotHeight;
 const clampRetention = (value: number) => Math.max(0, Math.min(1, value));
 
-const statusLabel = (status: MemoryTopicState['status']) => status === 'stable' ? 'Stable' : status === 'fading' ? 'Approaching revision' : 'Revision due';
-const statusShort = (status: MemoryTopicState['status']) => status === 'stable' ? 'STABLE' : status === 'fading' ? 'FADING' : 'DUE';
+const statusLabel = (status: MemoryTopicState['status']) => status === 'not-studied' ? 'Not studied' : status === 'stable' ? 'Stable' : status === 'fading' ? 'Approaching revision' : 'Revision due';
+const statusShort = (status: MemoryTopicState['status']) => status === 'not-studied' ? 'NOT STUDIED' : status === 'stable' ? 'STABLE' : status === 'fading' ? 'FADING' : 'DUE';
+const sourceLabel = (source: string) => source === 'demo-presentation' ? 'Presentation demo' : source === 'paper-derived/provisional' ? 'Provisional PYQ topic' : source === 'starter-workspace' ? 'Starter topic' : source === 'syllabus' ? 'Syllabus topic' : source === 'extracted' ? 'Extracted topic' : source;
 const formatPercent = (value: number) => `${Math.round(value * 100)}%`;
 const formatDuration = (seconds: number) => {
   const minutes = Math.floor(seconds / 60);
@@ -34,10 +36,22 @@ const formatDateShort = (value: string) => new Date(value).toLocaleDateString(un
 const formatSlot = (date: string, time: string) => `${new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} | ${time}`;
 const pad = (value: number) => String(value).padStart(2, '0');
 
+export function atlasForForecast(forecastDays: number, nowAtlas: MemoryAtlasData | null, atlas: MemoryAtlasData | null): MemoryAtlasData | null {
+  return forecastDays === 0 ? nowAtlas || atlas : atlas;
+}
+
+export function selectedAtlasTopic(atlas: MemoryAtlasData | null, topicId: string | null, fallback: MemoryTopicState | null): MemoryTopicState | null {
+  return atlas?.topics.find((topic) => topic.topicId === topicId) || fallback;
+}
+
+export function canBuildMemoryRefreshPlan(atlas: MemoryAtlasData | null): boolean {
+  return !isMemoryAtlasDemo(atlas) && Boolean(atlas?.summary.studiedTopicCount);
+}
+
 function curvePath(topic: MemoryTopicState): string {
   return Array.from({ length: 57 }, (_, index) => {
     const days = (index * 14) / 56;
-    const retention = clampRetention(topic.predictedRetention * Math.exp(-days / topic.memoryStrengthDays));
+    const retention = clampRetention((topic.predictedRetention || 0) * Math.exp(-days / (topic.memoryStrengthDays || 1)));
     const x = xOf(days);
     const y = yOfRetention(retention);
     return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
@@ -47,18 +61,18 @@ function curvePath(topic: MemoryTopicState): string {
 const MemoryRing: React.FC<{ course: CourseMemorySummary }> = ({ course }) => {
   const radius = 38;
   const circumference = 2 * Math.PI * radius;
-  const filled = circumference * course.predictedRetention;
+  const filled = circumference * (course.predictedRetention || 0);
   return (
     <div className="rounded-2xl border border-[#EDE7F3] dark:border-[#302B35] p-5 flex items-center gap-5 bg-white dark:bg-[#17151A] shadow-2xs">
-      <svg viewBox="0 0 100 100" className="w-20 h-20 shrink-0" role="img" aria-label={`${course.courseName} predicted retention ${formatPercent(course.predictedRetention)}`}>
+      <svg viewBox="0 0 100 100" className="w-20 h-20 shrink-0" role="img" aria-label={`${course.courseName} ${course.predictedRetention === null ? 'has no completed study evidence' : `predicted retention ${formatPercent(course.predictedRetention)}`} `}>
         <circle cx="50" cy="50" r={radius} fill="none" stroke="currentColor" className="text-[#EDE7F6] dark:text-[#251E30]" strokeWidth="5" />
         <circle cx="50" cy="50" r={radius} fill="none" stroke="currentColor" className="text-[#6D28D9] dark:text-[#8B5CF6] transition-all duration-500" strokeWidth="5" strokeLinecap="round" strokeDasharray={`${filled} ${circumference}`} transform="rotate(-90 50 50)" />
-        <text x="50" y="55" textAnchor="middle" fontSize="16" fontFamily="serif" fontStyle="italic" className="fill-[#17151A] dark:fill-[#F5F3F7]" fontWeight="bold">{formatPercent(course.predictedRetention)}</text>
+        <text x="50" y="55" textAnchor="middle" fontSize={course.predictedRetention === null ? '9' : '16'} fontFamily="serif" fontStyle="italic" className="fill-[#17151A] dark:fill-[#F5F3F7]" fontWeight="bold">{course.predictedRetention === null ? 'NEW' : formatPercent(course.predictedRetention)}</text>
       </svg>
       <div className="min-w-0">
         <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-[#7B7484] dark:text-[#7A7480]">Course memory</div>
         <h3 className="font-serif text-2xl italic truncate mt-1 text-[#17151A] dark:text-[#F5F3F7]">{course.courseName}</h3>
-        <p className="text-[10px] text-[#7B7484] dark:text-[#7A7480] mt-2 font-mono">{course.dueCount} due | {course.fadingCount} fading | {course.stableCount} stable</p>
+        <p className="text-[10px] text-[#7B7484] dark:text-[#7A7480] mt-2 font-mono">{course.studiedTopicCount}/{course.topicCount} studied | {course.dueCount} due | {course.fadingCount} fading</p>
       </div>
     </div>
   );
@@ -69,7 +83,9 @@ const StatusMark: React.FC<{ status: MemoryTopicState['status'] }> = ({ status }
     ? 'bg-[#6D28D9] dark:bg-[#8B5CF6] text-white border-transparent'
     : status === 'fading'
       ? 'border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300'
-      : 'border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300';
+      : status === 'stable'
+        ? 'border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300'
+        : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/30 text-slate-700 dark:text-slate-300';
   return <span className={`inline-flex border px-2 py-0.5 rounded text-[8px] uppercase tracking-[0.14em] font-medium ${style}`}>{statusShort(status)}</span>;
 };
 
@@ -96,6 +112,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
   const selectTopic = (topicId: string) => { setEngaged(true); setSelectedTopicId(topicId); };
   const [refreshPlan, setRefreshPlan] = useState<RefreshPlan | null>(null);
   const [planTopicId, setPlanTopicId] = useState<string | null>(null);
+  const [demoPlan, setDemoPlan] = useState(false);
   const [planLoading, setPlanLoading] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const [message, setMessage] = useState('');
@@ -112,32 +129,49 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
     setLoading(true);
     setError('');
     void loadAtlas(0)
-      .then((memory) => { setAtlas(memory); setNowAtlas(memory); })
+      .then(async (memory) => {
+        if (memory.summary.studiedTopicCount === 0) memory = createMemoryAtlasDemo(0);
+        setAtlas(memory);
+        setNowAtlas(memory);
+      })
       .catch((loadError: any) => setError(loadError.message || 'Unable to load memory estimates.'))
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    if (forecastDays === 0) return;
+    if (forecastDays === 0) {
+      if (nowAtlas) setAtlas(nowAtlas);
+      return;
+    }
+    if (isMemoryAtlasDemo(nowAtlas)) {
+      setAtlas(createMemoryAtlasDemo(forecastDays));
+      return;
+    }
     const timer = window.setTimeout(() => {
       void loadAtlas(forecastDays)
         .then(setAtlas)
         .catch((loadError: any) => setError(loadError.message || 'Unable to load memory estimates.'));
     }, 140);
     return () => window.clearTimeout(timer);
-  }, [forecastDays]);
+  }, [forecastDays, nowAtlas]);
 
   const buildPlan = async (topicId?: string) => {
+    if (!atlas) {
+      setMessage('Memory Atlas is not ready yet.');
+      return;
+    }
     setPlanLoading(true);
     setMessage('');
     try {
-      const response = await fetch('/api/memory/refresh-plan', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(topicId ? { topicId } : {}),
+      const isDemo = isMemoryAtlasDemo(atlas);
+      const response = await fetch(isDemo ? '/api/memory/demo-refresh-plan' : '/api/memory/refresh-plan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(topicId ? (isDemo ? { demoTopicId: topicId } : { topicId }) : {}),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Unable to build a refresh plan.');
       setRefreshPlan(data.refreshPlan);
       setPlanTopicId(topicId || null);
+      setDemoPlan(isDemo);
       if (data.refreshPlan.message) setMessage(data.refreshPlan.message);
     } catch (planError: any) {
       setMessage(planError.message || 'Unable to build a refresh plan.');
@@ -151,17 +185,19 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
     setAccepting(true);
     setMessage('');
     try {
-      const response = await fetch('/api/memory/refresh-plan/accept', {
+      const response = await fetch(demoPlan ? '/api/memory/demo-refresh-plan/accept' : '/api/memory/refresh-plan/accept', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: refreshPlan.items, ...(planTopicId ? { topicId: planTopicId } : {}) }),
+        body: JSON.stringify({ items: refreshPlan.items, ...(planTopicId ? (demoPlan ? { demoTopicId: planTopicId } : { topicId: planTopicId }) : {}) }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Unable to add the refresh plan.');
       setRefreshPlan(null);
       setPlanTopicId(null);
+      setDemoPlan(false);
       setMessage(`${data.scheduleBlocks.length} memory refresh ${data.scheduleBlocks.length === 1 ? 'block was' : 'blocks were'} added to your calendar.`);
       onCalendarChanged();
-      void loadAtlas(forecastDays).then(setAtlas);
+      if (demoPlan) setAtlas(createMemoryAtlasDemo(forecastDays));
+      else void loadAtlas(forecastDays).then(setAtlas);
     } catch (acceptError: any) {
       setMessage(acceptError.message || 'Unable to add the refresh plan.');
     } finally {
@@ -169,47 +205,17 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
     }
   };
 
-  const scheduleTopicRefresh = async (topicId: string) => {
-    setPlanLoading(true);
-    setMessage('');
-    try {
-      const planResponse = await fetch('/api/memory/refresh-plan', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ topicId }),
-      });
-      const planData = await planResponse.json();
-      if (!planResponse.ok) throw new Error(planData.error || 'Unable to build a refresh plan.');
-      const plan = planData.refreshPlan as RefreshPlan;
-      if (!plan.items.length) {
-        setMessage(plan.message || 'This topic does not need a refresh yet.');
-        return;
-      }
-      const acceptResponse = await fetch('/api/memory/refresh-plan/accept', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: plan.items, topicId }),
-      });
-      const acceptData = await acceptResponse.json();
-      if (!acceptResponse.ok) throw new Error(acceptData.error || 'Unable to add the refresh to your calendar.');
-      setMessage(`${plan.items[0].topicName} was added to your calendar.`);
-      onCalendarChanged();
-      void loadAtlas(forecastDays).then(setAtlas);
-    } catch (scheduleError: any) {
-      setMessage(scheduleError.message || 'Unable to schedule this refresh.');
-    } finally {
-      setPlanLoading(false);
-    }
-  };
-
   const chartTopics = useMemo(() => {
     if (!atlas) return [];
     const urgency = (topic: MemoryTopicState) => topic.status === 'due' ? 0 : topic.status === 'fading' ? 1 : 2;
-    const candidates = atlas.topics.slice().sort((left, right) =>
-      urgency(left) - urgency(right) || left.daysUntilDue - right.daysUntilDue || left.predictedRetention - right.predictedRetention
+    const candidates = atlas.topics.filter((topic) => topic.predictedRetention !== null).sort((left, right) =>
+      urgency(left) - urgency(right) || (left.daysUntilDue || 0) - (right.daysUntilDue || 0) || (left.predictedRetention || 0) - (right.predictedRetention || 0)
     );
     const selected = candidates.slice(0, 1);
     const curveDistance = (left: MemoryTopicState, right: MemoryTopicState) =>
       [0, 7, 14].reduce((total, day) => total + Math.abs(
-        left.predictedRetention * Math.exp(-day / left.memoryStrengthDays)
-        - right.predictedRetention * Math.exp(-day / right.memoryStrengthDays)
+        (left.predictedRetention || 0) * Math.exp(-day / (left.memoryStrengthDays || 1))
+        - (right.predictedRetention || 0) * Math.exp(-day / (right.memoryStrengthDays || 1))
       ), 0);
 
     // Keep the most urgent topic, then select the traces furthest from those already shown.
@@ -220,7 +226,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
         .sort((left, right) => {
           const leftDistance = Math.min(...selected.map((item) => curveDistance(left, item)));
           const rightDistance = Math.min(...selected.map((item) => curveDistance(right, item)));
-          return rightDistance - leftDistance || urgency(left) - urgency(right) || left.daysUntilDue - right.daysUntilDue;
+          return rightDistance - leftDistance || urgency(left) - urgency(right) || (left.daysUntilDue || 0) - (right.daysUntilDue || 0);
         })[0];
       selected.push(next);
     }
@@ -231,18 +237,14 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
   const nowTopics = useMemo(() => {
     const source = nowAtlas || atlas;
     if (!source) return [];
-    const rank = (topic: MemoryTopicState) => topic.status === 'due' ? 0 : topic.status === 'fading' ? 1 : 2;
+    const rank = (topic: MemoryTopicState) => topic.status === 'due' ? 0 : topic.status === 'fading' ? 1 : topic.status === 'stable' ? 2 : 3;
     return source.topics
       .slice()
-      .sort((left, right) => rank(left) - rank(right) || left.predictedRetention - right.predictedRetention)
-      .slice(0, MAX_CURVES)
+      .sort((left, right) => rank(left) - rank(right) || (left.predictedRetention ?? 2) - (right.predictedRetention ?? 2))
       .map((topic, index) => ({ topic, index: index + 1 }));
   }, [atlas, nowAtlas]);
 
-  const selectedTopic = useMemo(() => {
-    const source = atlas?.topics.find((topic) => topic.topicId === selectedTopicId) || null;
-    return source || chartTopics[0]?.topic || null;
-  }, [atlas, selectedTopicId, chartTopics]);
+  const selectedTopic = useMemo(() => selectedAtlasTopic(atlas, selectedTopicId, chartTopics[0]?.topic || null), [atlas, selectedTopicId, chartTopics]);
 
   const selectedChartIndex = chartTopics.find((entry) => entry.topic.topicId === selectedTopic?.topicId)?.index ?? null;
   const selectedInChart = chartTopics.some((entry) => entry.topic.topicId === selectedTopic?.topicId);
@@ -251,8 +253,10 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
   if (error && !atlas) return <div className="max-w-6xl mx-auto py-10 px-6 sm:px-8"><div className="border border-black bg-[#F8F7F2] p-5 text-xs font-bold">{error}</div></div>;
   if (!atlas) return null;
 
-  const hasTopics = atlas.summary.studiedTopicCount > 0;
-  const topicsToSchedule = atlas.topics.filter((topic) => topic.daysUntilDue <= 7);
+  const hasTopics = atlas.topics.length > 0;
+  const presentationDemo = isMemoryAtlasDemo(atlas);
+  const canBuildPlan = presentationDemo || canBuildMemoryRefreshPlan(atlas);
+  const topicsToSchedule = presentationDemo ? atlas.topics : atlas.topics.filter((topic) => topic.daysUntilDue !== null && topic.daysUntilDue <= 7);
   const xTicks = compact ? [0, 4, 8, 12, 14] : [0, 2, 4, 6, 8, 10, 12, 14];
   const thresholdY = yOfRetention(0.5);
 
@@ -260,7 +264,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
     const columnOffsets = [0, 13, 26];
     const lastY = [-Infinity, -Infinity, -Infinity];
     return chartTopics.map(({ topic, index }) => {
-      const y = yOfRetention(topic.predictedRetention);
+      const y = yOfRetention(topic.predictedRetention || 0);
       let column = 0;
       while (column < columnOffsets.length - 1 && Math.abs(y - lastY[column]) < 20) column += 1;
       lastY[column] = y;
@@ -269,18 +273,18 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
   })();
 
   const crossings = chartTopics
-    .filter(({ topic }) => topic.daysUntilDue > 0 && topic.daysUntilDue <= 14)
-    .map(({ topic, index }) => ({ topic, index, x: xOf(Math.min(14, topic.daysUntilDue)), y: thresholdY }));
+    .filter(({ topic }) => topic.daysUntilDue !== null && topic.daysUntilDue > 0 && topic.daysUntilDue <= 14)
+    .map(({ topic, index }) => ({ topic, index, x: xOf(Math.min(14, topic.daysUntilDue!)), y: thresholdY }));
 
   return <div className="max-w-6xl mx-auto py-8 sm:py-10 px-6 sm:px-8 space-y-8 animate-fade-in pb-16">
     <header className="border-b border-[#EDE7F3] dark:border-[#302B35] pb-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
       <div>
         <h1 className="font-serif text-3xl sm:text-4xl italic font-normal text-[#17151A] dark:text-[#F5F3F7] tracking-tight">Your Memory Atlas</h1>
-        <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] max-w-2xl mt-1.5 font-sans">A structured map of concepts you have studied, tracking retention decay and estimating when each topic benefits from revision.</p>
+        <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] max-w-2xl mt-1.5 font-sans">A learning and retention dashboard for your persisted topics. Retention estimates appear only after real completed study sessions.</p>
       </div>
       <button
         onClick={() => void buildPlan()}
-        disabled={!hasTopics || planLoading}
+        disabled={!canBuildPlan || planLoading}
         className="shrink-0 bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white rounded-lg px-4 py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
       >
         {planLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin text-white/80" />Building...</> : <>Build Refresh Plan <ArrowRight className="w-3.5 h-3.5 text-white/80" /></>}
@@ -292,8 +296,8 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
 
     {!hasTopics ? (
       <section className="rounded-xl border-2 border-dashed border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#17151A] p-10 sm:p-14 text-center shadow-xs">
-        <div className="font-serif text-3xl italic text-[#17151A] dark:text-[#F5F3F7]">Your first memory trace is waiting.</div>
-        <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] max-w-lg mx-auto mt-3 font-sans leading-relaxed">Complete a study session with focus time and your first memory trace will appear here. Scheduled topics enter the Memory Atlas once a session is completed.</p>
+        <div className="font-serif text-3xl italic text-[#17151A] dark:text-[#F5F3F7]">Your learning dashboard is waiting.</div>
+        <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] max-w-lg mx-auto mt-3 font-sans leading-relaxed">Add persisted topics from a syllabus, PYQ, or planner to see them here. Complete a real study session to receive a retention estimate.</p>
       </section>
     ) : <>
       <section className="py-2 border-b border-[#EDE7F3] dark:border-[#302B35] grid grid-cols-2 sm:grid-cols-4 gap-6">
@@ -314,7 +318,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-5 border-b border-[#EDE7F3] dark:border-[#302B35] pb-4">
           <div>
             <h2 className="font-serif text-2xl sm:text-3xl italic text-[#17151A] dark:text-[#F5F3F7]">Retention Decay Forecast</h2>
-            <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-1 font-sans">Three spaced retention traces show the most useful revision signals over the next 14 days.</p>
+            <p className="text-xs text-[#55524E] dark:text-[#A9A3AE] mt-1 font-sans">Up to three retention traces highlight the most urgent real-study signals over the next 14 days.</p>
           </div>
           <label className="w-full max-w-xs text-[10px] uppercase tracking-[0.18em] font-bold text-[#17151A] dark:text-[#F5F3F7]">
             Forecast: <span className="text-[#6D28D9] dark:text-[#A78BFA]">{forecastDays === 0 ? 'Today' : `+${forecastDays} days`}</span>
@@ -327,7 +331,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
           <div className="border-b border-[#EDE7F3] dark:border-[#302B35] pb-3 mb-4 flex items-end justify-between">
             <div>
               <div className="text-[9px] uppercase tracking-[0.2em] font-bold text-[#7B7484] dark:text-[#7A7480]">Memory now</div>
-              <h3 className="font-serif text-2xl italic mt-1 text-[#17151A] dark:text-[#F5F3F7]">Current state, by urgency</h3>
+              <h3 className="font-serif text-2xl italic mt-1 text-[#17151A] dark:text-[#F5F3F7]">All topics, by urgency</h3>
             </div>
             <div className="text-[9px] uppercase tracking-[0.14em] text-[#7B7484] dark:text-[#7A7480]">Predicted retention</div>
           </div>
@@ -349,10 +353,10 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
                     <span className="font-mono text-[10px] text-[#7B7484] dark:text-[#7A7480]">{pad(index)}</span>
                     <StatusMark status={topic.status} />
                   </div>
-                  <div className="font-serif text-4xl italic mt-3 leading-none text-[#17151A] dark:text-[#F5F3F7]">{formatPercent(topic.predictedRetention)}</div>
+                   <div className="font-serif text-2xl italic mt-3 leading-none text-[#17151A] dark:text-[#F5F3F7]">{topic.predictedRetention === null ? 'Not studied' : formatPercent(topic.predictedRetention)}</div>
                   <div className="min-w-0 mt-3">
                     <div className="text-[12px] font-bold leading-snug truncate text-[#17151A] dark:text-[#F5F3F7]">{topic.topicName}</div>
-                    <div className="text-[9px] uppercase tracking-[0.12em] text-[#7B7484] dark:text-[#7A7480] mt-1 truncate">{topic.courseName}</div>
+                     <div className="text-[9px] uppercase tracking-[0.12em] text-[#7B7484] dark:text-[#7A7480] mt-1 truncate">{topic.courseName} | {sourceLabel(topic.topicSource)}</div>
                   </div>
                 </button>
               );
@@ -381,7 +385,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
                   const active = engaged && selectedTopic?.topicId === topic.topicId;
                   const dimmed = selectedInChart && engaged && !active;
                   return <g key={`${topic.topicId}-${forecastDays}`} className="ma-fade cursor-pointer" tabIndex={0} role="button"
-                    aria-label={`${pad(index)} ${topic.topicName}, ${formatPercent(topic.predictedRetention)} predicted retention`}
+                    aria-label={`${pad(index)} ${topic.topicName}, ${formatPercent(topic.predictedRetention || 0)} predicted retention`}
                     onMouseEnter={() => selectTopic(topic.topicId)} onFocus={() => selectTopic(topic.topicId)} onClick={() => selectTopic(topic.topicId)}
                     style={{ opacity: dimmed ? 0.18 : active ? 1 : 0.9 }}>
                     <path d={curvePath(topic)} className="ma-curve" fill="none" stroke={CURVE_COLORS[index - 1]} strokeWidth={active ? 4 : 2.5} style={{ opacity: 1 }} />
@@ -415,7 +419,7 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
                     className={`w-full flex items-baseline gap-4 px-5 py-3.5 text-left transition-colors ${active ? 'bg-[#EDE7F6] dark:bg-[#251E30]' : 'hover:bg-[#FAF8FC] dark:hover:bg-[#1D1A21]'}`}>
                     <span className="font-mono text-[10px] text-[#7B7484] dark:text-[#7A7480]">{pad(index)}</span>
                     <span className="flex-1 min-w-0"><strong className={`text-[13px] leading-tight block truncate ${active ? 'text-[#6D28D9] dark:text-[#A78BFA]' : 'text-[#17151A] dark:text-[#F5F3F7]'}`}>{topic.topicName}</strong><span className="text-[9px] uppercase tracking-[0.12em] text-[#7B7484] dark:text-[#7A7480] block mt-0.5 truncate">{topic.courseName}</span></span>
-                    <span className={`font-serif text-xl italic ${active ? 'text-[#6D28D9] dark:text-[#A78BFA]' : 'text-[#17151A] dark:text-[#F5F3F7]'}`}>{formatPercent(topic.predictedRetention)}</span>
+                    <span className={`font-serif text-xl italic ${active ? 'text-[#6D28D9] dark:text-[#A78BFA]' : 'text-[#17151A] dark:text-[#F5F3F7]'}`}>{topic.predictedRetention === null ? 'Not studied' : formatPercent(topic.predictedRetention)}</span>
                     <span className="hidden sm:inline-flex"><StatusMark status={topic.status} /></span>
                   </button>;
                 })}
@@ -431,13 +435,15 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
             </div>
             <p className="text-[9px] uppercase tracking-[0.14em] text-[#7B7484] dark:text-[#7A7480] mt-2">{selectedTopic.courseName}</p>
             <dl className="mt-5 space-y-3 border-t border-[#EDE7F3] dark:border-[#302B35] pt-5 text-xs">
-              <div className="flex items-baseline justify-between gap-4"><dt className="text-[#7B7484] dark:text-[#7A7480]">Predicted retention</dt><dd className="font-serif text-xl italic text-[#6D28D9] dark:text-[#A78BFA] font-bold">{formatPercent(selectedTopic.predictedRetention)}</dd></div>
-              <div className="flex items-baseline justify-between gap-4"><dt className="text-[#7B7484] dark:text-[#7A7480]">Last studied</dt><dd className="text-right text-[#17151A] dark:text-[#F5F3F7]">{formatDateShort(selectedTopic.lastStudiedAt)}</dd></div>
-              <div className="flex items-baseline justify-between gap-4"><dt className="text-[#7B7484] dark:text-[#7A7480]">Revision due</dt><dd className="text-right text-[#17151A] dark:text-[#F5F3F7]">{formatDateShort(selectedTopic.dueAt)}</dd></div>
+              <div className="flex items-baseline justify-between gap-4"><dt className="text-[#7B7484] dark:text-[#7A7480]">Provenance</dt><dd className="text-right text-[#17151A] dark:text-[#F5F3F7]">{sourceLabel(selectedTopic.topicSource)}</dd></div>
+              <div className="flex items-baseline justify-between gap-4"><dt className="text-[#7B7484] dark:text-[#7A7480]">Predicted retention</dt><dd className="font-serif text-xl italic text-[#6D28D9] dark:text-[#A78BFA] font-bold">{selectedTopic.predictedRetention === null ? 'Not studied' : formatPercent(selectedTopic.predictedRetention)}</dd></div>
+              <div className="flex items-baseline justify-between gap-4"><dt className="text-[#7B7484] dark:text-[#7A7480]">Last studied</dt><dd className="text-right text-[#17151A] dark:text-[#F5F3F7]">{selectedTopic.lastStudiedAt ? formatDateShort(selectedTopic.lastStudiedAt) : 'No real study evidence'}</dd></div>
+              <div className="flex items-baseline justify-between gap-4"><dt className="text-[#7B7484] dark:text-[#7A7480]">Revision due</dt><dd className="text-right text-[#17151A] dark:text-[#F5F3F7]">{selectedTopic.dueAt ? formatDateShort(selectedTopic.dueAt) : 'Complete a session first'}</dd></div>
               <div className="flex items-baseline justify-between gap-4"><dt className="text-[#7B7484] dark:text-[#7A7480]">Actual focus</dt><dd className="text-right text-[#17151A] dark:text-[#F5F3F7]">{formatDuration(selectedTopic.totalActualStudySeconds)}</dd></div>
+              {selectedTopic.syntheticSessionCount > 0 && <div className="text-[10px] text-[#7B7484] dark:text-[#A9A3AE]">{selectedTopic.syntheticSessionCount} starter/demo session{selectedTopic.syntheticSessionCount === 1 ? '' : 's'} excluded from retention.</div>}
             </dl>
             <button
-              onClick={() => void scheduleTopicRefresh(selectedTopic.topicId)}
+              onClick={() => void buildPlan(selectedTopic.topicId)}
               disabled={planLoading}
               className="w-full mt-6 bg-[#6D28D9] hover:bg-[#5B21B6] dark:bg-[#8B5CF6] dark:hover:bg-[#7C3AED] text-white rounded-lg px-4 py-2.5 text-xs font-medium tracking-wider transition-colors shadow-xs disabled:opacity-40 flex items-center justify-center gap-2"
             >
@@ -485,12 +491,12 @@ export const MemoryAtlasView: React.FC<MemoryAtlasViewProps> = ({ onCalendarChan
                     <div className="text-[10px] text-[#7B7484] dark:text-[#7A7480] mt-1">{statusLabel(topic.status)} | {topic.qualifyingSessionCount} qualifying sessions</div>
                   </td>
                   <td className="p-4 text-[#55524E] dark:text-[#A9A3AE]">{topic.courseName}</td>
-                  <td className="p-4 font-serif text-xl italic text-[#6D28D9] dark:text-[#A78BFA] font-bold">{formatPercent(topic.predictedRetention)}</td>
-                  <td className="p-4 text-[#7B7484] dark:text-[#7A7480]">{formatDate(topic.lastStudiedAt)}</td>
-                  <td className="p-4 text-[#7B7484] dark:text-[#7A7480]">{topic.daysUntilDue <= 0 ? <span className="font-bold text-red-600 dark:text-red-400">Now</span> : formatDate(topic.dueAt)}</td>
+                   <td className="p-4 font-serif text-xl italic text-[#6D28D9] dark:text-[#A78BFA] font-bold">{topic.predictedRetention === null ? 'Not studied' : formatPercent(topic.predictedRetention)}</td>
+                   <td className="p-4 text-[#7B7484] dark:text-[#7A7480]">{topic.lastStudiedAt ? formatDate(topic.lastStudiedAt) : 'No real study evidence'}</td>
+                   <td className="p-4 text-[#7B7484] dark:text-[#7A7480]">{topic.daysUntilDue !== null && topic.daysUntilDue <= 0 ? <span className="font-bold text-red-600 dark:text-red-400">Now</span> : topic.dueAt ? formatDate(topic.dueAt) : '—'}</td>
                   <td className="p-4">
                     <button
-                      onClick={() => void scheduleTopicRefresh(topic.topicId)}
+                      onClick={() => void buildPlan(topic.topicId)}
                       disabled={planLoading}
                       className="rounded-lg border border-[#EDE7F3] dark:border-[#302B35] bg-white dark:bg-[#1D1A21] px-3 py-1.5 text-xs text-[#6D28D9] dark:text-[#A78BFA] hover:bg-[#FAF8FC] dark:hover:bg-[#251E30] transition-colors"
                     >

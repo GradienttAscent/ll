@@ -1,5 +1,6 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert';
+import { getDatabase } from '../db';
 import { Api, createTestServer, removeTempDir, TestServer } from './helpers';
 
 function futureDate(days: number) {
@@ -62,6 +63,10 @@ describe('Memory Atlas', () => {
     assert.strictEqual(response.status, 200);
     assert.strictEqual(response.json.memory.summary.studiedTopicCount, 0);
     assert.strictEqual(response.json.memory.summary.unexploredCount, 3);
+    assert.strictEqual(response.json.memory.topics.length, 3);
+    assert.ok(response.json.memory.topics.every((topic: any) => topic.status === 'not-studied' && topic.predictedRetention === null && topic.dueAt === null));
+    assert.strictEqual(response.json.memory.courses[0].studiedTopicCount, 0);
+    assert.strictEqual(response.json.memory.courses[0].predictedRetention, null);
   });
 
   it('creates a memory trace, calculates forecast decay, and aggregates actual time', async () => {
@@ -100,6 +105,25 @@ describe('Memory Atlas', () => {
     assert.ok(!aliceMemory.json.memory.topics.some((topic: any) => topic.topicName === 'Bob private memory'));
     assert.strictEqual(bobMemory.json.memory.topics.length, 1);
     assert.strictEqual((await new Api(server.baseUrl).request('/api/memory/topics')).status, 401);
+  });
+
+  it('excludes starter/demo evidence from real retention while preserving its provenance', async () => {
+    const topic = await alice.request('/api/topics', { method: 'POST', body: { name: 'Starter-only evidence' } });
+    const { block, sessionId } = await complete(alice, topic.json.topics[0].id, 'Seeded trace', 120, 5);
+    (await getDatabase()).prepare("UPDATE study_sessions SET evidence_source = 'starter' WHERE id = ?").run(sessionId);
+
+    const atlas = await alice.request('/api/memory/topics');
+    const state = atlas.json.memory.topics.find((item: any) => item.topicId === block.topicId);
+    assert.strictEqual(state.status, 'not-studied');
+    assert.strictEqual(state.predictedRetention, null);
+    assert.strictEqual(state.syntheticSessionCount, 1);
+    assert.strictEqual(state.qualifyingSessionCount, 0);
+  });
+
+  it('does not duplicate an Atlas topic when the same owned topic is saved again', async () => {
+    await alice.request('/api/topics', { method: 'POST', body: { name: 'Memory Graphs', priority: 8 } });
+    const atlas = await alice.request('/api/memory/topics');
+    assert.strictEqual(atlas.json.memory.topics.filter((topic: any) => topic.topicName === 'Memory Graphs').length, 1);
   });
 
   it('builds a conflict-safe refresh plan, persists revision blocks once, and uses completion as another exposure', async () => {

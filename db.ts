@@ -507,6 +507,25 @@ const MIGRATIONS: Migration[] = [
       );`);
     },
   },
+  {
+    version: 26,
+    name: 'study-session-evidence-source',
+    up: (db) => {
+      const columns = pragmaTableInfo(db, 'study_sessions').map((column) => column.name);
+      if (!columns.includes('evidence_source')) {
+        db.run("ALTER TABLE study_sessions ADD COLUMN evidence_source TEXT NOT NULL DEFAULT 'user';");
+      }
+      // Existing starter traces predate evidence_source. Limit the backfill to accounts known to
+      // have a starter workspace so ordinary user sessions with similar titles remain real evidence.
+      db.run(`UPDATE study_sessions SET evidence_source = 'starter'
+        WHERE id IN (
+          SELECT s.id FROM study_sessions s
+          JOIN schedule_blocks b ON b.id = s.schedule_block_id
+          JOIN user_starter_workspaces w ON w.user_id = s.user_id
+          WHERE b.title IN ('Starter memory check-in', "Practice Banker's safety algorithm", 'Paging recap', 'File systems recap')
+        )`);
+    },
+  },
 ];
 
 function repairStudyRoomCollaborationSchema(db: SqlJsDatabase) {
