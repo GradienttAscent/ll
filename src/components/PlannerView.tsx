@@ -116,6 +116,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
   const [topics, setTopics] = useState<PersistedTopic[]>([]);
   const [scheduleBlocks, setScheduleBlocks] = useState<ScheduleBlock[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [schedulePreview, setSchedulePreview] = useState<any | null>(null);
   const [isApplyingProposal, setIsApplyingProposal] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [chatInput, setChatInput] = useState('');
@@ -145,19 +146,27 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
     setIsGenerating(true);
     setStatusMessage('');
     try {
-      const newBlocks = generateBlocks(topics, examDate, dailyHours, scheduleBlocks);
-      if (newBlocks.length === 0) {
-        setStatusMessage('No available planner slots fit the current exam date and daily hours.');
-        return;
+      if (!schedulePreview) {
+        const settingsResponse = await fetch('/api/schedule/settings', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ examDate, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, availability: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, startTime: '08:00', endTime: timeFromMinutes(8 * 60 + Math.max(30, Math.round(dailyHours * 60))) })) }),
+        });
+        const settingsData = await settingsResponse.json();
+        if (!settingsResponse.ok) throw new Error(settingsData.error || 'Unable to save schedule settings.');
+        const response = await fetch('/api/schedule/generate/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Unable to generate schedule preview.');
+        setSchedulePreview(data);
+        const shortfall = Number(Object.values(data.proposal.unallocatedMinutesByTopic || {}).reduce((sum: number, value: any) => sum + Number(value), 0));
+        setStatusMessage(`Preview ready: ${data.proposal.blocks.length} blocks, ${data.proposal.totalAvailableCapacity} minutes available${shortfall > 0 ? `, ${shortfall} minutes unallocated` : ''}. Review and confirm to save.`);
+      } else {
+        const response = await fetch('/api/schedule/generate/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proposal: schedulePreview.proposal, proposalToken: schedulePreview.proposalToken }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Unable to confirm schedule.');
+        setScheduleBlocks(data.scheduleBlocks);
+        setSchedulePreview(null);
+        setStatusMessage(`Schedule confirmed: ${data.scheduleBlocks.length} study blocks for ${examName}.`);
       }
-      const response = await fetch('/api/schedule-blocks/bulk', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scheduleBlocks: newBlocks }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Unable to save schedule.');
-      setScheduleBlocks(data.scheduleBlocks);
-      setStatusMessage(`Schedule generated and saved: ${newBlocks.length} study blocks for ${examName}.`);
     } catch (error: any) {
       setStatusMessage(error.message || 'Unable to generate schedule.');
     } finally {
@@ -196,7 +205,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Unable to understand that scheduling request.');
       const preview = data.preview as SchedulingAssistantPreview;
-      if (preview.changes.length > 0) setActiveChatPreview({ message, preview, selectedBlockId });
+      if (preview.changes.length > 0 || preview.scheduleProposal) setActiveChatPreview({ message, preview, selectedBlockId });
       setChatMessages((messages) => [...messages, { id: Date.now() + 1, role: 'assistant', text: preview.assistantMessage, preview, sourceMessage: message, selectedBlockId }]);
     } catch (error: any) {
       setChatMessages((messages) => [...messages, { id: Date.now() + 1, role: 'assistant', text: error.message || 'Unable to answer that scheduling request.' }]);
@@ -216,7 +225,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
     setIsChatLoading(true);
     try {
       const response = await fetch('/api/scheduling-assistant/confirm', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, changes: preview.changes, selectedBlockId }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, changes: preview.changes, scheduleProposal: preview.scheduleProposal, scheduleProposalToken: (preview as any).scheduleProposalToken, selectedBlockId }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -295,10 +304,18 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartStudy, refreshK
           ) : (
             <>
               <CalendarCheck className="w-4 h-4 text-white" />
-              <span>Generate &amp; Save Schedule</span>
+              <span>{schedulePreview ? 'Confirm Schedule' : 'Preview Schedule'}</span>
             </>
           )}
         </button>
+        {schedulePreview && (
+          <button
+            onClick={() => setSchedulePreview(null)}
+            className="rounded-lg border border-[#D8CCE8] dark:border-[#3E344A] px-4 py-2.5 text-xs font-medium text-[#55524E] dark:text-[#A9A3AE]"
+          >
+            Discard Preview
+          </button>
+        )}
       </div>
 
       {statusMessage && (
