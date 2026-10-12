@@ -53,7 +53,7 @@ function cacheDir(data: Buffer | Uint8Array): string {
 }
 
 function libreOfficeBinary(): string {
-  return process.env.LAZYLIFT_LIBREOFFICE_BIN || (process.platform === 'win32' ? 'soffice.exe' : 'soffice');
+  return process.env.LAZYLIFT_LIBREOFFICE_BIN || (process.platform === 'win32' ? 'soffice.com' : 'soffice');
 }
 
 function pdftoppmBinary(): string {
@@ -90,7 +90,9 @@ async function ensureExecutable(binary: string, label: string): Promise<void> {
   const key = `${label}:${binary}`;
   const existing = executableChecks.get(key);
   if (existing) return existing;
-  const check = execFileAsync(binary, ['--version'], { timeout: 10_000, maxBuffer: 64 * 1024 })
+  // Poppler accepts -v but treats --version as a PDF filename on Windows and Linux builds.
+  const versionArgs = label === 'pdftoppm' ? ['-v'] : ['--version'];
+  const check = execFileAsync(binary, versionArgs, { timeout: 10_000, maxBuffer: 64 * 1024 })
     .then(() => undefined)
     .catch((error) => { throw classifyRenderError('executable-check', error); });
   executableChecks.set(key, check);
