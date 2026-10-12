@@ -457,6 +457,70 @@ app.patch('/api/study-rooms/:id/session', (req, res) => {
 });
 
 // ---- Schedule blocks ----
+function scheduleProposalToken(proposal: services.ScheduleGenerationProposal, settingsUpdatedAt: string): string {
+  return createHash('sha256').update(JSON.stringify({ proposal, settingsUpdatedAt })).digest('hex');
+}
+
+app.get('/api/schedule/settings', (req, res) => {
+  return res.json({ settings: services.getScheduleGenerationSettings(userIdOf(req)) });
+});
+
+app.put('/api/schedule/settings', (req, res) => {
+  try {
+    const body = req.body || {};
+    return res.json({ settings: services.saveScheduleGenerationSettings(userIdOf(req), {
+      examDate: body.examDate === undefined ? undefined : body.examDate,
+      timezone: body.timezone,
+      availability: body.availability,
+      excludedDates: body.excludedDates,
+      excludedWeekdays: body.excludedWeekdays,
+      preferredPeriods: body.preferredPeriods,
+      dailyMaxMinutes: body.dailyMaxMinutes,
+    }) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to save schedule settings.');
+  }
+});
+
+app.get('/api/schedule/dataset', (req, res) => {
+  return res.json({ dataset: services.deriveScheduleDataset(userIdOf(req)) });
+});
+
+app.post('/api/schedule/generate/preview', (req, res) => {
+  try {
+    const settings = services.getScheduleGenerationSettings(userIdOf(req));
+    if (!settings || !settings.examDate) return sendError(res, 400, 'Persist exam settings before generating a schedule.');
+    const referenceTime = typeof req.body?.referenceTime === 'string' ? new Date(req.body.referenceTime) : new Date();
+    if (Number.isNaN(referenceTime.getTime())) return sendError(res, 400, 'referenceTime must be a valid ISO timestamp.');
+    const proposal = services.createScheduleProposal({ dataset: services.deriveScheduleDataset(userIdOf(req)), settings, existingBlocks: services.scheduleBlockRows(userIdOf(req)), referenceTime });
+    return res.json({ proposal, proposalToken: scheduleProposalToken(proposal, settings.updatedAt) });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to generate schedule preview.');
+  }
+});
+
+app.post('/api/schedule/generate/confirm', (req, res) => {
+  try {
+    const settings = services.getScheduleGenerationSettings(userIdOf(req));
+    const submitted = req.body?.proposal;
+    const token = req.body?.proposalToken;
+    if (!settings || !settings.examDate) return sendError(res, 400, 'Persist exam settings before generating a schedule.');
+    if (!submitted || typeof token !== 'string') return sendError(res, 400, 'proposal and proposalToken are required.');
+    if (token !== scheduleProposalToken(submitted, settings.updatedAt)) return sendError(res, 409, 'This schedule preview is stale. Generate a new preview.');
+    const referenceTime = new Date(submitted.referenceTime);
+    const recalculated = services.createScheduleProposal({ dataset: services.deriveScheduleDataset(userIdOf(req)), settings, existingBlocks: services.scheduleBlockRows(userIdOf(req)), referenceTime });
+    if (JSON.stringify(recalculated) !== JSON.stringify(submitted)) return sendError(res, 409, 'Academic evidence or existing schedule blocks changed since this preview.');
+    services.assertScheduleBlocksAreValid(userIdOf(req), recalculated.blocks);
+    services.saveScheduleBlocks(userIdOf(req), recalculated.blocks);
+    return res.status(201).json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)), proposal: recalculated });
+  } catch (error) {
+    if (error instanceof HttpError) return sendError(res, error.status, error.message);
+    return sendError(res, 400, error instanceof Error ? error.message : 'Unable to confirm generated schedule.');
+  }
+});
+
 app.get('/api/schedule-blocks', (req, res) => {
   res.json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
 });
@@ -727,6 +791,10 @@ app.post('/api/scheduling-assistant/preview', (req, res) => {
   if (selectedBlockId !== undefined && (typeof selectedBlockId !== 'string' || !selectedBlockId)) return sendError(res, 400, 'selectedBlockId must be a non-empty string.');
   try {
     const preview = services.previewSchedulingAssistant(userIdOf(req), parseSchedulingAssistantIntent(message), new Date(), selectedBlockId);
+    if (preview.scheduleProposal) {
+      const settings = services.getScheduleGenerationSettings(userIdOf(req));
+      if (settings) (preview as any).scheduleProposalToken = scheduleProposalToken(preview.scheduleProposal, settings.updatedAt);
+    }
     return res.json({ preview });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);
@@ -739,10 +807,27 @@ app.post('/api/scheduling-assistant/confirm', (req, res) => {
   const changes = req.body?.changes;
   const selectedBlockId = req.body?.selectedBlockId;
   if (typeof message !== 'string' || !message.trim()) return sendError(res, 400, 'message is required.');
-  if (!Array.isArray(changes) || changes.length === 0) return sendError(res, 400, 'changes are required.');
+  if ((!Array.isArray(changes) || changes.length === 0) && !req.body?.scheduleProposal) return sendError(res, 400, 'changes are required.');
   if (selectedBlockId !== undefined && (typeof selectedBlockId !== 'string' || !selectedBlockId)) return sendError(res, 400, 'selectedBlockId must be a non-empty string.');
   try {
-    const scheduleBlocks = services.confirmSchedulingAssistant(userIdOf(req), parseSchedulingAssistantIntent(message), changes, selectedBlockId);
+    const intent = parseSchedulingAssistantIntent(message);
+    if ((intent.type === 'generate_schedule' || intent.type === 'reschedule_remaining') && req.body?.scheduleProposal && typeof req.body?.scheduleProposalToken === 'string') {
+      const settings = services.getScheduleGenerationSettings(userIdOf(req));
+      if (!settings) return sendError(res, 400, 'Persist exam settings before generating a schedule.');
+      if (req.body.scheduleProposalToken !== scheduleProposalToken(req.body.scheduleProposal, settings.updatedAt)) return sendError(res, 409, 'This schedule preview is stale. Generate a new preview.');
+      const referenceTime = new Date(req.body.scheduleProposal.referenceTime);
+      const recalculated = services.createScheduleProposal({ dataset: services.deriveScheduleDataset(userIdOf(req)), settings, existingBlocks: services.scheduleBlockRows(userIdOf(req)), referenceTime });
+      if (JSON.stringify(recalculated) !== JSON.stringify(req.body.scheduleProposal)) return sendError(res, 409, 'Academic evidence or existing schedule blocks changed since this preview.');
+      services.assertScheduleBlocksAreValid(userIdOf(req), recalculated.blocks);
+      services.saveScheduleBlocks(userIdOf(req), recalculated.blocks);
+      return res.json({ scheduleBlocks: services.scheduleBlockRows(userIdOf(req)) });
+    }
+    const scheduleBlocks = services.confirmSchedulingAssistant(userIdOf(req), intent, changes, selectedBlockId);
+    if (intent.type === 'complete_topic') {
+      const now = Date.now();
+      const nextSession = scheduleBlocks.find((block) => !block.completed && !block.missed && Date.parse(`${block.date}T${block.startTime}:00.000Z`) > now) || null;
+      return res.json({ scheduleBlocks, nextSession });
+    }
     return res.json({ scheduleBlocks });
   } catch (error) {
     if (error instanceof HttpError) return sendError(res, error.status, error.message);

@@ -87,6 +87,40 @@ export type QuestionRow = {
   createdAt: string;
 };
 
+export const SCHEDULE_DATASET_SCHEMA_VERSION = 1;
+export const SCHEDULE_DATASET_VERSION = 'academic-evidence-v1';
+export const SCHEDULE_DURATION_ALGORITHM = 'pyq-marks-v1';
+
+export type ScheduleAvailabilityWindow = { weekday: number; startTime: string; endTime: string };
+export type ScheduleGenerationSettings = {
+  examDate: string | null;
+  timezone: string;
+  availability: ScheduleAvailabilityWindow[];
+  excludedDates: string[];
+  excludedWeekdays: number[];
+  preferredPeriods: AssistantPeriod[];
+  dailyMaxMinutes: number | null;
+  datasetVersion: string;
+  durationAlgorithm: string;
+  updatedAt: string;
+};
+
+export type DerivedScheduleDataset = {
+  schemaVersion: number;
+  sourceDataset: string | null;
+  sourceDocuments: Array<{ documentId: string; title: string; extractionMethod: string }>;
+  topics: Array<{
+    topicId: string;
+    topicName: string;
+    priority: number;
+    weightage: number;
+    estimatedDurationMinutes: number | null;
+    durationAlgorithm: string | null;
+    questions: Array<{ questionId: string; questionNumber: string | null; marks: number; pageNumber: number | null; suggestedTimeMinutes: number }>;
+    lectureSource: { documentId: string; exactSlide: number; heading: string; snippet: string } | null;
+  }>;
+};
+
 export type FeedbackRow = {
   id: string;
   questionId: string | null;
@@ -1821,6 +1855,188 @@ export function questionRows(userId: string, documentId?: string): QuestionRow[]
   `).all(userId, ...(documentId ? [documentId] : [])).filter((row: any) => !isLegacySampleDocument(row.paperTitle)).map((row: any) => ({ ...row, mappingEvidence: parseJsonList(row.mappingEvidence), mappingStatus: row.mappingStatus || (row.topicId ? 'mapped' : 'unmatched') })) as QuestionRow[];
 }
 
+function jsonArray<T>(value: unknown, fallback: T[] = []): T[] {
+  if (Array.isArray(value)) return value as T[];
+  try {
+    const parsed = JSON.parse(String(value || '[]'));
+    return Array.isArray(parsed) ? parsed as T[] : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function deriveScheduleDataset(userId: string): DerivedScheduleDataset {
+  const documents = documentRows(userId);
+  const topics = topicRows(userId);
+  const questions = questionRows(userId).filter((question) => question.topicId);
+  const sourceItems = getWhatToStudyRanking(userId);
+  const sourceByTopic = new Map(sourceItems.map((item) => [item.topicId, item.lectureSource]));
+  const sourceDataset = documents.find((document) => /^precomputed-demo-adapter:set2:/.test(document.extractionMethod || '')) ? 'set2' : null;
+  return {
+    schemaVersion: SCHEDULE_DATASET_SCHEMA_VERSION,
+    sourceDataset,
+    sourceDocuments: documents.map((document) => ({ documentId: document.id, title: document.title, extractionMethod: document.extractionMethod })),
+    topics: topics.map((topic) => {
+      const topicQuestions = questions.filter((question) => question.topicId === topic.id);
+      const estimatedDurationMinutes = topicQuestions.length > 0
+        ? Math.max(30, topicQuestions.reduce((total, question) => total + Math.max(5, question.marks * 2), 0))
+        : null;
+      const source = sourceByTopic.get(topic.id);
+      const lectureSource = source?.mapped && source.documentId && Number.isInteger(source.exactSlide)
+        ? { documentId: source.documentId, exactSlide: source.exactSlide!, heading: source.sectionTitle || '', snippet: source.slideSnippet || '' }
+        : null;
+      return {
+        topicId: topic.id,
+        topicName: topic.name,
+        priority: topic.priority,
+        weightage: topic.weightage,
+        estimatedDurationMinutes,
+        durationAlgorithm: estimatedDurationMinutes === null ? null : SCHEDULE_DURATION_ALGORITHM,
+        questions: topicQuestions.map((question) => ({
+          questionId: question.id,
+          questionNumber: question.questionNumber,
+          marks: question.marks,
+          pageNumber: question.pageNumber,
+          suggestedTimeMinutes: question.suggestedTimeMinutes,
+        })),
+        lectureSource,
+      };
+    }),
+  };
+}
+
+export function getScheduleGenerationSettings(userId: string): ScheduleGenerationSettings | null {
+  const row = getDb().prepare(`SELECT exam_date AS examDate, timezone, availability_json AS availability,
+    excluded_dates_json AS excludedDates, excluded_weekdays_json AS excludedWeekdays,
+    preferred_periods_json AS preferredPeriods, daily_max_minutes AS dailyMaxMinutes,
+    dataset_version AS datasetVersion, duration_algorithm AS durationAlgorithm, updated_at AS updatedAt
+    FROM schedule_generation_settings WHERE user_id = ?`).get(userId) as any;
+  if (!row) return null;
+  return { ...row, availability: jsonArray<ScheduleAvailabilityWindow>(row.availability), excludedDates: jsonArray<string>(row.excludedDates), excludedWeekdays: jsonArray<number>(row.excludedWeekdays), preferredPeriods: jsonArray<AssistantPeriod>(row.preferredPeriods), dailyMaxMinutes: row.dailyMaxMinutes === null ? null : Number(row.dailyMaxMinutes) };
+}
+
+export function saveScheduleGenerationSettings(userId: string, input: Partial<ScheduleGenerationSettings>): ScheduleGenerationSettings {
+  const current = getScheduleGenerationSettings(userId);
+  const settings: ScheduleGenerationSettings = {
+    examDate: input.examDate === undefined ? current?.examDate || null : input.examDate,
+    timezone: input.timezone || current?.timezone || 'UTC',
+    availability: input.availability || current?.availability || [],
+    excludedDates: input.excludedDates || current?.excludedDates || [],
+    excludedWeekdays: input.excludedWeekdays || current?.excludedWeekdays || [],
+    preferredPeriods: input.preferredPeriods || current?.preferredPeriods || [],
+    dailyMaxMinutes: input.dailyMaxMinutes === undefined ? current?.dailyMaxMinutes || null : input.dailyMaxMinutes,
+    datasetVersion: SCHEDULE_DATASET_VERSION,
+    durationAlgorithm: SCHEDULE_DURATION_ALGORITHM,
+    updatedAt: now(),
+  };
+  if (settings.examDate !== null && !/^\d{4}-\d{2}-\d{2}$/.test(settings.examDate)) throw new HttpError(400, 'examDate must be YYYY-MM-DD or null.');
+  if (settings.availability.some((window) => !Number.isInteger(window.weekday) || window.weekday < 0 || window.weekday > 6 || !/^\d{2}:\d{2}$/.test(window.startTime) || !/^\d{2}:\d{2}$/.test(window.endTime) || window.startTime >= window.endTime)) throw new HttpError(400, 'availability contains an invalid weekday or time window.');
+  getDb().prepare(`INSERT INTO schedule_generation_settings
+    (user_id, exam_date, timezone, availability_json, excluded_dates_json, excluded_weekdays_json, preferred_periods_json, daily_max_minutes, dataset_version, duration_algorithm, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET exam_date = excluded.exam_date, timezone = excluded.timezone,
+      availability_json = excluded.availability_json, excluded_dates_json = excluded.excluded_dates_json,
+      excluded_weekdays_json = excluded.excluded_weekdays_json, preferred_periods_json = excluded.preferred_periods_json,
+      daily_max_minutes = excluded.daily_max_minutes, dataset_version = excluded.dataset_version,
+      duration_algorithm = excluded.duration_algorithm, updated_at = excluded.updated_at`)
+    .run(userId, settings.examDate, settings.timezone, JSON.stringify(settings.availability), JSON.stringify(settings.excludedDates), JSON.stringify(settings.excludedWeekdays), JSON.stringify(settings.preferredPeriods), settings.dailyMaxMinutes, settings.datasetVersion, settings.durationAlgorithm, settings.updatedAt);
+  return settings;
+}
+
+export type ScheduleGenerationInput = {
+  dataset: DerivedScheduleDataset;
+  settings: Pick<ScheduleGenerationSettings, 'examDate' | 'availability' | 'excludedDates' | 'excludedWeekdays' | 'preferredPeriods' | 'dailyMaxMinutes'>;
+  existingBlocks: Array<Pick<ScheduleBlockRow, 'date' | 'startTime' | 'durationMinutes'>>;
+  referenceTime: Date;
+};
+
+export type ScheduleGenerationProposal = {
+  blocks: ScheduleBlockInput[];
+  allocatedMinutesByTopic: Record<string, number>;
+  unallocatedMinutesByTopic: Record<string, number>;
+  unallocatedReasons: Record<string, string>;
+  totalAvailableCapacity: number;
+  requiredStudyMinutes: number;
+  datasetVersion: string;
+  durationAlgorithm: string;
+  referenceTime: string;
+};
+
+function scheduleDateAt(date: string): Date { return new Date(`${date}T00:00:00.000Z`); }
+function scheduleDateKey(date: Date): string { return date.toISOString().slice(0, 10); }
+function scheduleTimeMinutes(value: string): number { return Number(value.slice(0, 2)) * 60 + Number(value.slice(3)); }
+function scheduleTimeText(value: number): string { return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`; }
+function scheduleWindowPreferred(window: ScheduleAvailabilityWindow, preferredPeriods: AssistantPeriod[]): boolean {
+  if (preferredPeriods.length === 0) return true;
+  const start = scheduleTimeMinutes(window.startTime);
+  const end = scheduleTimeMinutes(window.endTime);
+  return preferredPeriods.some((period) => {
+    const bounds = period === 'morning' ? [480, 720] : period === 'afternoon' ? [720, 1020] : [1020, 1320];
+    return start < bounds[1] && end > bounds[0];
+  });
+}
+function scheduleOverlap(a: { date: string; startTime: string; durationMinutes: number }, b: { date: string; startTime: string; durationMinutes: number }): boolean {
+  if (a.date !== b.date) return false;
+  const aStart = scheduleTimeMinutes(a.startTime); const bStart = scheduleTimeMinutes(b.startTime);
+  return aStart < bStart + b.durationMinutes && bStart < aStart + a.durationMinutes;
+}
+
+export function createScheduleProposal(input: ScheduleGenerationInput): ScheduleGenerationProposal {
+  const { dataset, settings, referenceTime } = input;
+  const blocks: ScheduleBlockInput[] = [];
+  const occupied = [...input.existingBlocks];
+  const allocatedMinutesByTopic: Record<string, number> = {};
+  const unallocatedMinutesByTopic: Record<string, number> = {};
+  const unallocatedReasons: Record<string, string> = {};
+  const today = scheduleDateAt(scheduleDateKey(referenceTime));
+  const examDate = settings.examDate ? scheduleDateAt(settings.examDate) : today;
+  const windows = settings.availability.length > 0 ? settings.availability : [1, 2, 3, 4, 5].map((weekday) => ({ weekday, startTime: '08:00', endTime: '18:00' }));
+  const excludedDates = new Set(settings.excludedDates); const excludedWeekdays = new Set(settings.excludedWeekdays);
+  const topics = [...dataset.topics].sort((a, b) => b.priority - a.priority || b.weightage - a.weightage || a.topicName.localeCompare(b.topicName));
+  const maxPriority = Math.max(1, ...topics.map((topic) => topic.priority));
+  const maxWeightage = Math.max(1, ...topics.map((topic) => topic.weightage));
+  const scored = topics.map((topic) => ({ topic, score: 0.7 * topic.priority / maxPriority + 0.3 * topic.weightage / maxWeightage }));
+  const scoreTotal = scored.reduce((sum, item) => sum + item.score, 0) || 1;
+  let totalAvailableCapacity = 0;
+  for (let cursor = new Date(today); cursor < examDate; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const date = scheduleDateKey(cursor); const weekday = cursor.getUTCDay();
+    if (excludedDates.has(date) || excludedWeekdays.has(weekday)) continue;
+    const dayWindows = windows.filter((window) => window.weekday === weekday && scheduleWindowPreferred(window, settings.preferredPeriods));
+    let dayCapacity = 0;
+    for (const window of dayWindows) {
+      const start = scheduleTimeMinutes(window.startTime); const end = scheduleTimeMinutes(window.endTime);
+      for (let minute = start; minute + 30 <= end; minute += 30) {
+        if (!occupied.some((block) => scheduleOverlap(block, { date, startTime: scheduleTimeText(minute), durationMinutes: 30 })) && !blocks.some((block) => scheduleOverlap(block, { date, startTime: scheduleTimeText(minute), durationMinutes: 30 }))) dayCapacity += 30;
+      }
+    }
+    totalAvailableCapacity += Math.min(dayCapacity, settings.dailyMaxMinutes || dayCapacity);
+  }
+  for (const { topic, score } of scored) {
+    const required = topic.estimatedDurationMinutes;
+    if (required === null) { unallocatedReasons[topic.topicId] = 'No mapped questions provide a duration estimate.'; continue; }
+    let remaining = required; let allocated = 0;
+    for (let cursor = new Date(today); cursor < examDate && remaining > 0; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+      const date = scheduleDateKey(cursor); const weekday = cursor.getUTCDay();
+      if (excludedDates.has(date) || excludedWeekdays.has(weekday)) continue;
+      const dayWindows = windows.filter((window) => window.weekday === weekday && scheduleWindowPreferred(window, settings.preferredPeriods));
+      let dayUsed = 0;
+      for (const window of dayWindows) {
+        const start = scheduleTimeMinutes(window.startTime); const end = scheduleTimeMinutes(window.endTime);
+        for (let minute = start; minute + 30 <= end && remaining > 0; minute += 30) {
+          const duration = Math.min(remaining, 120, end - minute);
+          if (duration < 30 || settings.dailyMaxMinutes !== null && settings.dailyMaxMinutes !== undefined && dayUsed + duration > settings.dailyMaxMinutes) continue;
+          const candidate = { topicId: topic.topicId, title: `Study: ${topic.topicName}`, date, startTime: scheduleTimeText(minute), durationMinutes: duration, completed: false };
+          if (occupied.some((block) => scheduleOverlap(block, candidate)) || blocks.some((block) => scheduleOverlap(block, candidate))) continue;
+          blocks.push(candidate); occupied.push(candidate); dayUsed += duration; allocated += duration; remaining -= duration;
+        }
+      }
+    }
+    allocatedMinutesByTopic[topic.topicId] = allocated;
+    if (remaining > 0) { unallocatedMinutesByTopic[topic.topicId] = remaining; unallocatedReasons[topic.topicId] = 'Available capacity before the exam is insufficient.'; }
+  }
+  return { blocks, allocatedMinutesByTopic, unallocatedMinutesByTopic, unallocatedReasons, totalAvailableCapacity, requiredStudyMinutes: topics.reduce((sum, topic) => sum + (topic.estimatedDurationMinutes || 0), 0), datasetVersion: SCHEDULE_DATASET_VERSION, durationAlgorithm: SCHEDULE_DURATION_ALGORITHM, referenceTime: referenceTime.toISOString() };
+}
+
 export function teacherIntelligenceFingerprint(userId: string) {
   const documentRevision = documentRows(userId).map((document) => `${document.id}:${document.createdAt}`).sort();
   const questionRevision = questionRows(userId).map((question) => `${question.id}:${question.createdAt}`).sort();
@@ -2919,7 +3135,7 @@ export type SchedulingAssistantChange = {
   topicName: string;
   original: Pick<ScheduleBlockRow, 'title' | 'date' | 'startTime' | 'durationMinutes'>;
   proposed: Pick<ScheduleBlockInput, 'date' | 'startTime' | 'durationMinutes'>;
-  operation?: 'move' | 'shorten' | 'cancel' | 'swap' | 'shift';
+  operation?: 'move' | 'shorten' | 'cancel' | 'swap' | 'shift' | 'complete';
 };
 
 export type SchedulingAssistantPreview = {
@@ -2927,6 +3143,8 @@ export type SchedulingAssistantPreview = {
   intent: SchedulingAssistantIntent;
   changes: SchedulingAssistantChange[];
   matches?: Array<Pick<ScheduleBlockRow, 'topicName' | 'title' | 'date' | 'startTime' | 'durationMinutes'> & { blockId: string }>;
+  scheduleProposal?: ScheduleGenerationProposal;
+  sourceAction?: { documentId: string; exactSlide: number; url: string; topicName: string } | null;
 };
 
 function dateTimeValue(date: string, startTime: string): number {
@@ -2934,7 +3152,7 @@ function dateTimeValue(date: string, startTime: string): number {
 }
 
 function futureUncompletedBlocks(userId: string, currentTime: Date): ScheduleBlockRow[] {
-  return scheduleBlockRows(userId).filter((block) => !block.completed && dateTimeValue(block.date, block.startTime) > currentTime.getTime());
+  return scheduleBlockRows(userId).filter((block) => !block.completed && !block.missed && dateTimeValue(block.date, block.startTime) > currentTime.getTime());
 }
 
 function periodMinutes(period?: AssistantPeriod): [number, number] {
@@ -3036,7 +3254,7 @@ function matchingBlocks(blocks: ScheduleBlockRow[], intent: SchedulingAssistantI
 
 function querySchedulingAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
   const upcoming = scheduleBlockRows(userId)
-    .filter((block) => dateTimeValue(block.date, block.startTime) > currentTime.getTime());
+    .filter((block) => !block.completed && !block.missed && dateTimeValue(block.date, block.startTime) > currentTime.getTime());
   if (intent.topicQuery) {
     const matches = upcoming.filter((block) => topicMatches(block, intent.topicQuery));
     if (matches.length === 0) return { intent, changes: [], assistantMessage: `You do not have any upcoming ${intent.topicQuery} sessions.` };
@@ -3191,12 +3409,61 @@ function previewDayShiftAssistant(userId: string, intent: SchedulingAssistantInt
   return { intent, changes, assistantMessage: `I can move ${changes.length} session${changes.length === 1 ? '' : 's'} (${sessions}) from ${intent.sourceDate} to ${targetDate}. Confirm to update your calendar.` };
 }
 
+function previewGenerateScheduleAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
+  const settings = getScheduleGenerationSettings(userId);
+  if (!settings?.examDate) return { intent, changes: [], assistantMessage: 'Please save an exam date and availability before generating a schedule.' };
+  const dataset = deriveScheduleDataset(userId);
+  const existing = scheduleBlockRows(userId);
+  const remainingDataset = intent.type === 'reschedule_remaining'
+    ? {
+      ...dataset,
+      topics: dataset.topics.map((topic) => {
+        const completedMinutes = existing.filter((block) => block.topicId === topic.topicId && block.completed).reduce((sum, block) => sum + block.durationMinutes, 0);
+        return { ...topic, estimatedDurationMinutes: topic.estimatedDurationMinutes === null ? null : Math.max(0, topic.estimatedDurationMinutes - completedMinutes) };
+      }),
+    }
+    : dataset;
+  const proposal = createScheduleProposal({ dataset: remainingDataset, settings, existingBlocks: existing, referenceTime: currentTime });
+  const shortfall = Object.entries(proposal.unallocatedMinutesByTopic).map(([topicId, minutes]) => {
+    const topic = proposal.blocks.find((block) => block.topicId === topicId);
+    return `${topic?.title || topicId}: ${minutes} minutes`;
+  });
+  return {
+    intent,
+    changes: [],
+    scheduleProposal: proposal,
+    assistantMessage: `${intent.type === 'reschedule_remaining' ? 'I prepared a reschedule for unfinished work' : 'I prepared a schedule'} with ${proposal.blocks.length} study blocks totaling ${proposal.blocks.reduce((sum, block) => sum + block.durationMinutes, 0)} minutes. ${shortfall.length > 0 ? `Unallocated work: ${shortfall.join(', ')}.` : 'All estimated work fits before the exam.'} Confirm through the schedule generation confirmation action to save it.`,
+  };
+}
+
+function previewCompleteTopicAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
+  const matches = futureUncompletedBlocks(userId, currentTime).filter((block) => topicMatches(block, intent.topicQuery));
+  if (matches.length === 0) return { intent, changes: [], assistantMessage: 'I could not find an unfinished future session for that topic.' };
+  if (matches.length > 1) return { intent, changes: [], assistantMessage: 'I found multiple unfinished sessions for that topic. Please specify the date or time.', matches: matches.map(({ id, topicName, title, date, startTime, durationMinutes }) => ({ blockId: id, topicName, title, date, startTime, durationMinutes })) };
+  const block = matches[0];
+  return { intent, changes: [{ blockId: block.id, topicId: block.topicId, topicName: block.topicName, original: { title: block.title, date: block.date, startTime: block.startTime, durationMinutes: block.durationMinutes }, proposed: { date: block.date, startTime: block.startTime, durationMinutes: block.durationMinutes }, operation: 'complete' }], assistantMessage: `I can mark ${block.topicName} at ${block.date} ${block.startTime} complete, then find your next unfinished session. Confirm to continue.` };
+}
+
+function previewSourceAssistant(userId: string, intent: SchedulingAssistantIntent, currentTime: Date): SchedulingAssistantPreview {
+  const next = querySchedulingAssistant(userId, { type: 'query_schedule' }, currentTime);
+  const nextBlock = futureUncompletedBlocks(userId, currentTime)[0];
+  if (!nextBlock) return { intent, changes: [], sourceAction: null, assistantMessage: 'You do not have an upcoming topic with source material.' };
+  const item = getWhatToStudyRanking(userId).find((candidate) => candidate.topicId === nextBlock.topicId);
+  const source = item?.lectureSource;
+  if (!source?.mapped || !source.documentId || !Number.isInteger(source.exactSlide)) return { intent, changes: [], sourceAction: null, assistantMessage: `No exact lecture slide is mapped for ${nextBlock.topicName}.` };
+  return { intent, changes: [], sourceAction: { documentId: source.documentId, exactSlide: source.exactSlide!, url: `/api/documents/${source.documentId}/view?slide=${source.exactSlide}`, topicName: nextBlock.topicName }, assistantMessage: `The exact source for ${nextBlock.topicName} is slide ${source.exactSlide}.` };
+}
+
 export function previewSchedulingAssistant(
   userId: string,
   intent: SchedulingAssistantIntent,
   currentTime = new Date(),
   selectedBlockId?: string,
 ): SchedulingAssistantPreview {
+  if (intent.type === 'generate_schedule') return previewGenerateScheduleAssistant(userId, intent, currentTime);
+  if (intent.type === 'complete_topic') return previewCompleteTopicAssistant(userId, intent, currentTime);
+  if (intent.type === 'show_source') return previewSourceAssistant(userId, intent, currentTime);
+  if (intent.type === 'reschedule_remaining') return previewGenerateScheduleAssistant(userId, intent, currentTime);
   if (intent.type === 'query_schedule') return querySchedulingAssistant(userId, intent, currentTime);
   if (intent.type === 'query_range') return queryRangeAssistant(userId, intent, currentTime);
   if (intent.type === 'cancel_topic') return previewCancelAssistant(userId, intent, currentTime, selectedBlockId);
@@ -3332,6 +3599,11 @@ export function confirmSchedulingAssistant(
     preview.changes.forEach((change, index) => {
       if (change.operation === 'cancel') {
         deleteScheduleBlock(userId, change.blockId);
+        return;
+      }
+      if (change.operation === 'complete') {
+        updateScheduleBlock(userId, change.blockId, { completed: 1, missed: 0 });
+        recordScheduleChange(userId, change.blockId, 'completed', '0', '1', 'assistant');
         return;
       }
       updateScheduleBlock(userId, change.blockId, {
